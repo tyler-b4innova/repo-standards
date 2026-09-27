@@ -55,7 +55,7 @@ out=$(node --input-type=module -e '
   console.log(JSON.stringify({
     bypass: [...new Set(a.rulesets.map((r) => `${r.target}:${JSON.stringify(r.bypass_actors)}`))].sort(),
     threadOff: rs(a, "default branch").pull_request.required_review_thread_resolution, threadOn: rs(b, "default branch").pull_request.required_review_thread_resolution,
-    stagingThreadOn: rs(b, "staged staging").pull_request.required_review_thread_resolution,
+    stagingThreadOn: rs(b, "org: staging").pull_request.required_review_thread_resolution,
     direct: rs(a, "direct").pull_request.allowed_merge_methods, staged: rs(a, "staged main").pull_request.allowed_merge_methods,
     vault: rs(a, "push").file_path_restriction.restricted_file_paths.includes("vault/**"),
     size: [rs(a, "push").max_file_size.max_file_size, rs(b, "push").max_file_size.max_file_size],

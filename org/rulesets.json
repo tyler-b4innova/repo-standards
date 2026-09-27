@@ -3,7 +3,10 @@
   "property": {
     "property_name": "flow",
     "value_type": "single_select",
-    "allowed_values": ["direct", "staged"],
+    "allowed_values": [
+      "direct",
+      "staged"
+    ],
     "required": true,
     "default_value": "direct",
     "values_editable_by": "org_actors",
@@ -14,12 +17,28 @@
       "name": "org: default branch and main (PR + gate)",
       "target": "branch",
       "conditions": {
-        "ref_name": { "include": ["~DEFAULT_BRANCH", "refs/heads/main"], "exclude": [] },
-        "repository_name": { "include": ["~ALL"], "exclude": [], "protected": false }
+        "ref_name": {
+          "include": [
+            "~DEFAULT_BRANCH",
+            "refs/heads/main"
+          ],
+          "exclude": []
+        },
+        "repository_name": {
+          "include": [
+            "~ALL"
+          ],
+          "exclude": [],
+          "protected": false
+        }
       },
       "rules": [
-        { "type": "deletion" },
-        { "type": "non_fast_forward" },
+        {
+          "type": "deletion"
+        },
+        {
+          "type": "non_fast_forward"
+        },
         {
           "type": "pull_request",
           "parameters": {
@@ -30,7 +49,10 @@
             "required_review_thread_resolution": "$review_thread_resolution",
             "require_extra_approval_for_unattributed_changes": false,
             "required_reviewers": [],
-            "allowed_merge_methods": ["merge", "squash"]
+            "allowed_merge_methods": [
+              "merge",
+              "squash"
+            ]
           }
         },
         {
@@ -38,7 +60,12 @@
           "parameters": {
             "strict_required_status_checks_policy": false,
             "do_not_enforce_on_create": true,
-            "required_status_checks": [{ "context": "gate", "integration_id": 15368 }]
+            "required_status_checks": [
+              {
+                "context": "gate",
+                "integration_id": 15368
+              }
+            ]
           }
         }
       ]
@@ -47,49 +74,130 @@
       "name": "org: direct repos squash-merge",
       "target": "branch",
       "conditions": {
-        "ref_name": { "include": ["~DEFAULT_BRANCH", "refs/heads/main"], "exclude": [] },
-        "repository_property": { "include": [{ "name": "flow", "source": "custom", "property_values": ["direct"] }], "exclude": [] }
+        "ref_name": {
+          "include": [
+            "~DEFAULT_BRANCH",
+            "refs/heads/main"
+          ],
+          "exclude": []
+        },
+        "repository_property": {
+          "include": [
+            {
+              "name": "flow",
+              "source": "custom",
+              "property_values": [
+                "direct"
+              ]
+            }
+          ],
+          "exclude": []
+        }
       },
       "rules": [
-        { "type": "pull_request", "parameters": { "allowed_merge_methods": ["squash"] } }
+        {
+          "type": "pull_request",
+          "parameters": {
+            "allowed_merge_methods": [
+              "squash"
+            ]
+          }
+        }
       ]
     },
     {
       "name": "org: staged main takes promotions (merge commit)",
       "target": "branch",
       "conditions": {
-        "ref_name": { "include": ["refs/heads/main"], "exclude": [] },
-        "repository_property": { "include": [{ "name": "flow", "source": "custom", "property_values": ["staged"] }], "exclude": [] }
+        "ref_name": {
+          "include": [
+            "refs/heads/main"
+          ],
+          "exclude": []
+        },
+        "repository_property": {
+          "include": [
+            {
+              "name": "flow",
+              "source": "custom",
+              "property_values": [
+                "staged"
+              ]
+            }
+          ],
+          "exclude": []
+        }
       },
       "rules": [
-        { "type": "pull_request", "parameters": { "allowed_merge_methods": ["merge"] } },
+        {
+          "type": "pull_request",
+          "parameters": {
+            "allowed_merge_methods": [
+              "merge"
+            ]
+          }
+        },
         {
           "type": "required_status_checks",
           "parameters": {
             "strict_required_status_checks_policy": false,
             "do_not_enforce_on_create": true,
-            "required_status_checks": [{ "context": "gate", "integration_id": 15368 }, "$extra_checks.staged_main"]
+            "required_status_checks": [
+              {
+                "context": "gate",
+                "integration_id": 15368
+              },
+              "$extra_checks.staged_main"
+            ]
           }
         }
       ]
     },
     {
-      "name": "org: staged staging (PR + gate, squash)",
+      "name": "org: staging (PR + gate, squash)",
       "target": "branch",
       "conditions": {
-        "ref_name": { "include": ["refs/heads/staging"], "exclude": [] },
-        "repository_property": { "include": [{ "name": "flow", "source": "custom", "property_values": ["staged"] }], "exclude": [] }
+        "ref_name": {
+          "include": [
+            "refs/heads/staging"
+          ],
+          "exclude": []
+        },
+        "repository_name": {
+          "include": [
+            "~ALL"
+          ],
+          "exclude": [],
+          "protected": false
+        }
       },
       "rules": [
-        { "type": "deletion" },
-        { "type": "non_fast_forward" },
-        { "type": "pull_request", "parameters": { "required_review_thread_resolution": "$review_thread_resolution", "allowed_merge_methods": ["squash"] } },
+        {
+          "type": "deletion"
+        },
+        {
+          "type": "non_fast_forward"
+        },
+        {
+          "type": "pull_request",
+          "parameters": {
+            "required_review_thread_resolution": "$review_thread_resolution",
+            "allowed_merge_methods": [
+              "squash"
+            ]
+          }
+        },
         {
           "type": "required_status_checks",
           "parameters": {
             "strict_required_status_checks_policy": false,
             "do_not_enforce_on_create": true,
-            "required_status_checks": [{ "context": "gate", "integration_id": 15368 }]
+            "required_status_checks": [
+              {
+                "context": "gate",
+                "integration_id": 15368
+              }
+            ]
           }
         }
       ]
@@ -98,16 +206,43 @@
       "name": "org: push hygiene (secret files, large files)",
       "target": "push",
       "conditions": {
-        "repository_name": { "include": ["~ALL"], "exclude": [], "protected": false }
+        "repository_name": {
+          "include": [
+            "~ALL"
+          ],
+          "exclude": [],
+          "protected": false
+        }
       },
       "rules": [
         {
           "type": "file_path_restriction",
           "parameters": {
-            "restricted_file_paths": [".env", "**/.env", ".env*.local", "**/.env*.local", ".dev.vars", "**/.dev.vars", "*.pem", "**/*.pem", "*.p12", "**/*.p12", "*.key", "**/*.key", "*.tfvars", "**/*.tfvars", "$extra_restricted_paths"]
+            "restricted_file_paths": [
+              ".env",
+              "**/.env",
+              ".env*.local",
+              "**/.env*.local",
+              ".dev.vars",
+              "**/.dev.vars",
+              "*.pem",
+              "**/*.pem",
+              "*.p12",
+              "**/*.p12",
+              "*.key",
+              "**/*.key",
+              "*.tfvars",
+              "**/*.tfvars",
+              "$extra_restricted_paths"
+            ]
           }
         },
-        { "type": "max_file_size", "parameters": { "max_file_size": "$max_file_size_mb" } }
+        {
+          "type": "max_file_size",
+          "parameters": {
+            "max_file_size": "$max_file_size_mb"
+          }
+        }
       ]
     }
   ]

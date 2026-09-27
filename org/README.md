@@ -7,7 +7,7 @@ One ruleset set, one `flow` property and one App definition for every organizati
 | default branch and main | every repo: default branch, `main` | PR (0 approvals), `gate`, no deletion, no force-push |
 | direct repos squash-merge | `flow=direct`: default branch, `main` | squash only |
 | staged main takes promotions | `flow=staged`: `main` | merge commit only; `gate` plus `extra_checks.staged_main` |
-| staged staging | `flow=staged`: `staging` | PR (squash only), `gate`, no deletion, no force-push |
+| staging | every repo with a `staging` branch (a staged repo's work lane, or a preview branch) | PR (squash only), `gate`, no deletion, no force-push |
 | push hygiene | every repo | no private env files, keys or tfvars, plus `extra_restricted_paths`; files up to `max_file_size_mb` |
 
 A staged repo's default branch is `staging`; work squash-merges there and is promoted to `main` with a merge commit. A repo whose work lands on `main` is `direct`. `gate` is not strict (merge-commit promotions leave `staging` behind `main`). Bypass: the org App `always` (it fast-forwards gated pack commits), org admins `pull_request` only, because local agent sessions run on an admin's `gh` login and `always` would let them push or force-push to protected branches; an admin can still merge a PR past a failing requirement as break-glass. Push rulesets refuse `pull_request` mode, so push hygiene has the App alone. `apply.mjs` owns every organization-level ruleset: an unlisted one is deleted, and one with the same target and conditions is renamed in place.
