@@ -178,8 +178,9 @@ PC='contents:["before-1","after-1","after-2"].map((n)=>process.env.SHA+":.eviden
 fx "{files:{8:[\"docs/report.docx\",\"deck/q3.pptx\"]},$PC,comments:{8:[c(51,\"alice\",$PAGES)]}}"; d1=$(ev "$R" 8); y1=$?
 fx "{files:{8:[\"docs/report.docx\",\"app.css\"]},$PC,comments:{8:[c(52,\"alice\",$PAGES)]}}"; d2=$(ev "$R" 8); y2=$?
 fx "{files:{8:[\"docs/report.docx\"]},$PC,comments:{8:[c(53,\"alice\",img(U+\"after-1.png\")+img(U+\"after-2.png\"))]}}"; d3=$(ev "$R" 8); y3=$?
-if [ $y1 -eq 0 ] && has "evidence: accepted" "$d1" && [ $y2 -eq 1 ] && has "missing before 400px" "$d2" && [ $y3 -eq 1 ] && has "missing before pages" "$d3"; then ok evidence-document-pages
-else fail evidence-document-pages "docs=$y1 mixed=$y2 no-before=$y3: $d1 | $d2 | $d3"; fi
+fx "{files:{8:[\"docs/report.docx\"]},contents:[\"before-01\",\"after-02\"].map((n)=>process.env.SHA+\":.evidence/\"+n+\".png\"),comments:{8:[c(54,\"alice\",img(U+\"before-01.png\")+img(U+\"after-02.png\"))]}}"; d4=$(ev "$R" 8); y4=$?
+if [ $y1 -eq 0 ] && has "evidence: accepted" "$d1" && [ $y2 -eq 1 ] && has "missing before 400px" "$d2" && [ $y3 -eq 1 ] && has "missing before pages" "$d3" && [ $y4 -eq 1 ] && has "missing a page with both before and after" "$d4"; then ok evidence-document-pages
+else fail evidence-document-pages "docs=$y1 mixed=$y2 no-before=$y3 unpaired=$y4: $d1 | $d2 | $d3 | $d4"; fi
 
 # A landing branch scans only what the default branch lacks, so old leaks on main do not block it (linux x64 only:
 # the scanner is the pinned gitleaks build).

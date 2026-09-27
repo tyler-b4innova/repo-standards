@@ -89,6 +89,7 @@ echo '{}' > "$R/.mcp.json" && commit "$R"; out=$(check "$R") && why="$why; root 
 has ".mcp.json is committed" "$out" || why="$why; root message: $out"
 git -C "$R" rm -q --cached .mcp.json && rm "$R/.mcp.json" && jset "$R/standards.json" 'o.allow_paths="plugins"'; commit "$R"
 out=$(check "$R") && why="$why; a non-list allow_paths passed"
+has "standards.json allow_paths is" "$out" || why="$why; non-list message: $out"
 if [ -z "$why" ]; then ok repo-allow-paths; else fail repo-allow-paths "$why"; fi
 
 # the SessionStart hook: once, under startup|resume, next to the repo's own hooks

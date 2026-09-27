@@ -90,7 +90,7 @@ else {
   // Forbidden paths and content
   // standards.json allow_paths: repo-owned globs for shipped content that looks like agent config (a plugin's .mcp.json);
   // they exempt the .mcp.json and forbidden-path checks only.
-  const allowed = (std?.allow_paths ?? []).map(glob);
+  const allowed = (Array.isArray(std?.allow_paths) ? std.allow_paths.filter((g) => typeof g === "string" && g.trim()) : []).map(glob);
   for (const f of tracked) {
     const name = f.split("/").pop(), dirs = f.split("/").slice(0, -1).map((d) => d.toLowerCase()), ok = allowed.some((r) => r.test(f));
     if (f === "CONTEXT.md") fail("CONTEXT.md at the root is forbidden", `git rm ${f}   (rules go in AGENTS.md)`);

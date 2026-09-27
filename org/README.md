@@ -34,7 +34,6 @@ Overlay:
   "push_ignored_paths": [],
   "push_ruleset": "managed",
   "push_app_bypass": false,
-  "require_extra_approval_for_unattributed_changes": null,
   "max_file_size_mb": 50
 }
 ```
