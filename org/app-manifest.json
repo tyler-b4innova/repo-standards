@@ -1,0 +1,17 @@
+{
+  "$comment": "The one GitHub App each org runs for pack sync and the launcher. `org/apply.mjs create-app` fills `$`-placeholders from the overlay and prints GitHub's URL-parameter registration link. No webhook: the launcher polls. Permissions, each needed by a caller: actions write (launcher dispatches sync and reads its runs), checks read and statuses read (verify and promote read head checks), contents write (branches, pack commits, evidence images, refs), issues write (claims, labels, compliance issue), pull_requests write (open, update, auto-merge, merge), workflows write (the pack ships std-gate.yml), metadata read (always).",
+  "name": "$app_name",
+  "url": "https://github.com/$org",
+  "description": "Standards sync, credential expiry sentinel and agent launcher for $org.",
+  "public": false,
+  "default_permissions": {
+    "actions": "write",
+    "checks": "read",
+    "contents": "write",
+    "issues": "write",
+    "metadata": "read",
+    "pull_requests": "write",
+    "statuses": "read",
+    "workflows": "write"
+  }
+}
