@@ -38,8 +38,11 @@ export function findings(text, where) {
     for (const t of line.toLowerCase().split(/[^a-z0-9]+/)) {
       if (t && TOKENS.has(createHash("sha256").update(t).digest("hex"))) out.push(`${at}: organization name`);
     }
-    for (const m of line.matchAll(new RegExp(`\\b((?:[a-z0-9-]+\\.)+(?:${TLD}))\\b`, "gi"))) {
-      const host = m[1].toLowerCase();
+    // A host is a.b.tld anywhere, or a.tld after a scheme, "@" or a quote (one-dot code such as obj.org is skipped).
+    for (const m of line.matchAll(new RegExp(`(^|[^a-z0-9.-])((?:[a-z0-9-]+\\.)+(?:${TLD}))(?![a-z0-9-])`, "gi"))) {
+      const host = m[2].toLowerCase();
+      const urlish = /(:\/\/|@|["'`])$/.test(line.slice(0, m.index + m[1].length));
+      if (host.split(".").length < 3 && !urlish) continue;
       if (!HOSTS.has(host) && !host.endsWith(".example.com")) out.push(`${at}: host ${host}`);
     }
     for (const [re, what] of RULES) if (re.test(line)) out.push(`${at}: ${what}`);

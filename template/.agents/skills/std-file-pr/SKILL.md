@@ -1,0 +1,20 @@
+---
+name: std-file-pr
+description: Open, file or update a draft pull request over the REST API, or hand off a ready diff when the sandbox cannot reach GitHub. Use for "open a PR", "file the PR", "draft PR", "update PR body".
+---
+
+# File a PR
+
+Title: Conventional Commit in plain language. Body (file outside the repo), per `.github/PULL_REQUEST_TEMPLATE.md`: What, Why with `Closes #N`, Evidence (the `std-evidence` comment, or the command you ran and its result).{pr_model_line}
+
+## With a token (Claude cloud, laptop)
+
+1. `scripts/agent/pr.sh open "<title>" <body-file>` (add `--dry-run` to see the request). It refuses a branch that is not on GitHub, uses REST only (GraphQL is blocked in some sandboxes), reuses the open PR for the branch, and prints the URL only after reading the PR back.
+2. Report that URL. No URL printed means no PR exists.
+
+## Codex cloud (no remote, no token)
+
+1. Commit locally. Write the title on the first line of `.evidence/pr.md`, then the body; leave it uncommitted for the launcher.
+2. End with "diff ready", the branch name and the commit SHA. Never say a PR was opened.
+
+Never mark ready, merge or enable auto-merge yourself.

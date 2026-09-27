@@ -1,0 +1,15 @@
+---
+name: std-autoreview
+description: Review your own diff before filing or landing - self-review checklist, then a read-only cross-model second opinion. Use for "review my diff", "autoreview", "second opinion", "check before PR".
+---
+
+# Review before filing
+
+1. Read `git diff origin/HEAD...HEAD` in full as a reviewer who did not write it. Check:
+   - one concern; no unrelated edits or reformatting;
+   - no plans, notes, scratch, secrets or `.mcp.json`; managed paths untouched;
+   - the proof you named covers the change and you ran it;
+   - error paths, empty inputs and concurrency where they matter.
+2. Second opinion from the other vendor, read-only: in Claude run `codex exec --sandbox read-only "<prompt>"`; in Codex run `claude -p --permission-mode plan "<prompt>"`. Neither logged in: a read-only subagent on another model. Prompt: the acceptance criteria, the diff, and "Find correctness bugs, missed call sites, security problems and tests that cannot fail. Cite file:line. No style nits. Do not edit files."
+3. Verify each finding against the source. Fix real ones; note rejected ones with a reason for the PR body.
+4. Repeat once after substantial fixes, then `scripts/agent/setup.sh --check`.
