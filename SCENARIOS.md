@@ -8,12 +8,12 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 - **`e2e-opt-out-honoured`**: `"e2e": false` in `standards.json` passes with a warning, and re-applying the pack keeps it.
 - **`ui-paths-evidence-required`**: a pull request changing a UI path (markup, styles, components, .docx, .pptx) fails without an accepted evidence comment and passes with one.
 - **`evidence-comment-author-or-app`**: an evidence comment by anyone but the PR author, an app or an overlay-trusted login is rejected (a forged comment once passed).
-- **`evidence-images-pinned-resolving`**: every evidence image must be in this repository at a 40-hex commit and exist there; the PR helper posts images that way and re-posting updates one comment.
+- **`evidence-images-pinned-resolving`**: every evidence image must be in this repository at a 40-hex commit and exist there, as four distinct image files (before and after at 400 and 1280px); the PR helper posts images that way and re-posting updates one comment.
 - **`ui-paths-repo-override`**: `standards.json` `ui_paths` replaces the default globs, and `{ "ignore": [...] }` keeps them while exempting paths (release notes generated upstream once tripped the evidence gate).
 - **`ui-paths-empty-warns`**: an explicit `ui_paths: []` turns the evidence gate off, and `--check` warns naming tracked files the defaults would cover.
 - **`no-evidence-on-main`**: tracked `.evidence/` fails `--check` and `gate`; the PR helper leaves no `.evidence/` on the branch tip after posting.
 
-- **`codex-verdict-required`**: a non-draft PR passes `gate` only when the Codex summary shows the current head as Completed and every Codex thread is resolved; pending or stale fails (after 20 min: "no Codex verdict … the launcher will request one"); drafts, repos without Codex reviews, and the sync's fallback PRs are exempt. Comments and reviews re-run the PR's gate run in place instead of cancelling it.
+- **`codex-verdict-required`**: a non-draft PR passes `gate` only when the Codex summary shows the current head as Completed (after the head's push and any base edit) and every Codex thread is resolved; pending or stale fails (after 20 min: "no Codex verdict … the launcher will request one"); drafts, repos without Codex reviews, and the sync's fallback PRs are exempt. Comments and reviews re-run the PR's gate run in place instead of cancelling it.
 
 ## Promotions (flow `staged`)
 
@@ -31,9 +31,9 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 - **`shared-preview-host-rejected`**: a deploy config claiming an overlay shared preview host fails `--check`, naming the per-Worker pattern.
 - **`claude-md-no-own-content`**: a CLAUDE.md with its own instructions fails; `@AGENTS.md` alone passes in `import-only` mode and fails in `forbid` mode.
 - **`model-defaults-repo-scoped`**: apply writes the Claude and Codex model defaults only where the repository sets none; a repository's own model survives `--check` and re-apply (Tyler's rule: a repo override beats the engine default), and a user-level override only warns.
-- **`apply-no-symlink-writes`**: apply writes and deletes only its own paths inside the repository: it refuses, changing nothing, when a path's parent is a symlink or lies outside the tree; a lock line naming anything outside the pack's managed paths is never deleted; old lock formats are read so retired pack paths are removed (apply once wrote through a symlinked parent).
+- **`apply-no-symlink-writes`**: apply writes and deletes only its own paths inside the repository: it refuses, changing nothing, when a path's parent is a symlink or lies outside the tree; a lock line naming anything outside the pack's managed paths, or traversing out of one with `..`, is never deleted; old lock formats are read so retired pack paths are removed (apply once wrote through a symlinked parent).
 - **`session-hook-single`**: apply keeps the repository's own SessionStart hooks and leaves exactly one `setup.sh --check` hook under matcher `startup|resume`; `--check` fails when the hook sits under another matcher (apply once dropped a repo's hooks with the old group).
-- **`agent-deny-secrets-and-force-push`**: apply writes the deny set (secret reads, `op`, force-push) replacing any repo list, the Codex bypass keys above the first table, and Codex rules that forbid `op` and force-push but allow `--force-with-lease`.
+- **`agent-deny-secrets-and-force-push`**: apply writes the deny set (secret reads, `op`, force-push) replacing any repo list, the Codex bypass keys above the first table, and Codex rules that forbid `op` and force-push but allow `--force-with-lease`; a repository that ignores `.codex/` in any form still commits the engine's Codex files.
 
 ## Pull requests and sync
 

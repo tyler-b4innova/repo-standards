@@ -67,6 +67,9 @@ has "scripts is a symlink" "$out" || why="$why; message: $out"
 R=$(mkrepo); echo keep >"$T/keep.txt"; echo "$(printf '%064d' 0)  ../keep.txt" >>"$R/standards.lock"
 out=$(apply "$R" 2>&1) || why="$why; a foreign lock line made apply fail: $out"
 [ -f "$T/keep.txt" ] || why="$why; deleted a file outside the repo"
+R=$(mkrepo); echo mine >"$R/victim"; echo "$(printf '%064d' 0)  scripts/agent/../../victim" >>"$R/standards.lock"
+out=$(apply "$R" 2>&1) || why="$why; a traversing lock line made apply fail: $out"
+[ -f "$R/victim" ] || why="$why; a lock line through a managed prefix deleted a repo file"
 # an older pack's lock (`sha256 <hash> <path>` lines and `key value` headers): retired paths go, nothing else does
 R=$(mkrepo); mkdir -p "$R/scripts/agent" && echo old >"$R/scripts/agent/recall" && echo mine >"$R/example"
 printf '# standards.lock\npack example\nversion 0.0.9\nsha256 %064d scripts/agent/recall\n' 0 >"$R/standards.lock"
@@ -133,8 +136,11 @@ if codex --version >/dev/null 2>&1; then
   pol() { codex execpolicy check --rules "$R/.codex/rules/std.rules" -- "$@" 2>/dev/null | node -e 'console.log(JSON.parse(require("fs").readFileSync(0,"utf8")).decision||"allow")'; }
   rules="$(pol op read x) $(pol git push --force origin x) $(pol git push -f origin x) $(pol git push --force-with-lease origin x) $(pol git push origin x)"
 fi
-if [ "$deny" = true ] && [ "$top" = true ] && [ -f "$R/.codex/rules/std.rules" ] && { [ "$rules" = skipped ] || [ "$rules" = "forbidden forbidden forbidden allow allow" ]; }
-then ok agent-deny-secrets-and-force-push; else fail agent-deny-secrets-and-force-push "deny=$deny top=$top rules=$rules"; fi
+# a repo that ignores .codex/ (any form) still commits the engine's Codex files
+R2=$(mktemp -d "$T/r.XXXXXX"); git -C "$R2" init -q -b main; echo '**/.codex/' > "$R2/.gitignore"; apply "$R2" >/dev/null && commit "$R2" init
+tracked=$(git -C "$R2" ls-files .codex | tr '\n' ' ')
+if [ "$deny" = true ] && [ "$top" = true ] && [ -f "$R/.codex/rules/std.rules" ] && { [ "$rules" = skipped ] || [ "$rules" = "forbidden forbidden forbidden allow allow" ]; } && [ "$tracked" = ".codex/config.toml .codex/rules/std.rules " ]
+then ok agent-deny-secrets-and-force-push; else fail agent-deny-secrets-and-force-push "deny=$deny top=$top rules=$rules tracked=$tracked"; fi
 # a commented-out bypass key does not count
 R=$(mkrepo); sed -i.bak 's/^approval_policy = .*/# approval_policy = "never"\
 approval_policy = "on-request"/' "$R/.codex/config.toml" && rm "$R/.codex/config.toml.bak"
