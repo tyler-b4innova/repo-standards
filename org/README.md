@@ -10,22 +10,21 @@ One ruleset set, one `flow` property and one App definition for every organizati
 | staged staging | `flow=staged`: `staging` | PR (squash only), `gate`, no deletion, no force-push |
 | push hygiene | every repo | no private env files, keys or tfvars, plus `extra_restricted_paths`; files up to `max_file_size_mb` |
 
-A staged repo's default branch is `staging`; work squash-merges there and is promoted to `main` with a merge commit. A repo whose work lands on `main` is `direct`. `gate` is not strict (merge-commit promotions leave `staging` behind `main`). Bypass is the org App only, mode `always`, for pack sync; org admins do not bypass. `apply.mjs` owns every organization-level ruleset: an unlisted one is deleted, and one with the same target and conditions is renamed in place.
+A staged repo's default branch is `staging`; work squash-merges there and is promoted to `main` with a merge commit. A repo whose work lands on `main` is `direct`. `gate` is not strict (merge-commit promotions leave `staging` behind `main`). Bypass: the org App `always` (it fast-forwards gated pack commits), org admins `pull_request` only, because local agent sessions run on an admin's `gh` login and `always` would let them push or force-push to protected branches; an admin can still merge a PR past a failing requirement as break-glass. Push rulesets refuse `pull_request` mode, so push hygiene has the App alone. `apply.mjs` owns every organization-level ruleset: an unlisted one is deleted, and one with the same target and conditions is renamed in place.
 
 ```sh
 node org/apply.mjs --overlay org.json --dry-run    # diff against the live org; only GETs
 node org/apply.mjs --overlay org.json              # property, repo flows, create/update, deletes last
-node org/apply.mjs create-app --overlay org.json   # writes the one-click manifest page and prints how to open it
-node org/apply.mjs create-app --overlay org.json --code <code> [--key-file <path>]
+node org/apply.mjs create-app --overlay org.json   # prints the one-click App registration link
 ```
 
-`create-app --code` stores the private key as the standards repo secret (the overlay's `app_key_secret` under `sync`) through `gh secret set` stdin and never prints it; `--key-file` also writes it with mode 600 for the launcher host.
+`create-app` prints GitHub's URL-parameter registration link, prefilled from `app-manifest.json` (webhook off). After creating the App, the owner generates a private key, stores it as the standards repo secret, installs the App on all repositories, and sets `org_admin.app.id` and `.slug`. GitHub has no API to change an existing App's permissions; an owner edits them in the App's settings and accepts the change on the installation.
 
 Overlay:
 
 ```json
 "org_admin": {
-  "app": { "id": 0, "slug": "<app slug>", "name": "<new App name>", "issued_var": "APP_KEY_ISSUED" },
+  "app": { "id": 0, "slug": "<app slug>", "name": "<App name>" },
   "staged": ["<repo>"],
   "review_thread_resolution": false,
   "extra_checks": { "staged_main": [] },

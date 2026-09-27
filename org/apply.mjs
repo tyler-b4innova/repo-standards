@@ -2,17 +2,12 @@
 // org-apply: make an organization's rulesets and `flow` property match org/rulesets.json, and create the org App.
 //   org-apply --overlay <org.json> --dry-run        print the diff against the live org; sends only GETs
 //   org-apply --overlay <org.json>                  apply it: property, repo flows, create/update rulesets, then delete unlisted ones
-//   org-apply create-app --overlay <org.json>       write the one-click App manifest page and print how to open it
-//   org-apply create-app --overlay <org.json> --code <code> [--key-file <path>]
-//                                                   finish: store the key and client id in the standards repo; print id and slug
+//   org-apply create-app --overlay <org.json>       print the one-click link that registers the org App
 // Run by an org admin with their own gh login (GH_TOKEN, or `gh auth token`).
 import { execFileSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { API, client } from "../lib/sync.mjs";
+import { client } from "../lib/sync.mjs";
 
 const DEF = JSON.parse(readFileSync(new URL("./rulesets.json", import.meta.url), "utf8"));
 const MANIFEST = JSON.parse(readFileSync(new URL("./app-manifest.json", import.meta.url), "utf8"));
@@ -39,11 +34,16 @@ export function render(overlay) {
     if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fill(x)]));
     return v;
   };
-  const bypass = [{ actor_id: oa.app.id, actor_type: "Integration", bypass_mode: "always" }];
+  // Org admins bypass only through a PR (break-glass merge): local agent sessions run on an admin's
+  // gh login, and "always" would let them push or force-push to protected branches. Push rulesets
+  // refuse the pull_request mode, so there the App alone bypasses.
+  const app = { actor_id: oa.app.id, actor_type: "Integration", bypass_mode: "always" };
+  const admin = { actor_id: null, actor_type: "OrganizationAdmin", bypass_mode: "pull_request" };
+  const bypass = (r) => (r.target === "push" ? [app] : [app, admin]);
   const prDefaults = { required_review_thread_resolution: vars.review_thread_resolution };
   return {
     property: DEF.property,
-    rulesets: DEF.rulesets.map((r) => canon({ ...fill(r), enforcement: "active", bypass_actors: bypass }, prDefaults)),
+    rulesets: DEF.rulesets.map((r) => canon({ ...fill(r), enforcement: "active", bypass_actors: bypass(r) }, prDefaults)),
   };
 }
 
@@ -80,11 +80,16 @@ export function canon(r, prDefaults = {}) {
     }
     rules[type] = q;
   }
-  const bypass = (r.bypass_actors ?? []).map((b) => ({ actor_id: b.actor_id ?? null, actor_type: b.actor_type, bypass_mode: b.bypass_mode }));
+  // GitHub reads an org-admin actor back with actor_id null.
+  const bypass = (r.bypass_actors ?? []).map((b) => ({ actor_id: b.actor_type === "OrganizationAdmin" ? null : b.actor_id, actor_type: b.actor_type, bypass_mode: b.bypass_mode }));
   return { name: r.name, target: r.target, enforcement: r.enforcement, bypass_actors: sorted(bypass), conditions: cond, rules };
 }
 
-const toApi = (c) => ({ ...c, rules: Object.entries(c.rules).map(([type, p]) => (Object.keys(p).length ? { type, parameters: p } : { type })) });
+const toApi = (c) => ({
+  ...c,
+  bypass_actors: c.bypass_actors.map((b) => (b.actor_type === "OrganizationAdmin" ? { ...b, actor_id: 1 } : b)),
+  rules: Object.entries(c.rules).map(([type, p]) => (Object.keys(p).length ? { type, parameters: p } : { type })),
+});
 
 // Leaf-level differences between two canonical objects, as "path: old -> new" lines.
 function fieldDiff(a, b, path = "") {
@@ -178,52 +183,36 @@ export async function reconcile({ overlay, dryRun }) {
 export function manifest(overlay) {
   const oa = overlay.org_admin ?? {};
   if (!oa.app?.name) throw new Error("overlay org_admin.app.name is required to create the App");
-  const vars = { $app_name: oa.app.name, $org: overlay.org, $standards_repo: overlay.standards_repo };
+  const vars = { $app_name: oa.app.name, $org: overlay.org };
   const out = JSON.parse(JSON.stringify(MANIFEST, (k, v) => (typeof v === "string" ? v.replace(/\$[a-z_]+/g, (m) => vars[m] ?? m) : v)));
   delete out.$comment;
   return out;
 }
 
-export async function createApp({ overlay, code, keyFile }) {
+// GitHub's URL-parameter registration: one link, opened by an org owner, prefilled with the manifest.
+export function appLink(overlay) {
   const m = manifest(overlay);
-  if (!code) {
-    const state = randomBytes(8).toString("hex");
-    const esc = (s) => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
-    const file = join(mkdtempSync(join(tmpdir(), "org-app-")), "create-app.html");
-    writeFileSync(file, `<!doctype html><meta charset="utf-8"><title>Create ${esc(m.name)}</title>
-<form id="f" method="post" action="https://github.com/organizations/${encodeURIComponent(overlay.org)}/settings/apps/new?state=${state}">
-<input type="hidden" name="manifest" value="${esc(JSON.stringify(m))}"><button>Create ${esc(m.name)} on GitHub</button></form>
-<script>document.getElementById("f").submit()</script>\n`);
-    console.log(`App manifest page: ${file}\nOpen it in a browser signed in as an owner of ${overlay.org}:\n  open "${file}"`);
-    console.log(`GitHub shows "Create GitHub App for ${overlay.org}". After you confirm, it redirects to https://github.com/${overlay.standards_repo}?code=...&state=${state}`);
-    console.log(`Within an hour, finish with:\n  org-apply create-app --overlay <org.json> --code <code from that address>`);
+  const q = new URLSearchParams({ name: m.name, url: m.url, description: m.description, public: String(m.public), webhook_active: "false", ...m.default_permissions });
+  return `https://github.com/organizations/${encodeURIComponent(overlay.org)}/settings/apps/new?${q}`;
+}
+
+export async function run({ overlay, dryRun, cmd = "reconcile" }) {
+  if (cmd === "create-app") {
+    console.log(`Open as an owner of ${overlay.org}, check the prefilled form, and press "Create GitHub App":\n${appLink(overlay)}`);
+    console.log(`Then: generate a private key, store it as the standards repo secret, install the App on all repositories, and set org_admin.app.id and .slug in the overlay.`);
     return;
   }
-  const res = await fetch(`${API()}/app-manifests/${encodeURIComponent(code)}/conversions`, { method: "POST", headers: { Accept: "application/vnd.github+json" } });
-  const text = await res.text();
-  if (!res.ok) throw new Error(`manifest conversion: ${res.status} ${text.slice(0, 200)}`);
-  const app = JSON.parse(text);
-  if (app.owner?.login && app.owner.login.toLowerCase() !== overlay.org.toLowerCase()) throw new Error(`the App belongs to ${app.owner.login}, not ${overlay.org}; nothing stored`);
-  const repo = overlay.standards_repo;
-  const run = (args, input) => execFileSync("gh", args, { input, stdio: ["pipe", "ignore", "inherit"] });
-  run(["secret", "set", overlay.sync?.app_key_secret || "STANDARDS_APP_PRIVATE_KEY", "-R", repo], app.pem);
-  run(["variable", "set", overlay.sync?.app_client_id_var || "STANDARDS_APP_CLIENT_ID", "-R", repo, "--body", app.client_id]);
-  if (overlay.org_admin?.app?.issued_var) run(["variable", "set", overlay.org_admin.app.issued_var, "-R", repo, "--body", new Date().toISOString().slice(0, 10)]);
-  if (keyFile) writeFileSync(keyFile, app.pem, { mode: 0o600 });
-  console.log(`created App ${app.slug} (id ${app.id}); private key stored as a secret in ${repo}${keyFile ? ` and in ${keyFile} (mode 600)` : ""}; client id stored as a variable.`);
-  console.log(`Next: install it on all repositories: https://github.com/organizations/${overlay.org}/settings/apps/${app.slug}/installations`);
-  console.log(`Then set in the overlay: "org_admin": { "app": { "id": ${app.id}, "slug": "${app.slug}" } } and run org-apply.`);
+  return reconcile({ overlay, dryRun });
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const { values: o, positionals } = parseArgs({ args: process.argv.slice(2), allowPositionals: true, options: { overlay: { type: "string" }, "dry-run": { type: "boolean" }, code: { type: "string" }, "key-file": { type: "string" } } });
+  const { values: o, positionals } = parseArgs({ args: process.argv.slice(2), allowPositionals: true, options: { overlay: { type: "string" }, "dry-run": { type: "boolean" } } });
   const cmd = positionals[0] ?? "reconcile";
   try {
     if (!o.overlay) throw new Error("--overlay <org.json> is required");
     const overlay = JSON.parse(readFileSync(o.overlay, "utf8"));
-    if (cmd === "create-app") await createApp({ overlay, code: o.code, keyFile: o["key-file"] });
-    else if (cmd === "reconcile") await reconcile({ overlay, dryRun: o["dry-run"] });
-    else throw new Error(`unknown command ${cmd}`);
+    if (!["create-app", "reconcile"].includes(cmd)) throw new Error(`unknown command ${cmd}`);
+    await run({ overlay, dryRun: o["dry-run"], cmd });
   } catch (e) {
     console.error(`org-apply: ${e.message}`);
     process.exit(1);

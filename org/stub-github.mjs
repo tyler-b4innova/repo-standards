@@ -2,7 +2,7 @@
 // Stand-in for the GitHub org endpoints org-apply uses. It answers the way GitHub does: rulesets come back
 // with ids, read-only fields, `actor_id: null` for org admins, empty ignored_file_paths and rules reordered.
 // Usage: node stub-github.mjs <port-file> <log-file> <state.json>
-// state: { org, repos: [{name, archived}], property: {...}|null, values: {repo: flow}, rulesets: [...], app: {...} }
+// state: { org, repos: [{name, archived}], property: {...}|null, values: {repo: flow}, rulesets: [...] }
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 
@@ -25,10 +25,10 @@ createServer((req, res) => {
     appendFileSync(logFile, JSON.stringify({ method: req.method, path: p, body }) + "\n");
     const send = (status, data) => { res.writeHead(status, { "Content-Type": "application/json" }); res.end(data === undefined ? "" : JSON.stringify(data)); };
     const save = () => writeFileSync(stateFile, JSON.stringify(st, null, 2));
-    let m;
-    if ((m = p.match(/^\/app-manifests\/([^/]+)\/conversions$/)) && req.method === "POST") {
-      return m[1] === st.app?.code ? send(201, st.app.result) : send(404, { message: "Not Found" });
+    if (body?.target === "push" && body.bypass_actors?.some((b) => b.bypass_mode === "pull_request")) {
+      return send(422, { message: "Validation Failed", errors: ["bypass mode must not be 'PULL_REQUEST' for push rulesets"] });
     }
+    let m;
     if (!(m = p.match(/^\/orgs\/([^/]+)\/(.+)$/)) || m[1] !== st.org) return send(404, { message: `stub: no route ${p}` });
     const rest = m[2];
     if (rest === "repos") return send(200, st.repos.map((r) => ({ name: r.name, full_name: `${st.org}/${r.name}`, archived: !!r.archived })));
