@@ -9,7 +9,7 @@ Title: Conventional Commit in plain language. Body (file outside the repo), per 
 
 ## With a token (Claude cloud, laptop)
 
-1. `scripts/agent/pr.sh open "<title>" <body-file>` (add `--dry-run` to see the request). It refuses a branch that is not on GitHub, uses REST only (GraphQL is blocked in some sandboxes), reuses the open PR for the branch, and prints the URL only after reading the PR back.
+1. Push first (`git push -u origin HEAD`), then `scripts/agent/pr.sh open "<title>" <body-file>` (add `--dry-run` to see the request). It refuses a branch that is not on GitHub or not pushed up to HEAD, uses REST only (GraphQL is blocked in some sandboxes), reuses the open PR for the branch, and prints the URL only after reading the PR back.
 2. Report that URL. No URL printed means no PR exists.
 
 ## Codex cloud (no remote, no token)

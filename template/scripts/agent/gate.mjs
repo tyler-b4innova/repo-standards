@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Steps of the `gate` job (std-gate.yml), also runnable locally:
-//   classify [base] | install | run <script>... | e2e | evidence | secrets
+//   classify [base] | install | run <script>... | e2e | evidence | codex | secrets
 // UI paths: pack.json defaults; standards.json "ui_paths" as a list replaces the include globs,
 // as {include, ignore} replaces include and adds ignore. e2e: none fails unless "e2e": false.
 // evidence: PR UI changes need a comment by the author or an app whose .evidence/ images exist at a pinned SHA.
@@ -10,7 +10,7 @@ import { existsSync as has, mkdtempSync, readdirSync as ls, readFileSync as rd, 
 import { tmpdir } from "node:os";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
-const SUBS = ["classify", "install", "run", "e2e", "evidence", "secrets"], ok = SUBS.includes(cmd);
+const SUBS = ["classify", "install", "run", "e2e", "evidence", "codex", "secrets"], ok = SUBS.includes(cmd);
 if (!ok || args.includes("--help")) {
   console.log(rd(new URL(import.meta.url), "utf8").split("\n").slice(1, 6).map((l) => l.slice(3)).join("\n"));
   process.exit(ok || cmd === "--help" ? 0 : 2);
@@ -19,6 +19,8 @@ const git = (...a) => ex("git", a, { encoding: "utf8", stdio: "pipe" });
 try { process.chdir(git("rev-parse", "--show-toplevel").trim()); } catch {}
 const json = (f) => { try { return JSON.parse(rd(f, "utf8")); } catch { return null; } };
 const pkg = json("package.json"), std = json("standards.json") ?? {};
+const fail0 = (msg, fix) => { console.log(`::error::${msg}\nfix: ${fix}`); process.exit(1); };
+if (has("package.json") && !pkg && ["install", "run", "e2e"].includes(cmd)) fail0("package.json is not valid JSON", "fix package.json");
 const pm = has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : "npm";
 const fail = (msg, fix) => { console.log(`::error::${msg}\nfix: ${fix}`); process.exit(1); };
 const sh = (c, a) => spawnSync(c, a, { stdio: "inherit" }).status ?? 1;
@@ -32,9 +34,12 @@ function ui(files) {
 }
 
 if (cmd === "classify") {
-  const b = args[0] ?? "origin/HEAD";
+  // Codex cloud has no origin: fall back to the upstream, then to HEAD itself (uncommitted and untracked files only).
   let base;
-  try { base = git("merge-base", b, "HEAD").trim(); } catch { fail(`base ${b} not found`, "git fetch origin, or pass a base ref"); }
+  for (const b of args[0] ? [args[0]] : ["origin/HEAD", "@{upstream}", "HEAD"]) {
+    try { base = git("merge-base", b, "HEAD").trim(); break; } catch {}
+  }
+  if (!base) fail(`base ${args[0]} not found`, "git fetch origin, or pass a base ref");
   const files = git("diff", "--name-only", "-z", base).split("\0").concat(git("ls-files", "-oz", "--exclude-standard").split("\0"));
   console.log(ui([...new Set(files.filter(Boolean))]).join("\n") || "no UI paths changed");
 } else if (cmd === "install") {
@@ -52,9 +57,11 @@ if (cmd === "classify") {
   if (!s) console.log(`notice: no ${args.join(" or ")} script in package.json; skipped`);
   else { console.log(`run: ${pm} run ${s}`); must(pm, ["run", s]); }
 } else if (cmd === "e2e") {
+  // standards.json "e2e": "<command>" names the suite; else a script, a tests/e2e or e2e dir, or a root Playwright config.
   const script = ["test:e2e", "e2e"].find((s) => pkg?.scripts?.[s]), dir = ["tests/e2e", "e2e"].find(has);
-  const pw = [".", dir].some((d) => d && ls(d).some((f) => /^playwright\.config\.[cm]?[jt]s$/.test(f)));
-  const run = script ? [pm, ["run", script]] : dir && pw ? ["npx", ["playwright", "test", dir]]
+  const rootPw = ls(".").some((f) => /^playwright\.config\.[cm]?[jt]s$/.test(f)), pw = rootPw || (dir && ls(dir).some((f) => /^playwright\.config\.[cm]?[jt]s$/.test(f)));
+  const run = typeof std.e2e === "string" ? ["bash", ["-c", std.e2e]] : script ? [pm, ["run", script]] : dir && pw ? ["npx", ["playwright", "test", dir]]
+    : rootPw ? ["npx", ["playwright", "test"]]
     : dir && ls(dir, { recursive: true }).some((f) => /\.test\.[cm]?js$/.test(f)) ? ["node", ["--test", `${dir}/**/*.test.*js`]] : null;
   if (run) { console.log(`e2e: ${run[0]} ${run[1].map((a) => (a.includes("*") ? `"${a}"` : a)).join(" ")}`); must(...run); }
   else if (std.e2e === false) console.log('::warning::no e2e suite; standards.json sets "e2e": false (docs and static repos only)');
@@ -116,6 +123,10 @@ if (cmd === "classify") {
   const trust = (c) => (trusted.includes("pr_author") && c.user?.login === pr.user.login) || (trusted.includes("app") && c.performed_via_github_app) || trusted.includes(c.user?.login);
   const esc = (s) => s.replace(/[.]/g, "\\.");
   const pin = new RegExp(`^${esc(env.GITHUB_SERVER_URL || "https://github.com")}/${esc(repo)}/(?:blob|raw)/([0-9a-f]{40})/(\\.evidence/[^?#]+)(?:[?#].*)?$`, "i");
+  // Accepted: a trusted comment whose images are all in this repo at a commit in the PR head's history, covering
+  // 400 and 1280px, with no later first-parent commit touching a UI path (evidence goes stale when the UI changes).
+  const head = live.head.sha, inHead = (c) => { try { git("merge-base", "--is-ancestor", c, head); return true; } catch { return false; } };
+  const later = (c) => { try { return git("log", "--first-parent", "--format=%H", `${c}..${head}`).split("\n").filter(Boolean); } catch { return []; } };
   const bad = [];
   for (const c of await list(`issues/${pr.number}/comments`)) {
     const urls = [...new Set(c.body?.match(/https?:\/\/[^\s)"'<>]*\/\.evidence\/[^\s)"'<>]*/g) ?? [])];
@@ -127,10 +138,58 @@ if (cmd === "classify") {
       const m = u.match(pin);
       if (!m || (await fetch(`${API}/contents/${m[2]}?ref=${m[1]}`, { method: "HEAD", headers: { ...auth, Accept: "application/vnd.github.raw+json" } })).status !== 200) miss.push(u);
     }
-    if (!miss.length) { console.log(`evidence: accepted ${c.html_url}`); process.exit(0); }
-    bad.push(`${who}: unresolved (need this repo, a 40-hex SHA, the file):\n    ${miss.join("\n    ")}`);
+    if (miss.length) { bad.push(`${who}: unresolved (need this repo, a 40-hex SHA, the file):\n    ${miss.join("\n    ")}`); continue; }
+    const shas = [...new Set(urls.map((u) => u.match(pin)[1]))], names = urls.map((u) => decodeURIComponent(u.match(pin)[2]));
+    if (!names.some((n) => /(^|[^0-9])400\.[a-z]+$/i.test(n)) || !names.some((n) => /(^|[^0-9])1280\.[a-z]+$/i.test(n))) { bad.push(`${who}: needs captures at 400 and 1280px`); continue; }
+    const outside = shas.filter((x) => !inHead(x));
+    if (outside.length) { bad.push(`${who}: evidence commit ${outside[0].slice(0, 7)} is not in this PR's history`); continue; }
+    const stale = shas.flatMap(later).find((x) => ui(git("diff-tree", "--no-commit-id", "--name-only", "-r", x).split("\n").filter((f) => f && !f.startsWith(".evidence/"))).length);
+    if (stale) { bad.push(`${who}: UI changed after the evidence (commit ${stale.slice(0, 7)}); capture again`); continue; }
+    console.log(`evidence: accepted ${c.html_url}`);
+    process.exit(0);
   }
   fail(`UI paths changed but no accepted evidence comment${bad.length ? `; rejected:\n  ${bad.join("\n  ")}` : ""}`, "PR author or an app: scripts/agent/pr.sh evidence (skill std-evidence)");
+} else if (cmd === "codex") {
+  // Codex verdict on the current head: its summary comment shows this head's short SHA as Completed and every
+  // Codex review thread is resolved. Drafts are not evaluated; repos without Codex reviews and the sync's
+  // fallback PRs are exempt. No verdict 20 min after the head was pushed or marked ready fails for the launcher.
+  const event = env.GITHUB_EVENT_PATH ? json(env.GITHUB_EVENT_PATH) ?? {} : {};
+  if (!event.pull_request) { console.log("codex: not a pull request"); process.exit(0); }
+  const pk = json("scripts/agent/pack.json") ?? {};
+  if (std.codex_review === false || pk.codex_review === false) { console.log("codex: review is off for this repo"); process.exit(0); }
+  const repo = env.GITHUB_REPOSITORY, base = env.GITHUB_API_URL || "https://api.github.com", API = `${base}/repos/${repo}`;
+  const auth = { Authorization: `Bearer ${env.GH_TOKEN || env.GITHUB_TOKEN}`, Accept: "application/vnd.github+json" };
+  const get = async (p) => { const r = await fetch(`${API}${p}`, { headers: auth }); if (!r.ok) fail(`GET ${p}: ${r.status}`, "grant the job pull-requests: read"); return r.json(); };
+  const n = event.pull_request.number, pr = await get(`/pulls/${n}`), head = pr.head.sha;
+  if (pr.draft) { console.log("codex: draft, not evaluated"); process.exit(0); }
+  if (pk.sync_app_login && pr.user?.login === pk.sync_app_login && /^standards\/v\d+\.\d+\.\d+$/.test(pr.head.ref)) { console.log("codex: pack-sync fallback PR, exempt"); process.exit(0); }
+  const bot = (u) => /codex/i.test(u?.login ?? "") && u?.type === "Bot", MARK = "<!-- codex-pull-request-review-summary -->";
+  const summary = (await get(`/issues/${n}/comments?per_page=100`)).filter((c) => bot(c.user) && c.body?.includes(MARK)).at(-1);
+  const row = summary?.body.match(/\|[^|\n]*Code Review[^|\n]*\|([^|\n]*)\|\s*`([0-9a-f]{7,40})`\s*\|/i);
+  const reviewed = (row && head.startsWith(row[2]) && /Completed/i.test(row[1])) || (!summary && (await get(`/pulls/${n}/reviews?per_page=100`)).some((r) => bot(r.user) && r.commit_id === head));
+  if (!summary && !reviewed) {
+    let seen = false;
+    for (const p of (await get(`/pulls?state=all&per_page=6`)).filter((p) => p.number !== n))
+      if ((await get(`/issues/${p.number}/comments?per_page=100`)).some((c) => bot(c.user) && c.body?.includes(MARK))) { seen = true; break; }
+    if (!seen) { console.log("::notice::codex: no Codex reviews on this repo's recent PRs; not required"); process.exit(0); }
+  }
+  if (reviewed) {
+    const q = `query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{isResolved comments(first:1){nodes{author{login} url}}}}}}}`;
+    const gql = env.GITHUB_GRAPHQL_URL || (base.endsWith("/api/v3") ? base.replace(/\/v3$/, "/graphql") : `${base}/graphql`);
+    const [o, r] = repo.split("/"), res = await fetch(gql, { method: "POST", headers: { ...auth, "Content-Type": "application/json" }, body: JSON.stringify({ query: q, variables: { o, r, n } }) });
+    const threads = (await res.json())?.data?.repository?.pullRequest?.reviewThreads?.nodes;
+    if (!threads) fail("codex: could not read review threads", "re-run gate");
+    const open = threads.filter((t) => !t.isResolved && /codex/i.test(t.comments.nodes[0]?.author?.login ?? ""));
+    if (open.length) fail(`codex: ${open.length} unresolved Codex thread(s): ${open.slice(0, 3).map((t) => t.comments.nodes[0].url).join(" ")}`, "fix each finding or reply with the reason and resolve the thread, then comment on the PR to re-run gate");
+    console.log(`codex: verdict on ${head.slice(0, 7)}, no open findings`);
+    process.exit(0);
+  }
+  // Codex skips drafts, so the clock starts at the later of the head's push and the PR becoming ready.
+  const ready = (await get(`/issues/${n}/timeline?per_page=100`)).filter((e) => e.event === "ready_for_review").map((e) => Date.parse(e.created_at));
+  const pushed = Date.parse((await get(`/commits/${head}`)).commit.committer.date), since = Math.max(pushed, Date.parse(pr.created_at), ...ready);
+  const mins = Math.floor((Date.now() - since) / 60000);
+  if (mins < 20) fail(`codex: awaiting a Codex verdict for ${head.slice(0, 7)} (${mins} min)`, "gate re-runs when the Codex summary updates");
+  fail(`codex: no Codex verdict for ${head} — the launcher will request one`, "the launcher asks Codex to review; gate re-runs on its summary");
 } else if (cmd === "secrets") {
   const V = "8.30.1", SUM = "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb", local = env.GATE_GITLEAKS_ARCHIVE;
   const linux = process.platform === "linux" && process.arch === "x64";
@@ -146,8 +205,13 @@ if (cmd === "classify") {
   if (got !== SUM) fail(`gitleaks archive checksum mismatch: got ${got}, want ${SUM}`, "do not run it; re-run, or pin a new version and checksum in the engine");
   if (!linux) notLinux();
   must("tar", ["-xzf", tgz, "-C", dir, "gitleaks"]);
-  const r = env.RANGE;
-  console.log(`secrets: gitleaks ${r ? `git --log-opts=${r}` : "dir ."}`);
-  if (sh(`${dir}/gitleaks`, [...(r ? ["git", `--log-opts=${r}`] : ["dir"]), "--redact", "--no-banner", "-v", "."]))
+  // Always scan commits: PR base..head, merge group base..head, push before..sha (a new branch or an unreachable
+  // before scans all of sha's history); RANGE overrides.
+  const ev = env.GITHUB_EVENT_PATH ? json(env.GITHUB_EVENT_PATH) ?? {} : {}, reach = (x) => { try { git("cat-file", "-e", `${x}^{commit}`); return true; } catch { return false; } };
+  const pair = ev.pull_request ? [ev.pull_request.base.sha, ev.pull_request.head.sha] : ev.merge_group ? [ev.merge_group.base_sha, ev.merge_group.head_sha]
+    : ev.after ? [ev.before, ev.after] : [null, env.GITHUB_SHA || "HEAD"];
+  const r = env.RANGE || (pair[0] && !/^0+$/.test(pair[0]) && reach(pair[0]) ? `${pair[0]}..${pair[1]}` : pair[1]);
+  console.log(`secrets: gitleaks git --log-opts=${r}`);
+  if (sh(`${dir}/gitleaks`, ["git", `--log-opts=${r}`, "--redact", "--no-banner", "-v", "."]))
     fail("gitleaks found a secret (redacted above)", "rotate it and remove it from the branch history; false positive: its fingerprint in .gitleaksignore");
 }

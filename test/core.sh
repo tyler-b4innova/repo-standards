@@ -52,6 +52,42 @@ fix=$(check "$R" | sed -n 's/.*| fix: \(git checkout [^ ]* -- \.agents\/skills\/
 (cd "$R" && eval "$fix") 2>/dev/null; out=$(check "$R"); st=$?
 if [ -n "$fix" ] && [ $st -eq 0 ] && has "v0.1.0" "$out" && ! grep -q "newer rule" "$R/.agents/skills/std-babysit/SKILL.md"; then ok managed-drift-detected; else fail managed-drift-detected "fix=$fix $out"; fi
 
+# the lock header must name the pack, version and profile standards.json claims (a profile swap once went unnoticed)
+R=$(mkrepo); jset "$R/standards.json" 'o.profile="client"'; a=$(check "$R"); sa=$?
+gc -C "$R" checkout -q -- standards.json; sed -i.bak 1d "$R/standards.lock" && rm "$R/standards.lock.bak"; b=$(check "$R"); sb=$?
+if [ $sa -eq 1 ] && has "standards.lock says profile internal, standards.json client" "$a" && [ $sb -eq 1 ] && has "standards.lock says pack (no header)" "$b"
+then ok managed-drift-detected; else fail managed-drift-detected "$sa $a | $sb $b"; fi
+
+# apply never writes or deletes through a symlink or outside the checkout
+why=""
+R=$(mkrepo); mkdir "$T/outside"; rm -rf "$R/scripts" && ln -s "$T/outside" "$R/scripts"
+out=$(apply "$R" 2>&1) && why="symlinked scripts/ accepted"
+has "scripts is a symlink" "$out" || why="$why; message: $out"
+[ -z "$(ls -A "$T/outside")" ] || why="$why; wrote through the link: $(ls -A "$T/outside")"
+R=$(mkrepo); echo keep >"$T/keep.txt"; echo "$(printf '%064d' 0)  ../keep.txt" >>"$R/standards.lock"
+out=$(apply "$R" 2>&1) && why="$why; lock path outside the repo accepted"
+[ -f "$T/keep.txt" ] || why="$why; deleted a file outside the repo"
+# an older pack's lock (`sha256 <hash> <path>` lines and `key value` headers): retired paths go, nothing else does
+R=$(mkrepo); mkdir -p "$R/scripts/agent" && echo old >"$R/scripts/agent/recall" && echo mine >"$R/example"
+printf '# standards.lock\npack example\nversion 0.0.9\nsha256 %064d scripts/agent/recall\n' 0 >"$R/standards.lock"
+apply "$R" >/dev/null || why="$why; old-format lock refused"
+[ ! -e "$R/scripts/agent/recall" ] || why="$why; retired path from an old-format lock kept"
+[ -f "$R/example" ] || why="$why; a lock header line deleted a repo file"
+if [ -z "$why" ]; then ok apply-no-symlink-writes; else fail apply-no-symlink-writes "$why"; fi
+
+# the SessionStart hook: once, under startup|resume, next to the repo's own hooks
+why=""
+R=$(mkrepo)
+jset "$R/.claude/settings.json" 'o.hooks.SessionStart=[{matcher:"startup",hooks:[{type:"command",command:"echo warm"},o.hooks.SessionStart[0].hooks[0]]}]'
+commit "$R"; out=$(check "$R") && why="hook under startup only passed"
+has "SessionStart setup.sh --check hook for startup and resume" "$out" || why="$why; check: $out"
+apply "$R" >/dev/null && again=$(apply "$R")
+hooks=$(node -e 'const S=require(process.argv[1]).hooks.SessionStart;console.log(S.map(m=>m.matcher+":"+m.hooks.map(h=>h.command.includes("setup.sh")?"check":h.command).join("+")).join(","))' "$R/.claude/settings.json")
+[ "$hooks" = "startup:echo warm,startup|resume:check" ] || why="$why; hooks after apply: $hooks"
+has "already current" "$again" || why="$why; re-apply not idempotent: $again"
+commit "$R"; out=$(check "$R") || why="$why; check after apply: $out"
+if [ -z "$why" ]; then ok session-hook-single; else fail session-hook-single "$why"; fi
+
 R=$(mkrepo); node -e 'console.log("- " + "x".repeat(3000))' >> "$R/AGENTS.md"
 expect_fail agents-md-max-4096 "$R" "(limit 4096)"
 
@@ -77,10 +113,14 @@ if [ $st -eq 0 ] && has "WARN: ui_paths is []" "$out" && has "src/components/Nav
 
 # ---- agent config (Tyler: repo-scoped model defaults; never read secrets, never force-push)
 R=$(mkrepo); a=$(node -e 'const s=require(process.argv[1]);console.log(s.model,s.env.CLAUDE_CODE_SUBAGENT_MODEL)' "$R/.claude/settings.json"); c=$(cat "$R/.codex/config.toml")
-jset "$R/.claude/settings.json" 'o.model="sonnet"'; b=$(check "$R"); sb=$?; gc -C "$R" checkout -q -- .claude/settings.json
+# a repo's own model choice beats the engine default: --check accepts it and re-applying keeps it
+jset "$R/.claude/settings.json" 'o.model="sonnet"'
+sed -i.bak -e 's/^model = .*/model = "gpt-repo"/' -e 's/^default_subagent_model = .*/default_subagent_model = "gpt-repo-mini"/' "$R/.codex/config.toml" && rm "$R/.codex/config.toml.bak"
+apply "$R" >/dev/null; commit "$R"; b=$(check "$R"); sb=$?
+kept="$(node -e 'console.log(require(process.argv[1]).model)' "$R/.claude/settings.json") $(grep -cE '^(model = "gpt-repo"|default_subagent_model = "gpt-repo-mini")$' "$R/.codex/config.toml")"
 w=$(ANTHROPIC_MODEL=haiku check "$R"); sw=$?
-if [ "$a" = "opus opus" ] && has 'model = "gpt-6-sol"' "$c" && has 'default_subagent_model = "gpt-6-sol"' "$c" && [ $sb -eq 1 ] && has "model or deny keys changed" "$b" && [ $sw -eq 0 ] && has "WARN: shell sets ANTHROPIC_MODEL" "$w"
-then ok model-defaults-repo-scoped; else fail model-defaults-repo-scoped "$a | $sb $b | $sw"; fi
+if [ "$a" = "opus opus" ] && has 'model = "gpt-6-sol"' "$c" && has 'default_subagent_model = "gpt-6-sol"' "$c" && [ $sb -eq 0 ] && [ "$kept" = "sonnet 2" ] && [ $sw -eq 0 ] && has "WARN: shell sets ANTHROPIC_MODEL" "$w"
+then ok model-defaults-repo-scoped; else fail model-defaults-repo-scoped "$a | $sb $b | kept=$kept | $sw"; fi
 
 R=$(mktemp -d "$T/r.XXXXXX"); git -C "$R" init -q -b main; mkdir -p "$R/.claude" "$R/.codex"
 echo '{"permissions":{"deny":["Read(./secrets.txt)"]}}' > "$R/.claude/settings.json"; printf '[agents]\nmax_threads = 2\n' > "$R/.codex/config.toml"
@@ -94,6 +134,10 @@ if command -v codex >/dev/null; then
 fi
 if [ "$deny" = true ] && [ "$top" = true ] && [ -f "$R/.codex/rules/std.rules" ] && { [ "$rules" = skipped ] || [ "$rules" = "forbidden forbidden forbidden allow allow" ]; }
 then ok agent-deny-secrets-and-force-push; else fail agent-deny-secrets-and-force-push "deny=$deny top=$top rules=$rules"; fi
+# a commented-out bypass key does not count
+R=$(mkrepo); sed -i.bak 's/^approval_policy = .*/# approval_policy = "never"\
+approval_policy = "on-request"/' "$R/.codex/config.toml" && rm "$R/.codex/config.toml.bak"
+expect_fail agent-deny-secrets-and-force-push "$R" ".codex/config.toml engine keys changed"
 [ "$rules" != skipped ] || echo "  (codex CLI absent: std.rules decisions not evaluated)"
 
 # ---- pack hygiene

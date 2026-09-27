@@ -12,6 +12,7 @@
     "defaults.json",
     "lib",
     "modules",
+    "org",
     "schema",
     "template"
   ],

@@ -11,3 +11,10 @@ prefix_rule(
     match=["git push --force origin x", "git push -f origin x"],
     not_match=["git push --force-with-lease origin x", "git push origin x"],
 )
+prefix_rule(
+    pattern=["git", "push", "origin", "HEAD", ["--force", "-f"]],
+    decision="forbidden",
+    justification="No force push; --force-with-lease on your own branch is allowed.",
+    match=["git push origin HEAD --force", "git push origin HEAD -f"],
+    not_match=["git push origin HEAD --force-with-lease", "git push origin HEAD"],
+)

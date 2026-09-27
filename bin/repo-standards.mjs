@@ -4,11 +4,13 @@
 //   repo-standards block --overlay <org.json> --profile <p>      print the rendered managed block
 //   repo-standards sync --overlay <org.json> --version X.Y.Z [--repo owner/name]  land the pack on each fleet repo when its gate passes
 //   repo-standards expiry --overlay <org.json>                   credential expiry sentinel
+//   repo-standards org-apply [create-app] --overlay <org.json> [--dry-run]  org rulesets, flow property, App (org/)
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { apply, loadOverlay, renderBlock } from "../lib/engine.mjs";
 
-const [cmd, ...rest] = process.argv.slice(2);
+const [cmd, ...args] = process.argv.slice(2);
+const sub = cmd === "org-apply" && args[0] === "create-app" ? args.shift() : undefined, rest = args;
 const { values: o } = parseArgs({
   args: rest,
   options: {
@@ -16,7 +18,7 @@ const { values: o } = parseArgs({
     dispatch: { type: "string" }, repo: { type: "string" }, "dry-run": { type: "boolean" }, help: { type: "boolean" },
   },
 });
-const usage = () => process.stdout.write(readFileSync(new URL(import.meta.url), "utf8").split("\n").slice(1, 6).map((l) => l.replace(/^\/\/ ?/, "")).join("\n") + "\n");
+const usage = () => process.stdout.write(readFileSync(new URL(import.meta.url), "utf8").split("\n").slice(1, 7).map((l) => l.replace(/^\/\/ ?/, "")).join("\n") + "\n");
 if (!cmd || o.help || cmd === "--help") { usage(); process.exit(cmd ? 0 : 2); }
 if (!o.overlay) { console.error("--overlay <org.json> is required"); process.exit(2); }
 const overlay = loadOverlay(o.overlay);
@@ -30,6 +32,9 @@ try {
   } else if (cmd === "sync" || cmd === "expiry") {
     const { run } = await import(`../lib/${cmd}.mjs`);
     await run({ overlay, repo: o.repo, dryRun: o["dry-run"], version: o.version });
+  } else if (cmd === "org-apply") {
+    const { run } = await import("../org/apply.mjs");
+    await run({ overlay, dryRun: o["dry-run"], cmd: sub ?? "reconcile" });
   } else {
     usage();
     process.exit(2);
