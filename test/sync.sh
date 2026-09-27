@@ -24,6 +24,7 @@ std() { printf '{"pack":"%s","version":"0.1.0","profile":"%s","dispatch":"manual
 seed acme/alpha "$(std example internal)" staging
 seed acme/beta "$(std example client)"
 seed acme/boot
+seed acme/gamma '{"pack":"example","version":"0.1.0","profile":"internal","dispatch":"manual","sensitive":false,"flow":"staged"}'
 seed acme/other "$(std rival internal)"
 seed acme/old "$(std example internal)"
 seed acme/plain
@@ -31,7 +32,7 @@ seed acme/skipme "$(std example internal)"
 seed rival/x "$(std example internal)"
 cat >"$T/stub.json" <<JSON
 { "remotes": "$R",
-  "repos": [{"full_name":"acme/alpha"},{"full_name":"acme/beta"},{"full_name":"acme/boot"},{"full_name":"acme/other"},
+  "repos": [{"full_name":"acme/alpha"},{"full_name":"acme/beta"},{"full_name":"acme/boot"},{"full_name":"acme/gamma"},{"full_name":"acme/other"},
             {"full_name":"acme/old","archived":true},{"full_name":"acme/plain"},{"full_name":"acme/skipme"},{"full_name":"acme/standards"},{"full_name":"rival/x"}],
   "gate": {"acme/beta": "failure", "acme/boot": ["failure", "success"]},
   "move": {"acme/alpha": "standards/v0.2.0"},
@@ -127,6 +128,13 @@ if [ $rc1 -eq 0 ] && [ "$d1" = 1 ] && [ "$a1" != "$a0" ] && [ "$(anc acme/alpha 
   && [ -n "$(printf '%s' "$boot_row1" | grep -F "| landed $(printf '%.7s' "$o1") (gate ")" ] && [ "$(q acme/boot "$prs.length")" = 0 ]; then
   ok sync-lands-direct-when-green
 else fail sync-lands-direct-when-green "rc=$rc1 dispatches=$d1/$d2 a0=$a0 a1=$a1 a2=$a2 moved=$moved heads=$(heads acme/alpha) patch=$patch1 msg=$msg1 rows: $alpha_row1 / $alpha_row2 / boot $do $boot_row1 out: $out1 $out2"; fi
+
+# A staged repository whose default branch is main never takes a direct landing, even with gate green.
+g_main=$(git --git-dir "$R/acme/gamma.git" rev-parse main)
+g_row=$(q acme/standards 's.items.find(i => !i.pull && i.title === "Standards compliance")?.body' | grep '^| acme/gamma ')
+g_prs=$(q acme/gamma 's.items.filter(i => i.pull).length')
+if [ -n "$(printf '%s' "$g_row" | grep 'staged repo defaults to main')" ] && [ "$g_prs" -ge 1 ] && [ "$(git --git-dir "$R/acme/gamma.git" rev-list --count main)" = 1 ]; then ok sync-lands-direct-when-green
+else fail sync-lands-direct-when-green "staged repo on main: row=$g_row prs=$g_prs main=$g_main"; fi
 
 # sync-opens-pr-when-red: beta's gate fails twice (the second after one re-apply), so one PR for a person, no
 # auto-merge; the next release supersedes it; a PR a person closed is not reopened for the same content.

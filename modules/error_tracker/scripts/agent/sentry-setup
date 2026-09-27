@@ -94,7 +94,8 @@ else {
   const made = await gh("POST", `repos/${FILER}/pulls`, { title: `chore: file Sentry project ${repo}`, head: branch, base: main, body: `Adds \`${repo}\` to projects.json (from \`scripts/agent/sentry-setup\`).` });
   step(`mapping PR ${made.html_url}`);
   // Auto-merge is GraphQL-only; report instead of hiding a failure.
-  const gql = process.env.GITHUB_GRAPHQL_URL || `${(process.env.GITHUB_API_URL || "https://api.github.com").replace(/\/$/, "")}/graphql`;
+  const apiBase = (process.env.GITHUB_API_URL || "https://api.github.com").replace(/\/$/, "");
+  const gql = process.env.GITHUB_GRAPHQL_URL || (apiBase.endsWith("/api/v3") ? apiBase.replace(/\/v3$/, "/graphql") : `${apiBase}/graphql`);
   const res = await fetch(gql, { method: "POST", headers: { Authorization: `Bearer ${ghToken}`, "Content-Type": "application/json" },
     body: JSON.stringify({ query: "mutation($id:ID!){enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:SQUASH}){clientMutationId}}", variables: { id: made.node_id } }) }).catch((e) => ({ ok: false, text: async () => e.message }));
   const out = res.ok ? await res.json() : { errors: [{ message: `${res.status ?? ""} ${await res.text()}`.slice(0, 200) }] };
