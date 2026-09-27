@@ -1,6 +1,6 @@
 {
   "name": "repo-standards",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Org-neutral engine for repo-scoped agent standards",
   "private": true,
   "type": "module",
@@ -9,16 +9,21 @@
   },
   "files": [
     "bin",
-    "lib",
-    "template",
-    "modules",
     "defaults.json",
-    "schema"
+    "lib",
+    "modules",
+    "org",
+    "schema",
+    "template"
   ],
   "engines": {
     "node": ">=22"
   },
   "scripts": {
     "test:e2e": "test/run.sh"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tyler-b4innova/repo-standards"
   }
 }

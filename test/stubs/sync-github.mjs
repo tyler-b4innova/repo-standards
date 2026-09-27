@@ -1,11 +1,13 @@
 #!/usr/bin/env node
-// Stand-in for the GitHub REST (and the two GraphQL mutations sync uses) backed by local bare repositories.
+// Stand-in for the GitHub REST (and the pinIssue GraphQL mutation) backed by local bare repositories.
 // Usage: node sync-github.mjs <port-file> <log-file> <config.json>
-// config: { remotes: "<dir holding owner/name.git>", repos: [{full_name, archived}], rules: {repo: [..]},
-//           variables: {repo: {NAME: value}}, files: {repo: {path: text}} }
+// config: { remotes: "<dir holding owner/name.git>", repos: [{full_name, archived}], variables: {repo: {NAME: value}},
+//           files: {repo: {path: text}}, gate: {repo: conclusion of every std-gate run, or a list by dispatch order (the last repeats); default "success"},
+//           move: {repo: ref whose first gate dispatch also commits moved.txt on the default branch} }
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const [portFile, logFile, configFile] = process.argv.slice(2);
@@ -16,6 +18,21 @@ const nodes = {}; // node_id -> item
 let seq = 1;
 const bare = (r) => join(cfg.remotes, `${r}.git`);
 const git = (r, ...a) => execFileSync("git", ["--git-dir", bare(r), ...a], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+const gitIn = (r, env, input, ...a) => execFileSync("git", ["--git-dir", bare(r), ...a], { encoding: "utf8", input, env: { ...process.env, ...env } }).trim();
+const ok = (r, ...a) => { try { git(r, ...a); return true; } catch { return false; } };
+const defaultBranch = (r) => (existsSync(bare(r)) ? git(r, "symbolic-ref", "--short", "HEAD").trim() : "main");
+const runs = {}, starts = {}; // repo -> [workflow run], repo -> gate starts
+// Someone else lands a commit on the default branch (a file moved.txt) while sync waits for gate.
+function moveDefault(r) {
+  const b = defaultBranch(r), head = git(r, "rev-parse", `refs/heads/${b}`).trim(), tmp = mkdtempSync(join(tmpdir(), "stub-idx-"));
+  const env = { GIT_INDEX_FILE: join(tmp, "index"), GIT_AUTHOR_NAME: "p", GIT_AUTHOR_EMAIL: "p@example.com", GIT_COMMITTER_NAME: "p", GIT_COMMITTER_EMAIL: "p@example.com" };
+  const blob = gitIn(r, env, "moved\n", "hash-object", "-w", "--stdin");
+  gitIn(r, env, "", "read-tree", head);
+  gitIn(r, env, "", "update-index", "--add", "--cacheinfo", `100644,${blob},moved.txt`);
+  const c = gitIn(r, env, "", "commit-tree", gitIn(r, env, "", "write-tree"), "-p", head, "-m", "someone else landed first");
+  git(r, "update-ref", `refs/heads/${b}`, c, head);
+  rmSync(tmp, { recursive: true, force: true });
+}
 const list = (r) => (items[r] ??= []);
 const add = (r, item) => {
   const it = { number: list(r).length + 1, node_id: `N_${seq++}`, state: "open", labels: [], ...item };
@@ -44,14 +61,13 @@ createServer((req, res) => {
       const v = body.variables ?? {};
       const it = nodes[v.id];
       if (!it) return send(200, { errors: [{ message: "stub: unknown node" }] });
-      if (body.query.includes("enablePullRequestAutoMerge")) it.auto_merge = { merge_method: v.method ?? "SQUASH" };
       if (body.query.includes("pinIssue")) it.pinned = true;
       return send(200, { data: {} });
     }
     if ((m = p.match(/^\/orgs\/([^/]+)\/repos$/))) return send(200, cfg.repos.filter((r) => r.full_name.startsWith(`${m[1]}/`)));
     if (!(m = p.match(/^\/repos\/([^/]+\/[^/]+)(?:\/(.*))?$/))) return send(404, { message: `stub: no route ${p}` });
     const [, r, rest = ""] = m;
-    if (rest === "") return send(200, { full_name: r, default_branch: "main", archived: !!cfg.repos.find((x) => x.full_name === r)?.archived });
+    if (rest === "") return send(200, { full_name: r, default_branch: defaultBranch(r), archived: !!cfg.repos.find((x) => x.full_name === r)?.archived });
     if ((m = rest.match(/^contents\/(.+)$/))) {
       const f = m[1];
       if (req.method === "PUT") {
@@ -64,11 +80,53 @@ createServer((req, res) => {
     }
     if (rest === "git/ref/heads/main") return send(200, { object: { sha: "0".repeat(40) } });
     if (rest === "git/refs" && req.method === "POST") return send(201, { ref: body.ref });
+    if ((m = rest.match(/^git\/refs\/heads\/(.+)$/)) && req.method === "PATCH") { // as GitHub: fast-forward only unless force
+      const ref = `refs/heads/${m[1]}`, old = ok(r, "rev-parse", "--verify", ref) ? git(r, "rev-parse", ref).trim() : null;
+      if (!old) return send(422, { message: "Reference does not exist" });
+      if (!ok(r, "cat-file", "-e", `${body.sha}^{commit}`)) return send(422, { message: "Object does not exist" });
+      if (!body.force && !ok(r, "merge-base", "--is-ancestor", old, body.sha)) return send(422, { message: "Update is not a fast forward" });
+      git(r, "update-ref", ref, body.sha, old);
+      return send(200, { ref, object: { sha: body.sha, type: "commit" } });
+    }
+    // As GitHub: a push to a branch whose std-gate.yml lists it under push.branches starts a run (created here on first
+    // listing); POST runs/{id}/rerun starts a new attempt. Each start is logged as a GATE line and takes the next
+    // configured conclusion.
+    const start = (x) => {
+      const g = [cfg.gate?.[r] ?? "success"].flat(), n = (starts[r] = (starts[r] ?? 0) + 1);
+      Object.assign(x, { status: "queued", conclusion: null, polls: 0, want: g[Math.min(n - 1, g.length - 1)] });
+      appendFileSync(logFile, JSON.stringify({ method: "GATE", path: `/repos/${r}/gate-start`, query: "", body: { sha: x.head_sha } }) + "\n");
+      if (cfg.move?.[r] === x.head_branch) { delete cfg.move[r]; moveDefault(r); }
+    };
+    const tick = (x) => { if (x.polls++ >= 1) Object.assign(x, { status: "completed", conclusion: x.want }); else x.status = "in_progress"; return x; };
+    const view = ({ polls, want, ...x }) => x;
+    if (rest === "actions/runs" && req.method === "GET") {
+      const br = q("branch"), sha = q("head_sha"), rs = (runs[r] ??= []);
+      if (br && sha && q("event") === "push" && ok(r, "rev-parse", "--verify", `refs/heads/${br}`) && git(r, "rev-parse", `refs/heads/${br}`).trim() === sha && !rs.some((x) => x.head_sha === sha)) {
+        let wf = "";
+        try { wf = git(r, "show", `${sha}:.github/workflows/std-gate.yml`); } catch {}
+        const listed = (wf.match(/^\s+branches:\s*\[(.*)\]/m)?.[1] ?? "").split(",").map((b) => b.trim().replace(/^"|"$/g, ""));
+        if (listed.some((g) => new RegExp("^" + g.replace(/\*/g, ".*") + "$").test(br))) {
+          const x = { id: seq++, name: "std-gate", path: ".github/workflows/std-gate.yml", event: "push", head_branch: br, head_sha: sha, run_attempt: 1, html_url: `https://github.com/${r}/actions/runs/${seq - 1}` };
+          rs.push(x); start(x);
+        }
+      }
+      const found = rs.filter((x) => (!br || x.head_branch === br) && (!sha || x.head_sha === sha) && (!q("event") || x.event === q("event")));
+      return send(200, { total_count: found.length, workflow_runs: found.map((x) => view(tick(x))) });
+    }
+    if ((m = rest.match(/^actions\/runs\/(\d+)\/rerun$/)) && req.method === "POST") {
+      const x = (runs[r] ?? []).find((y) => y.id == m[1]);
+      if (!x) return send(404, { message: "Not Found" });
+      x.run_attempt = (x.run_attempt ?? 1) + 1; start(x);
+      return send(201, {});
+    }
+    if ((m = rest.match(/^actions\/runs\/(\d+)$/)) && req.method === "GET") {
+      const x = (runs[r] ?? []).find((y) => y.id == m[1]);
+      return x ? send(200, view(tick(x))) : send(404, { message: "Not Found" });
+    }
     if ((m = rest.match(/^git\/refs\/heads\/(.+)$/)) && req.method === "DELETE") {
       if (existsSync(bare(r))) try { git(r, "update-ref", "-d", `refs/heads/${m[1]}`); } catch { return send(422, { message: "Reference does not exist" }); }
       return send(204);
     }
-    if ((m = rest.match(/^rules\/branches\/(.+)$/))) return send(200, cfg.rules?.[r] ?? []);
     if ((m = rest.match(/^actions\/variables\/(.+)$/))) {
       const vars = ((cfg.variables ??= {})[r] ??= {});
       if (req.method === "PATCH") { vars[m[1]] = body.value; return send(204); }
@@ -96,7 +154,7 @@ createServer((req, res) => {
       c.push({ id: seq++, body: body.body });
       return send(201, c.at(-1));
     }
-    if (rest === "_state") return send(200, { items: list(r), comments: Object.fromEntries(Object.entries(comments).filter(([k]) => k.startsWith(`${r}#`))), files: cfg.branchFiles ?? {} });
+    if (rest === "_state") return send(200, { items: list(r), comments: Object.fromEntries(Object.entries(comments).filter(([k]) => k.startsWith(`${r}#`))), files: cfg.branchFiles ?? {}, runs: runs[r] ?? [] });
     send(404, { message: `stub: no route ${req.method} ${p}` });
   });
 }).listen(0, "127.0.0.1", function () {

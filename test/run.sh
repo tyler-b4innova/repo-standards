@@ -5,7 +5,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 status=0 log=$(mktemp)
 trap 'rm -f "$log"' EXIT
-for f in test/[a-z]*.sh; do
+for f in test/[a-z]*.sh $( [ -f org/test.sh ] && echo org/test.sh ); do
   case "$f" in test/lib.sh | test/run.sh) continue ;; esac
   bash "$f" | tee -a "$log"
   [ "${PIPESTATUS[0]}" -eq 0 ] || status=1

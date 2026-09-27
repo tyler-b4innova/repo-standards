@@ -18,7 +18,7 @@ const et = pack.modules?.error_tracker;
 if (et?.kind !== "sentry") die(`pack.json modules.error_tracker.kind is "${et?.kind}", not sentry`);
 const { org: ORG, api_base: BASE, filer_repo: FILER, alert_workflow: WORKFLOW, credential_item: ITEM, secrets = {} } = et;
 const dry = o["dry-run"];
-const platform = o.platform ?? (existsSync("svelte.config.js") ? "javascript-sveltekit" : existsSync("wrangler.jsonc") || existsSync("wrangler.toml") ? "node-cloudflare-workers" : "node");
+const platform = o.platform ?? (existsSync("svelte.config.js") ? "javascript-sveltekit" : ["wrangler.jsonc", "wrangler.json", "wrangler.toml"].some((f) => existsSync(f)) ? "node-cloudflare-workers" : "node");
 const repo = o.repo ?? sh("git", ["remote", "get-url", "origin"]).replace(/\.git$/, "").split(/[/:]/).pop();
 const std = existsSync("standards.json") ? JSON.parse(readFileSync("standards.json", "utf8")) : {};
 const entry = std.profile === "client" ? { repo: `${pack.org}/${repo}`, labels: ["human-decision"] } : `${pack.org}/${repo}`;
@@ -63,6 +63,9 @@ else {
   else {
     const { name, enabled, config, environment, triggers, actionFilters } = workflow;
     await api("PUT", `/api/0/organizations/${ORG}/workflows/${workflow.id}/`, { name, enabled, config, environment, triggers, actionFilters, detectorIds: [...workflow.detectorIds, detector.id] });
+    // The PUT replaces the whole list, so a concurrent run can drop this detector: read back and say so.
+    const after = await api("GET", `/api/0/organizations/${ORG}/workflows/${workflow.id}/`);
+    if (!after?.detectorIds?.includes(detector.id)) die(`"${WORKFLOW}" lost detector ${detector.id} (a concurrent change?); re-run sentry-setup`);
     step(`"${WORKFLOW}" now watches ${repo} (detector ${detector.id})`);
   }
 }
@@ -77,12 +80,26 @@ else if (pr) step(`${FILER} mapping PR already open: ${pr.html_url}`);
 else if (dry) step(`would open a ${FILER} PR mapping ${repo} → ${JSON.stringify(entry)}`);
 else {
   const main = (await gh("GET", `repos/${FILER}`)).default_branch;
-  const next = Object.fromEntries(Object.entries({ ...projects, [repo]: entry }).sort(([a], [b]) => a.localeCompare(b)));
-  const head = (await gh("GET", `repos/${FILER}/git/ref/heads/${main}`)).object.sha;
-  await gh("POST", `repos/${FILER}/git/refs`, { ref: `refs/heads/${branch}`, sha: head }).catch(() => {});
-  await gh("PUT", `repos/${FILER}/contents/projects.json`, { message: `chore: file Sentry project ${repo}`, content: Buffer.from(JSON.stringify(next, null, 2) + "\n").toString("base64"), sha: file?.sha, branch });
+    // A leftover branch (earlier run, PR closed) is reused: read the file and its sha from the branch, not the default.
+  if (!(await gh("GET", `repos/${FILER}/git/ref/heads/${encodeURIComponent(branch)}`))) {
+    const head = (await gh("GET", `repos/${FILER}/git/ref/heads/${main}`)).object.sha;
+    await gh("POST", `repos/${FILER}/git/refs`, { ref: `refs/heads/${branch}`, sha: head });
+  }
+  const onBranch = await gh("GET", `repos/${FILER}/contents/projects.json?ref=${encodeURIComponent(branch)}`);
+  const current = onBranch ? JSON.parse(Buffer.from(onBranch.content, "base64").toString("utf8")) : {};
+  if (JSON.stringify(current[repo]) !== JSON.stringify(entry)) {
+    const merged = Object.fromEntries(Object.entries({ ...current, [repo]: entry }).sort(([a], [b]) => a.localeCompare(b)));
+    await gh("PUT", `repos/${FILER}/contents/projects.json`, { message: `chore: file Sentry project ${repo}`, content: Buffer.from(JSON.stringify(merged, null, 2) + "\n").toString("base64"), sha: onBranch?.sha, branch });
+  }
   const made = await gh("POST", `repos/${FILER}/pulls`, { title: `chore: file Sentry project ${repo}`, head: branch, base: main, body: `Adds \`${repo}\` to projects.json (from \`scripts/agent/sentry-setup\`).` });
   step(`mapping PR ${made.html_url}`);
+  // Auto-merge is GraphQL-only; report instead of hiding a failure.
+  const gql = process.env.GITHUB_GRAPHQL_URL || `${(process.env.GITHUB_API_URL || "https://api.github.com").replace(/\/$/, "")}/graphql`;
+  const res = await fetch(gql, { method: "POST", headers: { Authorization: `Bearer ${ghToken}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ query: "mutation($id:ID!){enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:SQUASH}){clientMutationId}}", variables: { id: made.node_id } }) }).catch((e) => ({ ok: false, text: async () => e.message }));
+  const out = res.ok ? await res.json() : { errors: [{ message: `${res.status ?? ""} ${await res.text()}`.slice(0, 200) }] };
+  if (out.errors?.length) console.log(`sentry-setup: auto-merge not armed (${out.errors[0].message}); merge ${made.html_url} once gate is green`);
+  else step("auto-merge armed; it lands when the filer's gate is green");
 }
 
 // 4. DSN
