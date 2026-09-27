@@ -78,7 +78,11 @@ createServer((req, res) => {
       if (text === undefined && existsSync(bare(r))) try { text = git(r, "show", `${q("ref") ?? "HEAD"}:${f}`); } catch {}
       return text === undefined ? send(404, { message: "Not Found" }) : send(200, { path: f, sha: `blob-${f}`, content: Buffer.from(text).toString("base64"), encoding: "base64" });
     }
-    if (rest === "git/ref/heads/main") return send(200, { object: { sha: "0".repeat(40) } });
+    if ((m = rest.match(/^git\/ref\/heads\/(.+)$/)) && req.method === "GET") {
+      const ref = `refs/heads/${decodeURIComponent(m[1])}`;
+      if (existsSync(bare(r))) return ok(r, "rev-parse", "--verify", ref) ? send(200, { ref, object: { sha: git(r, "rev-parse", ref).trim() } }) : send(404, { message: "Not Found" });
+      if (m[1] === "main") return send(200, { object: { sha: "0".repeat(40) } });
+    }
     if (rest === "git/refs" && req.method === "POST") return send(201, { ref: body.ref });
     if ((m = rest.match(/^git\/refs\/heads\/(.+)$/)) && req.method === "PATCH") { // as GitHub: fast-forward only unless force
       const ref = `refs/heads/${m[1]}`, old = ok(r, "rev-parse", "--verify", ref) ? git(r, "rev-parse", ref).trim() : null;
