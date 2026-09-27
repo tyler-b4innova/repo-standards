@@ -22,8 +22,11 @@ export function render(overlay) {
   const vars = {
     review_thread_resolution: oa.review_thread_resolution === true,
     strict_status_checks: oa.strict_status_checks === true,
+    "extra_checks.default": oa.extra_checks?.default ?? [],
     "extra_checks.staged_main": oa.extra_checks?.staged_main ?? [],
+    "extra_checks.staging": oa.extra_checks?.staging ?? [],
     extra_restricted_paths: oa.extra_restricted_paths ?? [],
+    push_ignored_paths: oa.push_ignored_paths ?? [],
     max_file_size_mb: oa.max_file_size_mb ?? 50,
   };
   const fill = (v) => {
@@ -42,9 +45,12 @@ export function render(overlay) {
   const admin = { actor_id: null, actor_type: "OrganizationAdmin", bypass_mode: "pull_request" };
   const bypass = (r) => (r.target === "push" ? [app] : [app, admin]);
   const prDefaults = { required_review_thread_resolution: vars.review_thread_resolution };
+  // push_ruleset "external": the org keeps its own push ruleset; org-apply neither writes nor deletes push rulesets.
+  const external = oa.push_ruleset === "external";
   return {
     property: DEF.property,
-    rulesets: DEF.rulesets.map((r) => canon({ ...fill(r), enforcement: "active", bypass_actors: bypass(r) }, prDefaults)),
+    external,
+    rulesets: DEF.rulesets.filter((r) => !(external && r.target === "push")).map((r) => canon({ ...fill(r), enforcement: "active", bypass_actors: bypass(r) }, prDefaults)),
   };
 }
 
@@ -135,7 +141,7 @@ export async function plan(gh, overlay) {
 
   const listed = await gh("GET", `orgs/${org}/rulesets?per_page=100`);
   const live = [];
-  for (const s of listed.filter((x) => (x.source_type ?? "Organization") === "Organization")) live.push(await gh("GET", `orgs/${org}/rulesets/${s.id}`));
+  for (const s of listed.filter((x) => (x.source_type ?? "Organization") === "Organization" && !(want.external && x.target === "push"))) live.push(await gh("GET", `orgs/${org}/rulesets/${s.id}`));
   // A live ruleset matches by name, else by identical target and conditions (a rename keeps its id).
   const used = new Set();
   const same = (l, w) => l.target === w.target && JSON.stringify(canon(l).conditions) === JSON.stringify(w.conditions);

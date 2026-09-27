@@ -1,5 +1,5 @@
 {
-  "$comment": "Org-level rulesets every org gets. `org/apply.mjs` renders them with the overlay's `org_admin` (App bypass, thread resolution, extra checks and paths, max file size) and owns every organization-level ruleset: names not listed here are deleted on apply. `$`-prefixed strings are overlay placeholders.",
+  "$comment": "Org-level rulesets every org gets. `org/apply.mjs` renders them with the overlay's `org_admin` (App bypass, thread resolution, strict checks, extra checks per ruleset, extra restricted and ignored push paths, max file size, an external push ruleset) and owns every organization-level ruleset: names not listed here are deleted on apply. `$`-prefixed strings are overlay placeholders.",
   "property": {
     "property_name": "flow",
     "value_type": "single_select",
@@ -64,7 +64,8 @@
               {
                 "context": "gate",
                 "integration_id": 15368
-              }
+              },
+              "$extra_checks.default"
             ]
           }
         }
@@ -196,7 +197,8 @@
               {
                 "context": "gate",
                 "integration_id": 15368
-              }
+              },
+              "$extra_checks.staging"
             ]
           }
         }
@@ -234,6 +236,9 @@
               "*.tfvars",
               "**/*.tfvars",
               "$extra_restricted_paths"
+            ],
+            "ignored_file_paths": [
+              "$push_ignored_paths"
             ]
           }
         },

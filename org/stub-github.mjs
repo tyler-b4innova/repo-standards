@@ -8,8 +8,8 @@ import { createServer } from "node:http";
 
 const [portFile, logFile, stateFile] = process.argv.slice(2);
 const st = JSON.parse(readFileSync(stateFile, "utf8"));
-let nextId = 1000;
-st.rulesets = (st.rulesets ?? []).map((r) => ({ id: nextId++, ...r }));
+let nextId = Math.max(999, ...(st.rulesets ?? []).map((r) => r.id ?? 0)) + 1;
+st.rulesets = (st.rulesets ?? []).map((r) => (r.id ? r : { id: nextId++, ...r }));
 const asGitHub = (r) => ({
   ...r, source_type: "Organization", source: st.org, node_id: `RRS_${r.id}`, created_at: "2000-01-01T00:00:00Z", _links: {},
   bypass_actors: (r.bypass_actors ?? []).map((b) => (b.actor_type === "OrganizationAdmin" ? { ...b, actor_id: null } : b)),
