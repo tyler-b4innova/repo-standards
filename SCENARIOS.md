@@ -35,9 +35,13 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 
 - **`pr-open-verified`**: the PR helper sends nothing on a dry run, refuses a branch that is not on GitHub, reuses the open PR, and prints a URL only after reading the PR back.
 - **`pr-status-done`**: `DONE` only when the PR is open or merged, closes an issue, and `gate` is green on the head SHA.
-- **`sync-lands-direct-when-green`**: sync pushes `standards/v<ver>`, which starts that repository's own `gate`; green fast-forwards the default branch (staging on staged repositories, never main) and deletes the branch. The default branch moving first costs one re-apply, then it lands. No PR is opened (a pack PR once merged red).
+- **`sync-lands-direct-when-green`**: sync pushes `standards/v<ver>`, which starts that repository's own `gate`; green fast-forwards the default branch (staging on staged repositories, never main) and deletes the branch; `gate` on that branch accepts only pack-managed paths. The default branch moving first costs one re-apply, then it lands. No PR is opened (a pack PR once merged red).
 - **`sync-opens-pr-when-red`**: when `gate` stays red after one re-run, sync opens exactly one PR for a person, naming the run, without auto-merge, and leaves the default branch alone; a PR a person closed for the same content is not reopened.
 - **`sync-applies-release`**: sync applies the released overlay with the engine version it pins and refuses a mismatch (an old sync script once ran from a release tag).
+
+## Modules
+
+- **`error-tracker-rerun-safe`**: the error-tracker setup (dry run, create, route, write the DSN) is a no-op on rerun, and a rerun after a closed mapping PR re-creates the mapping branch from the current default and opens a new PR (reruns once broke on a leftover branch).
 
 ## Engine
 

@@ -6,7 +6,6 @@ on:
   pull_request_review:
     types: [submitted, dismissed]
   merge_group:
-  workflow_dispatch:
   push:
     branches: [main, staging, "standards/v*"]
 permissions:

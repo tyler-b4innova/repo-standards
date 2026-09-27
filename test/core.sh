@@ -98,7 +98,7 @@ then ok agent-deny-secrets-and-force-push; else fail agent-deny-secrets-and-forc
 
 # ---- pack hygiene
 out=$(python3 -c 'import sys,yaml; [yaml.safe_load(open(f)) for f in sys.argv[1:]]' template/.github/workflows/*.yml 2>&1)
-if [ $? -eq 0 ]; then ok engine-workflows-parse; else fail engine-workflows-parse "$out"; fi
+if [ $? -eq 0 ]; then ok gate-fails-without-e2e; else fail gate-fails-without-e2e "$out"; fi
 
 BIG=$T/big.json; node -e 'const o=require(process.argv[1]);o.profiles.client.block_lines=["- "+"x".repeat(400)];require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$BIG"
 out=$(node bin/repo-standards.mjs block --overlay "$BIG" --profile client 2>&1); st=$?

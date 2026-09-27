@@ -80,11 +80,10 @@ else if (pr) step(`${FILER} mapping PR already open: ${pr.html_url}`);
 else if (dry) step(`would open a ${FILER} PR mapping ${repo} → ${JSON.stringify(entry)}`);
 else {
   const main = (await gh("GET", `repos/${FILER}`)).default_branch;
-    // A leftover branch (earlier run, PR closed) is reused: read the file and its sha from the branch, not the default.
-  if (!(await gh("GET", `repos/${FILER}/git/ref/heads/${encodeURIComponent(branch)}`))) {
-    const head = (await gh("GET", `repos/${FILER}/git/ref/heads/${main}`)).object.sha;
-    await gh("POST", `repos/${FILER}/git/refs`, { ref: `refs/heads/${branch}`, sha: head });
-  }
+    // A leftover branch (earlier run, PR closed) is re-created from the current default so the new PR cannot conflict.
+  if (await gh("GET", `repos/${FILER}/git/ref/heads/${encodeURIComponent(branch)}`)) await gh("DELETE", `repos/${FILER}/git/refs/heads/${encodeURIComponent(branch)}`);
+  const head = (await gh("GET", `repos/${FILER}/git/ref/heads/${main}`)).object.sha;
+  await gh("POST", `repos/${FILER}/git/refs`, { ref: `refs/heads/${branch}`, sha: head });
   const onBranch = await gh("GET", `repos/${FILER}/contents/projects.json?ref=${encodeURIComponent(branch)}`);
   const current = onBranch ? JSON.parse(Buffer.from(onBranch.content, "base64").toString("utf8")) : {};
   if (JSON.stringify(current[repo]) !== JSON.stringify(entry)) {
@@ -93,7 +92,11 @@ else {
   }
   const made = await gh("POST", `repos/${FILER}/pulls`, { title: `chore: file Sentry project ${repo}`, head: branch, base: main, body: `Adds \`${repo}\` to projects.json (from \`scripts/agent/sentry-setup\`).` });
   step(`mapping PR ${made.html_url}`);
-  // Auto-merge is GraphQL-only; report instead of hiding a failure.
+  // Auto-merge only where the filer requires gate (else it could merge red); GraphQL-only; failures are reported.
+  const rules = (await gh("GET", `repos/${FILER}/rules/branches/${main}`)) ?? [];
+  const gated = rules.some((r) => r.type === "required_status_checks" && r.parameters?.required_status_checks?.some((c) => c.context === "gate"));
+  if (!gated) console.log(`sentry-setup: ${FILER} does not require gate on ${main}; merge ${made.html_url} once gate is green`);
+  else {
   const apiBase = (process.env.GITHUB_API_URL || "https://api.github.com").replace(/\/$/, "");
   const gql = process.env.GITHUB_GRAPHQL_URL || (apiBase.endsWith("/api/v3") ? apiBase.replace(/\/v3$/, "/graphql") : `${apiBase}/graphql`);
   const res = await fetch(gql, { method: "POST", headers: { Authorization: `Bearer ${ghToken}`, "Content-Type": "application/json" },
@@ -101,6 +104,7 @@ else {
   const out = res.ok ? await res.json() : { errors: [{ message: `${res.status ?? ""} ${await res.text()}`.slice(0, 200) }] };
   if (out.errors?.length) console.log(`sentry-setup: auto-merge not armed (${out.errors[0].message}); merge ${made.html_url} once gate is green`);
   else step("auto-merge armed; it lands when the filer's gate is green");
+  }
 }
 
 // 4. DSN

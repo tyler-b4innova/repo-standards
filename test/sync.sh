@@ -172,8 +172,8 @@ s0=$(nonget "$SLOG") g1=$(mark)
 r2=$(setup); rc=$?
 again_ok=$([ $rc -eq 0 ] && [ "$(nonget "$SLOG")" = "$s0" ] && [ -z "$(writes_since "$g1")" ] && [ -z "$(printf '%s\n' "$r2" | grep -vE 'exists|already|^SENTRY_DSN=')" ] && echo y)
 if [ -n "$dry_ok" ] && [ -n "$real_ok" ] && [ -n "$again_ok" ] && scripts_help=$("$W/scripts/agent/sentry-setup" --help) && [ -n "$scripts_help" ]; then
-  ok engine-error-tracker-setup
-else fail engine-error-tracker-setup "dry=$dry_ok real=$real_ok again=$again_ok filed=$filed
+  ok error-tracker-rerun-safe
+else fail error-tracker-rerun-safe "dry=$dry_ok real=$real_ok again=$again_ok filed=$filed
 $d
 $r1
 $r2"; fi
@@ -184,6 +184,6 @@ n=$(q acme/filer 's.items.find(i => i.pull && i.state === "open")?.number')
 curl -s -X PATCH -d '{"state":"closed"}' "$API/repos/acme/filer/pulls/$n" >/dev/null
 r3=$(setup); rc=$?
 prs=$(q acme/filer 's.items.filter(i => i.pull).length + " " + s.items.filter(i => i.pull && i.state === "open").length')
-if [ $rc -eq 0 ] && [ "$prs" = "2 1" ] && [ -n "$(printf '%s' "$r3" | grep 'mapping PR')" ]; then ok engine-error-tracker-rerun-reuses-branch
-else fail engine-error-tracker-rerun-reuses-branch "rc=$rc prs=$prs $r3"; fi
+if [ $rc -eq 0 ] && [ "$prs" = "2 1" ] && [ -n "$(printf '%s' "$r3" | grep 'mapping PR')" ]; then ok error-tracker-rerun-safe
+else fail error-tracker-rerun-safe "rc=$rc prs=$prs $r3"; fi
 done_cases

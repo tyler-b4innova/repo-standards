@@ -140,4 +140,15 @@ if [ $s1 -eq 1 ] && has "$B1" "$out1" && has "$B2" "$out1" && has "$B3" "$out1" 
   has "\"method\":\"HEAD\",\"path\":\"/repos/acme/demo/contents/.evidence/missing.png\",\"query\":\"?ref=$SHA\"" "$log" && [ $s2 -eq 0 ]; then ok evidence-images-pinned-resolving
 else fail evidence-images-pinned-resolving "bad-images=$s1 good=$s2: $out1"; fi
 
+# A push to standards/vX.Y.Z (sync's landing branch) passes the evidence step only when it changes pack-managed paths.
+R=$(mkrepo); gc -C "$R" update-ref refs/remotes/origin/main HEAD
+gc -C "$R" checkout -qb standards/v9.9.9
+node "$ENGINE/bin/repo-standards.mjs" apply --target "$R" --overlay "$ENGINE/examples/overlay.json" --version 9.9.9 >/dev/null && commit "$R" pack
+printf '{"repository":{"default_branch":"main"}}' > "$T/push.json"
+pe() { (cd "$R" && GITHUB_EVENT_NAME=push GITHUB_REF_NAME=standards/v9.9.9 GITHUB_EVENT_PATH="$T/push.json" node scripts/agent/gate.mjs evidence) 2>&1; }
+p1=$(pe); ps1=$?
+mkdir -p "$R/src" && echo "<b/>" > "$R/src/App.svelte" && commit "$R" sneak
+p2=$(pe); ps2=$?
+if [ $ps1 -eq 0 ] && has "pack-only update" "$p1" && [ $ps2 -eq 1 ] && has "src/App.svelte" "$p2"; then ok sync-lands-direct-when-green
+else fail sync-lands-direct-when-green "pack-only=$ps1 other=$ps2: $p1 $p2"; fi
 done_cases
