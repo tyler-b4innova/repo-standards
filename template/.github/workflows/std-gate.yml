@@ -4,7 +4,7 @@
 name: std-gate
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, edited] # edited: a base change re-evaluates the diff
   merge_group:
   push:
     branches: [main, staging, "standards/v*"]

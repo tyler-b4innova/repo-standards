@@ -129,7 +129,7 @@ apply "$R" >/dev/null
 deny=$(node -e 'const d=require(process.argv[1]).permissions.deny;console.log(d.includes("Bash(op *)")&&d.includes("Bash(git push --force *)")&&d.includes("Read(**/.env)")&&!d.includes("Read(./secrets.txt)"))' "$R/.claude/settings.json")
 top=$(node -e 'const t=require("fs").readFileSync(process.argv[1],"utf8").split(/^(?=\[)/m)[0];console.log(/approval_policy = "never"/.test(t)&&/sandbox_mode = "danger-full-access"/.test(t))' "$R/.codex/config.toml")
 rules=skipped
-if command -v codex >/dev/null; then
+if codex --version >/dev/null 2>&1; then
   pol() { codex execpolicy check --rules "$R/.codex/rules/std.rules" -- "$@" 2>/dev/null | node -e 'console.log(JSON.parse(require("fs").readFileSync(0,"utf8")).decision||"allow")'; }
   rules="$(pol op read x) $(pol git push --force origin x) $(pol git push -f origin x) $(pol git push --force-with-lease origin x) $(pol git push origin x)"
 fi

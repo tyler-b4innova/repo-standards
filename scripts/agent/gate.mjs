@@ -172,7 +172,12 @@ if (cmd === "classify") {
   for (let page = 1; ; page++) { const b = await get(`/issues/${n}/comments?per_page=100&page=${page}`); comments.push(...b); if (b.length < 100) break; }
   const summary = comments.filter((c) => bot(c.user) && c.body?.includes(MARK)).at(-1);
   const row = summary?.body.match(/\|[^|\n]*Code Review[^|\n]*\|([^|\n]*)\|\s*`([0-9a-f]{7,40})`\s*\|/i);
-  const reviewed = (row && head.startsWith(row[2]) && /Completed/i.test(row[1])) || (!summary && (await get(`/pulls/${n}/reviews?per_page=100`)).some((r) => bot(r.user) && r.commit_id === head));
+  // The head's push time is server-recorded: its first pull_request gate run. A summary only counts when Codex
+  // completed it after that (the row shows a 7-char SHA, so it is bound by time as well), or a review names the full SHA.
+  const runs = (await get(`/actions/runs?head_sha=${head}&event=pull_request&per_page=100`)).workflow_runs ?? [];
+  const pushedAt = Math.min(...runs.map((r) => Date.parse(r.created_at)), Date.now());
+  const reviews = await get(`/pulls/${n}/reviews?per_page=100`);
+  const reviewed = (row && head.startsWith(row[2]) && /Completed/i.test(row[1]) && Date.parse(summary.updated_at) >= pushedAt) || reviews.some((r) => bot(r.user) && r.commit_id === head);
   if (!summary && !reviewed) {
     let seen = false;
     // Codex skips drafts and may skip bot PRs, so sample up to 20 recent ready PRs by people.
@@ -199,7 +204,7 @@ if (cmd === "classify") {
   }
   // Codex skips drafts, so the clock starts at the later of the head's push and the PR becoming ready.
   const ready = (await get(`/issues/${n}/timeline?per_page=100`)).filter((e) => e.event === "ready_for_review").map((e) => Date.parse(e.created_at));
-  const pushed = Date.parse((await get(`/commits/${head}`)).commit.committer.date), since = Math.max(pushed, Date.parse(pr.created_at), ...ready);
+  const since = Math.max(pushedAt, ...ready);
   const mins = Math.floor((Date.now() - since) / 60000);
   if (mins < 20) fail(`codex: awaiting a Codex verdict for ${head.slice(0, 7)} (${mins} min)`, "gate re-runs when the Codex summary updates");
   fail(`codex: no Codex verdict for ${head} — the launcher will request one`, "the launcher asks Codex to review; gate re-runs on its summary");

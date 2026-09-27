@@ -18,6 +18,7 @@ const server = createServer((req, res) => {
     if (p === "/pulls") return send(200, st.recent ?? []);
     if ((m = p.match(/^\/issues\/(\d+)\/comments$/))) return send(200, (st.comments ?? {})[m[1]] ?? []);
     if (p === "/pulls/7/reviews") return send(200, st.reviews ?? []);
+    if (p === "/actions/runs") return send(200, { workflow_runs: [{ created_at: st.pushed }] });
     if (p === "/issues/7/timeline") return send(200, st.timeline ?? []);
     if ((m = p.match(/^\/commits\/([0-9a-f]+)$/))) return send(200, { commit: { committer: { date: st.pushed } } });
     send(404, { message: `stub: no route ${req.method} ${p}` });
