@@ -48,4 +48,18 @@ st false 'example-sync[bot]' standards/v1.2.3 none x 30 "[]" yes "$HEAD1" "$OLD"
 # without actions: read (a private repo) the run-list read fails: the stand-in grants only what std-gate.yml lists
 PERMS="contents pull-requests issues" st false alice feat "$HEAD1" '✅ **Completed** now' 5 "$DONE" yes "$HEAD1" "$HEAD1"; chk 1 "/actions/runs?head_sha=$HEAD1&event=pull_request&per_page=100: 403"
 if [ -z "$r" ]; then ok codex-verdict-required; else fail codex-verdict-required "$r"; fi
+
+# gate-rerun-never-cancelled: std-gate-rerun has no concurrency group (a cancelled run stays on the PR as a failed
+# check and GitHub reports the PR UNSTABLE); its step, run against a stand-in gh, re-runs a finished gate run once,
+# waits for one in flight, and exits green when another event already re-ran it (before or during its own POST).
+WF="$R/.github/workflows/std-gate-rerun.yml"
+node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");require("fs").writeFileSync(process.argv[2],y.match(/- run: \|\n((?: {10}.*\n?)+)/)[1].replace(/^ {10}/gm,""))' "$WF" "$T/rerun.sh"
+rr() { # rr <run-status> <started-min-ago|future> [race]: prints "<exit> <reruns> <sleeps>"
+  local at; if [ "$2" = future ]; then at=$(node -e 'console.log(new Date(Date.now()+60000).toISOString().replace(/\.\d+Z$/,"Z"))'); else at=$(node -e 'console.log(new Date(Date.now()-Number(process.argv[1])*60000).toISOString().replace(/\.\d+Z$/,"Z"))' "$2"); fi
+  printf '{"sha":"%s","run":{"id":42,"status":"%s","run_started_at":"%s"}%s}\n' "$HEAD1" "$1" "$at" "${3:+,\"raceOnce\":true}" > "$T/gh.json"; : > "$T/gh.log"
+  TRUSTED=${TRUSTED:-true} PATH="$PWD/test/stubs/fake-bin:$PATH" FAKE_GH_STATE="$T/gh.json" FAKE_GH_LOG="$T/gh.log" GITHUB_REPOSITORY=acme/demo PR=7 bash "$T/rerun.sh" > "$T/rr.out" 2>&1; local x=$?
+  echo "$x $(node -e 'const s=require(process.argv[1]);console.log((s.reruns??0)+" "+(s.sleeps??0))' "$T/gh.json")"; }
+got="$(rr completed 5) | $(rr in_progress 5) | $(rr completed future) | $(rr completed 5 race) | $(TRUSTED=false rr in_progress 5)"
+if ! grep -qE '^(concurrency|  cancel-in-progress)' "$WF" && [ "$got" = "0 1 0 | 0 1 1 | 0 0 0 | 0 0 0 | 0 0 0" ] && grep -q "comment again once it finishes" "$T/rr.out"
+then ok gate-rerun-never-cancelled; else fail gate-rerun-never-cancelled "got=$got $(cat "$T/rr.out")"; fi
 done_cases

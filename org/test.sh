@@ -115,6 +115,11 @@ if ! grep -qi push <<<"$ext" && grep -q 'no changes' <<<"$ext" && grep -q '"own 
   ok engine-org-push-external
 else fail engine-org-push-external "$ext :: $managed"; fi
 
+# engine-org-dry-run-diff (launcher): org-apply refuses an overlay whose launcher settings are invalid, before any request
+node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8")); o.launcher={lanes:[{name:"x",vendor:"gpt"}]}; require("fs").writeFileSync(f+".bad",JSON.stringify(o))' "$T/org.json"
+: >"$T/log"; lb=$(node org/apply.mjs --overlay "$T/org.json.bad" --dry-run 2>&1); lx=$?
+if [ $lx -ne 0 ] && grep -q "vendor must be claude or codex" <<<"$lb" && [ ! -s "$T/log" ]; then ok engine-org-dry-run-diff; else fail engine-org-dry-run-diff "launcher: $lx $lb"; fi
+
 # engine-org-app-link: create-app prints GitHub's URL-parameter registration link for the org, prefilled with
 # the overlay's App name, webhook off, and exactly the manifest's permissions.
 link=$(run create-app | grep -o 'https://github.com/organizations/[^ ]*')

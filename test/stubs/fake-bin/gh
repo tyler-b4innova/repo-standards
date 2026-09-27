@@ -1,0 +1,22 @@
+#!/usr/bin/env node
+// Stand-in `gh` for the rerun workflow step: `gh api [-X POST] <path> [--jq <expr>]` against $FAKE_GH_STATE (JSON),
+// with --jq evaluated by the system jq. The one gate run lives at state.run; every call is appended to $FAKE_GH_LOG.
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+const a = process.argv.slice(2), f = process.env.FAKE_GH_STATE, st = JSON.parse(readFileSync(f, "utf8"));
+const method = a.includes("-X") ? a[a.indexOf("-X") + 1] : "GET", jq = a.includes("--jq") ? a[a.indexOf("--jq") + 1] : null;
+const path = a.find((x, i) => i > 0 && !x.startsWith("-") && a[i - 1] !== "-X" && a[i - 1] !== "--jq");
+appendFileSync(process.env.FAKE_GH_LOG, `${method} ${path}\n`);
+let out;
+if (/\/pulls\/\d+$/.test(path)) out = { head: { sha: st.sha } };
+else if (/\/workflows\/std-gate\.yml\/runs/.test(path)) out = { workflow_runs: [{ ...st.run, pull_requests: [{ number: Number(process.env.PR) }] }] };
+else if (method === "POST" && /\/runs\/\d+\/rerun$/.test(path)) {
+  if (st.run.status !== "completed") { process.stderr.write("gh: This workflow is already running (HTTP 403)\n"); process.exit(1); }
+  st.run = { ...st.run, status: "queued", run_started_at: new Date().toISOString().replace(/\.\d+Z$/, "Z") }; st.reruns = (st.reruns ?? 0) + 1;
+  writeFileSync(f, JSON.stringify(st)); out = {};
+} else if (/\/runs\/\d+$/.test(path)) out = st.run;
+else { process.stderr.write(`fake gh: no route ${method} ${path}\n`); process.exit(1); }
+if (st.raceOnce && method === "GET" && /\/workflows\//.test(path) && st.run.status === "completed") { // another job re-runs between our read and POST
+  st.run = { ...st.run, status: "in_progress" }; delete st.raceOnce; writeFileSync(f, JSON.stringify(st));
+}
+process.stdout.write(jq ? execFileSync("jq", ["-r", jq], { input: JSON.stringify(out) }) : JSON.stringify(out) + "\n");

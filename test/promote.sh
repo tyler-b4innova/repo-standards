@@ -33,7 +33,7 @@ else fail promote-ui-needs-human-approval "none=$sa bot=$sb read=$sc write=$sd: 
 # The approval event re-runs gate on the same head, which turns green; the workflow listens for it.
 state "$UI" '[]'; before=$(gate); s1=$?
 state "$UI" "[$(rev alice User APPROVED "$HEAD2")]"; after=$(gate); s2=$?
-trig=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");console.log(/pull_request_review:\s*\n\s*types: \[submitted, dismissed\]/.test(y)&&/actions\/runs\/.*\/rerun/.test(y))' "$R/.github/workflows/std-gate-rerun.yml")
+trig=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");console.log(/pull_request_review:\s*\n\s*types: \[submitted, dismissed\]/.test(y)&&/\/runs\/[^"\s]*\/rerun/.test(y))' "$R/.github/workflows/std-gate-rerun.yml")
 if [ $s1 -eq 1 ] && [ $s2 -eq 0 ] && [ "$trig" = true ]; then ok promote-approval-then-merges; else fail promote-approval-then-merges "before=$s1 after=$s2 trigger=$trig"; fi
 
 state "$UI" "[$(rev alice User APPROVED "$HEAD1")]"; a=$(gate); sa=$?

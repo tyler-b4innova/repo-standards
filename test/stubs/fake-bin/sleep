@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Stand-in `sleep` for the rerun step: instead of waiting, finish the in-flight gate run (it started before the event).
+node -e 'const f=process.env.FAKE_GH_STATE,s=JSON.parse(require("fs").readFileSync(f,"utf8"));s.run.status="completed";s.sleeps=(s.sleeps??0)+1;require("fs").writeFileSync(f,JSON.stringify(s))'

@@ -81,9 +81,13 @@ createServer((req, res) => {
     if ((m = rest.match(/^git\/ref\/heads\/(.+)$/)) && req.method === "GET") {
       const ref = `refs/heads/${decodeURIComponent(m[1])}`;
       if (existsSync(bare(r))) return ok(r, "rev-parse", "--verify", ref) ? send(200, { ref, object: { sha: git(r, "rev-parse", ref).trim() } }) : send(404, { message: "Not Found" });
+      if (cfg.refs?.includes(`${r}:${ref}`)) return send(200, { ref, object: { sha: "1".repeat(40) } });
       if (m[1] === "main") return send(200, { object: { sha: "0".repeat(40) } });
     }
-    if (rest === "git/refs" && req.method === "POST") return send(201, { ref: body.ref });
+    if (rest === "git/refs" && req.method === "POST") {
+      if (!existsSync(bare(r))) { if (cfg.refs?.includes(`${r}:${body.ref}`)) return send(422, { message: "Reference already exists" }); (cfg.refs ??= []).push(`${r}:${body.ref}`); }
+      return send(201, { ref: body.ref });
+    }
     if ((m = rest.match(/^git\/refs\/heads\/(.+)$/)) && req.method === "PATCH") { // as GitHub: fast-forward only unless force
       const ref = `refs/heads/${m[1]}`, old = ok(r, "rev-parse", "--verify", ref) ? git(r, "rev-parse", ref).trim() : null;
       if (!old) return send(422, { message: "Reference does not exist" });
@@ -129,6 +133,7 @@ createServer((req, res) => {
     }
     if ((m = rest.match(/^git\/refs\/heads\/(.+)$/)) && req.method === "DELETE") {
       if (existsSync(bare(r))) try { git(r, "update-ref", "-d", `refs/heads/${m[1]}`); } catch { return send(422, { message: "Reference does not exist" }); }
+      else cfg.refs = (cfg.refs ?? []).filter((x) => x !== `${r}:refs/heads/${m[1]}`);
       return send(204);
     }
     if ((m = rest.match(/^actions\/variables\/(.+)$/))) {
