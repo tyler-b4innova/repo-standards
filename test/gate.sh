@@ -20,7 +20,7 @@ mkrepo() {
 G() { local d=$1; shift; (cd "$d" && node scripts/agent/gate.mjs "$@") 2>&1; }
 jset() { node -e 'const fs=require("fs"),f=process.argv[1],o=JSON.parse(fs.readFileSync(f,"utf8"));(new Function("o",process.argv[2]))(o);fs.writeFileSync(f,JSON.stringify(o,null,2)+"\n")' "$1" "$2"; }
 # step_run <workflow> <step name>: the step's run: line
-step_run() { node -e 'const L=require("fs").readFileSync(process.argv[1],"utf8").split("\n"),i=L.findIndex(l=>l.trim()==="- name: "+process.argv[2]);if(i<0)process.exit(1);for(let j=i+1;j<L.length&&!/^\s*- /.test(L[j]);j++){const m=L[j].match(/^\s*run: (.*)$/);if(m){console.log(m[1]);process.exit(0)}}process.exit(1)' "$1" "$2"; }
+step_run() { node -e 'const L=require("fs").readFileSync(process.argv[1],"utf8").split("\n"),i=L.findIndex(l=>l.trim()==="- name: "+process.argv[2]);if(i<0)process.exit(1);for(let j=i+1;j<L.length&&!/^\s*- /.test(L[j]);j++){const m=L[j].match(/^(\s*)run: (.*)$/);if(!m)continue;if(m[2]!=="|"){console.log(m[2]);process.exit(0)}const b=[];for(let k=j+1;k<L.length&&(L[k].trim()===""||L[k].search(/\S/)>m[1].length);k++)b.push(L[k].trim());console.log(b.join("\n").trim());process.exit(0)}process.exit(1)' "$1" "$2"; }
 wait_port() { local i; for i in $(seq 100); do [ -s "$1" ] && { cat "$1"; return 0; }; sleep 0.1; done; return 1; }
 online() { curl -sSfI --max-time 5 https://registry.npmjs.org/ >/dev/null 2>&1; }
 # Restricted PATH: only the tools setup.sh and check.mjs need, plus shims (so gh, ffmpeg, pdftoppm, soffice are absent).
@@ -85,7 +85,7 @@ for (const f of fs.readdirSync(dir)) {
   gates+=L.slice(j+1).filter(l=>/^    name: gate\s*$/.test(l)).length;
   if (f==="std-gate.yml") {
     if (jobs.join()!=="gate") out.push("jobs: "+jobs.join());
-    const runs=L.slice(j+1).map(l=>l.match(/^\s+run: (.*)$/)?.[1]).filter(Boolean).join("\n");
+    const runs=L.slice(j+1).join("\n");
     for (const s of ["scripts/agent/setup.sh --check","gate.mjs evidence","gate.mjs secrets","gate.mjs install","gate.mjs run typecheck","gate.mjs run build","gate.mjs e2e","scripts/agent/gate.local.sh"])
       if (!runs.includes(s)) out.push("missing step: "+s);
     for (const m of runs.matchAll(/gate\.mjs (\w+)/g)) if (require("child_process").spawnSync("node",["scripts/agent/gate.mjs",m[1],"--help"]).status!==0) out.push("unknown subcommand "+m[1]);

@@ -45,4 +45,5 @@ jobs:
       - name: e2e
         run: node scripts/agent/gate.mjs e2e
       - name: repo checks
-        run: if [ -x scripts/agent/gate.local.sh ]; then scripts/agent/gate.local.sh; else echo "notice: no scripts/agent/gate.local.sh"; fi
+        run: |
+          if [ -x scripts/agent/gate.local.sh ]; then scripts/agent/gate.local.sh; else echo "notice: no scripts/agent/gate.local.sh"; fi

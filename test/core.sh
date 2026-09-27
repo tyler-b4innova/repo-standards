@@ -173,6 +173,9 @@ cls=$( (cd "$R" && echo "<i/>" >> src/components/Nav.svelte && node scripts/agen
 if [ $st -eq 0 ] && has "WARN: ui_paths is []" "$out" && has "src/components/Nav.svelte" "$out" && has "no UI paths changed" "$cls"; then ok ui-paths-empty-warns; else fail ui-paths-empty-warns "$out | $cls"; fi
 
 # ---- pack hygiene
+out=$(python3 -c 'import sys,yaml; [yaml.safe_load(open(f)) for f in sys.argv[1:]]' template/.github/workflows/*.yml 2>&1)
+if [ $? -eq 0 ]; then ok engine-workflows-parse; else fail engine-workflows-parse "$out"; fi
+
 BIG=$T/big.json; node -e 'const o=require(process.argv[1]);o.profiles.client.block_lines=["- "+"x".repeat(400)];require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$BIG"
 out=$(node bin/repo-standards.mjs block --overlay "$BIG" --profile client 2>&1); st=$?
 sizes=$(for p in internal client; do node bin/repo-standards.mjs block --overlay "$OV" --profile $p | wc -c; done | sort -n | tail -1 | tr -d ' ')
