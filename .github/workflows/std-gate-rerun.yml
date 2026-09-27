@@ -17,10 +17,12 @@ concurrency:
   cancel-in-progress: true
 jobs:
   rerun:
-    # PR comments only, and only from members, collaborators or apps, so outsiders cannot keep gate running.
+    # PR comments only, and only from the PR author (whose evidence gate trusts), members, collaborators or apps,
+    # so other outsiders cannot keep gate running.
     if: >-
       (github.event.pull_request || github.event.issue.pull_request) &&
       (github.event.sender.type == 'Bot' ||
+       github.event.sender.login == (github.event.pull_request.user.login || github.event.issue.user.login) ||
        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association || github.event.review.author_association))
     runs-on: ubuntu-24.04
     timeout-minutes: 40

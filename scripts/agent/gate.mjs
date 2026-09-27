@@ -34,9 +34,10 @@ function ui(files) {
 }
 
 if (cmd === "classify") {
-  // Codex cloud has no origin: fall back to the upstream, then to HEAD itself (uncommitted and untracked files only).
+  // Codex cloud has no origin: fall back to a local default branch, then to HEAD itself (uncommitted and untracked
+  // files only). Never the branch's upstream: that is usually the pushed feature head, which would hide its changes.
   let base;
-  for (const b of args[0] ? [args[0]] : ["origin/HEAD", "@{upstream}", "HEAD"]) {
+  for (const b of args[0] ? [args[0]] : ["origin/HEAD", "origin/main", "origin/master", "main", "master", "HEAD"]) {
     try { base = git("merge-base", b, "HEAD").trim(); break; } catch {}
   }
   if (!base) fail(`base ${args[0]} not found`, "git fetch origin, or pass a base ref");
@@ -140,7 +141,9 @@ if (cmd === "classify") {
     }
     if (miss.length) { bad.push(`${who}: unresolved (need this repo, a 40-hex SHA, the file):\n    ${miss.join("\n    ")}`); continue; }
     const shas = [...new Set(urls.map((u) => u.match(pin)[1]))], names = urls.map((u) => decodeURIComponent(u.match(pin)[2]));
-    const shot = (state, w) => names.some((n) => new RegExp(`(^|[/_-])${state}[_-].*(^|[^0-9])${w}\\.[a-z]+$`, "i").test(n));
+    // Four distinct images: a file counts for one state and one width only.
+    const img = (n, st) => new RegExp(`(^|[/_-])${st}[_-]`, "i").test(n) && !new RegExp(`(^|[/_-])${st === "before" ? "after" : "before"}[_-]`, "i").test(n);
+    const shot = (state, w) => names.some((n) => img(n, state) && new RegExp(`(^|[^0-9])${w}\\.(png|jpe?g|webp|gif)$`, "i").test(n));
     const gaps = ["before", "after"].flatMap((st) => [400, 1280].filter((w) => !shot(st, w)).map((w) => `${st} ${w}px`));
     if (gaps.length) { bad.push(`${who}: needs before and after captures at 400 and 1280px (missing ${gaps.join(", ")})`); continue; }
     const outside = shas.filter((x) => !inHead(x));
@@ -172,12 +175,18 @@ if (cmd === "classify") {
   for (let page = 1; ; page++) { const b = await get(`/issues/${n}/comments?per_page=100&page=${page}`); comments.push(...b); if (b.length < 100) break; }
   const summary = comments.filter((c) => bot(c.user) && c.body?.includes(MARK)).at(-1);
   const row = summary?.body.match(/\|[^|\n]*Code Review[^|\n]*\|([^|\n]*)\|\s*`([0-9a-f]{7,40})`\s*\|/i);
-  // The head's push time is server-recorded: its first pull_request gate run. A summary only counts when Codex
-  // completed it after that (the row shows a 7-char SHA, so it is bound by time as well), or a review names the full SHA.
+  // The head's push time is server-recorded: its first pull_request gate run. A base edit changes the reviewed diff,
+  // so the latest one moves that mark. A summary only counts when Codex completed it after the mark (the row shows a
+  // 7-char SHA, so it is bound by time as well); a review naming the full SHA counts when submitted after the last base edit.
+  const timeline = [];
+  for (let page = 1; ; page++) { const b = await get(`/issues/${n}/timeline?per_page=100&page=${page}`); timeline.push(...b); if (b.length < 100) break; }
+  const at = (ev) => timeline.filter((e) => e.event === ev).map((e) => Date.parse(e.created_at));
+  const baseAt = Math.max(0, ...at("base_ref_changed"));
   const runs = (await get(`/actions/runs?head_sha=${head}&event=pull_request&per_page=100`)).workflow_runs ?? [];
-  const pushedAt = Math.min(...runs.map((r) => Date.parse(r.created_at)), Date.now());
+  const pushedAt = Math.max(Math.min(...runs.map((r) => Date.parse(r.created_at)), Date.now()), baseAt);
   const reviews = await get(`/pulls/${n}/reviews?per_page=100`);
-  const reviewed = (row && head.startsWith(row[2]) && /Completed/i.test(row[1]) && Date.parse(summary.updated_at) >= pushedAt) || reviews.some((r) => bot(r.user) && r.commit_id === head);
+  const reviewed = (row && head.startsWith(row[2]) && /Completed/i.test(row[1]) && Date.parse(summary.updated_at) >= pushedAt)
+    || reviews.some((r) => bot(r.user) && r.commit_id === head && Date.parse(r.submitted_at) >= baseAt);
   if (!summary && !reviewed) {
     let seen = false;
     // Codex skips drafts and may skip bot PRs, so sample up to 20 recent ready PRs by people.
@@ -203,8 +212,7 @@ if (cmd === "classify") {
     process.exit(0);
   }
   // Codex skips drafts, so the clock starts at the later of the head's push and the PR becoming ready.
-  const ready = (await get(`/issues/${n}/timeline?per_page=100`)).filter((e) => e.event === "ready_for_review").map((e) => Date.parse(e.created_at));
-  const since = Math.max(pushedAt, ...ready);
+  const since = Math.max(pushedAt, ...at("ready_for_review"));
   const mins = Math.floor((Date.now() - since) / 60000);
   if (mins < 20) fail(`codex: awaiting a Codex verdict for ${head.slice(0, 7)} (${mins} min)`, "gate re-runs when the Codex summary updates");
   fail(`codex: no Codex verdict for ${head} — the launcher will request one`, "the launcher asks Codex to review; gate re-runs on its summary");
