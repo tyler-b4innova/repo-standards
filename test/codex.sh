@@ -57,9 +57,9 @@ node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");require("fs"
 rr() { # rr <run-status> <started-min-ago|future> [race]: prints "<exit> <reruns> <sleeps>"
   local at; if [ "$2" = future ]; then at=$(node -e 'console.log(new Date(Date.now()+60000).toISOString().replace(/\.\d+Z$/,"Z"))'); else at=$(node -e 'console.log(new Date(Date.now()-Number(process.argv[1])*60000).toISOString().replace(/\.\d+Z$/,"Z"))' "$2"); fi
   printf '{"sha":"%s","run":{"id":42,"status":"%s","run_started_at":"%s"}%s}\n' "$HEAD1" "$1" "$at" "${3:+,\"raceOnce\":true}" > "$T/gh.json"; : > "$T/gh.log"
-  PATH="$PWD/test/stubs/fake-bin:$PATH" FAKE_GH_STATE="$T/gh.json" FAKE_GH_LOG="$T/gh.log" GITHUB_REPOSITORY=acme/demo PR=7 bash "$T/rerun.sh" > "$T/rr.out" 2>&1; local x=$?
+  TRUSTED=${TRUSTED:-true} PATH="$PWD/test/stubs/fake-bin:$PATH" FAKE_GH_STATE="$T/gh.json" FAKE_GH_LOG="$T/gh.log" GITHUB_REPOSITORY=acme/demo PR=7 bash "$T/rerun.sh" > "$T/rr.out" 2>&1; local x=$?
   echo "$x $(node -e 'const s=require(process.argv[1]);console.log((s.reruns??0)+" "+(s.sleeps??0))' "$T/gh.json")"; }
-got="$(rr completed 5) | $(rr in_progress 5) | $(rr completed future) | $(rr completed 5 race)"
-if ! grep -qE '^(concurrency|  cancel-in-progress)' "$WF" && [ "$got" = "0 1 0 | 0 1 1 | 0 0 0 | 0 0 0" ] && grep -q "another event re-ran gate run 42 first" "$T/rr.out"
+got="$(rr completed 5) | $(rr in_progress 5) | $(rr completed future) | $(rr completed 5 race) | $(TRUSTED=false rr in_progress 5)"
+if ! grep -qE '^(concurrency|  cancel-in-progress)' "$WF" && [ "$got" = "0 1 0 | 0 1 1 | 0 0 0 | 0 0 0 | 0 0 0" ] && grep -q "comment again once it finishes" "$T/rr.out"
 then ok gate-rerun-never-cancelled; else fail gate-rerun-never-cancelled "got=$got $(cat "$T/rr.out")"; fi
 done_cases

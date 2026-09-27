@@ -26,6 +26,9 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+      # Members, collaborators and apps wait for an in-flight gate run; anyone else (an outside PR author) does not,
+      # so a burst of their comment edits cannot hold runners for the whole wait.
+      TRUSTED: ${{ github.event.sender.type == 'Bot' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association || github.event.review.author_association) }}
     steps:
       # No concurrency group: a cancelled run of this job stays on the PR as a failed check and GitHub then reports
       # the PR UNSTABLE. Each run waits for the gate run instead, and skips when another event already re-ran it.
@@ -39,6 +42,7 @@ jobs:
             [ -n "$run" ] || { echo "no pull_request gate run for $sha yet"; exit 0; }
             read -r id status started <<<"$run"
             [ "$status" = completed ] && break
+            [ "$TRUSTED" = true ] || { echo "gate run $id is running; comment again once it finishes to re-run it"; exit 0; }
             sleep 30
           done
           [ "$status" = completed ] || { echo "gate run $id is still $status; the next event re-runs it"; exit 0; }

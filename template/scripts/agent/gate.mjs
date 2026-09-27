@@ -147,7 +147,8 @@ if (cmd === "classify") {
     const img = (n, st) => new RegExp(`(^|[/_-])${st}[_-]`, "i").test(n) && !new RegExp(`(^|[/_-])${st === "before" ? "after" : "before"}[_-]`, "i").test(n);
     const shot = (state, w) => names.some((n) => img(n, state) && new RegExp(`(^|[^0-9])${w}\\.(png|jpe?g|webp|gif)$`, "i").test(n));
     // Document pages are pdftoppm's before-N/after-N files, paired by number: at least one page has both.
-    const pages = (state) => new Set(names.map((n) => n.split("/").pop().match(new RegExp(`^${state}-0*(\\d+)\\.(png|jpe?g|webp|gif)$`, "i"))?.[1]).filter(Boolean));
+    // A file named like a viewport capture (…400 or …1280) is never also a document page.
+    const pages = (state) => new Set(names.map((n) => n.split("/").pop().match(new RegExp(`^${state}-0*(\\d+)\\.(png|jpe?g|webp|gif)$`, "i"))?.[1]).filter((x) => x && !["400", "1280"].includes(x)));
     const [pb, pa] = [pages("before"), pages("after")], paired = [...pb].some((x) => pa.has(x));
     // Each kind that changed needs its own set: web captures at both widths, document pages.
     const gaps = [...(web ? ["before", "after"].flatMap((st) => [400, 1280].filter((w) => !shot(st, w)).map((w) => `${st} ${w}px`)) : []),

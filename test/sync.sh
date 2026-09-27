@@ -186,7 +186,7 @@ n=$(q acme/filer 's.items.find(i => i.pull && i.state === "open")?.number')
 curl -s -X PATCH -d '{"state":"closed"}' "$API/repos/acme/filer/pulls/$n" >/dev/null
 g2=$(mark); r3=$(setup); rc=$?; r4=$(setup)
 prs=$(q acme/filer 's.items.filter(i => i.pull).map(i => i.state + ":" + i.head).join(" ")')
-if [ $rc -eq 0 ] && [ "$prs" = "closed:chore/sentry-project-web open:chore/sentry-project-web-2" ] && [ -n "$(printf '%s' "$r3" | grep 'mapping PR')" ] \
+if [ $rc -eq 0 ] && [ "$prs" = "closed:chore/sentry-project-web open:chore/sentry-project-retry/web/2" ] && [ -n "$(printf '%s' "$r3" | grep 'mapping PR')" ] \
   && [ -z "$(writes_since "$g2" | grep DELETE)" ] && [ -n "$(printf '%s' "$r4" | grep 'mapping PR already open')" ]; then ok error-tracker-rerun-safe
 else fail error-tracker-rerun-safe "rc=$rc prs=$prs deletes=$(writes_since "$g2" | grep DELETE) $r3 | $r4"; fi
 done_cases

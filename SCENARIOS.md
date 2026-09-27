@@ -15,7 +15,7 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 - **`no-evidence-on-main`**: tracked `.evidence/` fails `--check` and `gate`; the PR helper leaves no `.evidence/` on the branch tip after posting.
 
 - **`codex-verdict-required`**: a non-draft PR passes `gate` only when the Codex summary shows the current head as Completed (after the head's push and any base edit) and every Codex thread is resolved; pending or stale fails (after 20 min: "no Codex verdict … the launcher will request one"); drafts, repos without Codex reviews, and the sync's fallback PRs are exempt. Comments and reviews re-run the PR's gate run in place instead of cancelling it.
-- **`gate-rerun-never-cancelled`**: `std-gate-rerun` has no concurrency group, so a burst of review events leaves no cancelled check runs (GitHub reported clean PRs UNSTABLE); each run re-runs a finished gate run once, waits for one in flight, and exits green when another event already re-ran it.
+- **`gate-rerun-never-cancelled`**: `std-gate-rerun` has no concurrency group, so a burst of review events leaves no cancelled check runs (GitHub reported clean PRs UNSTABLE); each run re-runs a finished gate run once, waits for one in flight, and exits green when another event already re-ran it; an outside PR author's event does not wait for a run in flight.
 
 ## Promotions (flow `staged`)
 
@@ -49,7 +49,7 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 
 ## Modules
 
-- **`error-tracker-rerun-safe`**: the error-tracker setup (dry run, create, route, write the DSN) is a no-op on rerun, and a rerun after a closed mapping PR never deletes that branch (it may hold later work): it opens a new PR from the next free branch name off the current default (reruns once broke on a leftover branch).
+- **`error-tracker-rerun-safe`**: the error-tracker setup (dry run, create, route, write the DSN) is a no-op on rerun, and a rerun after a closed mapping PR never deletes that branch (it may hold later work): it opens a new PR from the next free retry branch (`chore/sentry-project-retry/<repo>/<n>`) off the current default (reruns once broke on a leftover branch).
 
 ## Org settings (`org/`)
 
