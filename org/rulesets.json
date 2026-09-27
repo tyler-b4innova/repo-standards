@@ -63,7 +63,7 @@
             "required_status_checks": [
               {
                 "context": "gate",
-                "integration_id": 15368
+                "integration_id": "$gate_integration_id"
               },
               "$extra_checks.default"
             ]
@@ -146,7 +146,7 @@
             "required_status_checks": [
               {
                 "context": "gate",
-                "integration_id": 15368
+                "integration_id": "$gate_integration_id"
               },
               "$extra_checks.staged_main"
             ]
@@ -196,7 +196,7 @@
             "required_status_checks": [
               {
                 "context": "gate",
-                "integration_id": 15368
+                "integration_id": "$gate_integration_id"
               },
               "$extra_checks.staging"
             ]

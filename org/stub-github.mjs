@@ -10,8 +10,11 @@ const [portFile, logFile, stateFile] = process.argv.slice(2);
 const st = JSON.parse(readFileSync(stateFile, "utf8"));
 let nextId = Math.max(999, ...(st.rulesets ?? []).map((r) => r.id ?? 0)) + 1;
 st.rulesets = (st.rulesets ?? []).map((r) => (r.id ? r : { id: nextId++, ...r }));
+// GitHub returns object members in its own order; reverse them to prove comparisons ignore order.
+const reorder = (v) => (Array.isArray(v) ? v.map(reorder) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).reverse().map(([k, x]) => [k, reorder(x)])) : v);
 const asGitHub = (r) => ({
   ...r, source_type: "Organization", source: st.org, node_id: `RRS_${r.id}`, created_at: "2000-01-01T00:00:00Z", _links: {},
+  conditions: reorder(r.conditions),
   bypass_actors: (r.bypass_actors ?? []).map((b) => (b.actor_type === "OrganizationAdmin" ? { ...b, actor_id: null } : b)),
   rules: [...(r.rules ?? [])].reverse().map((x) => (["file_path_restriction", "max_file_size"].includes(x.type) ? { ...x, parameters: { ignored_file_paths: [], ...x.parameters } } : x)),
 });
@@ -29,6 +32,12 @@ createServer((req, res) => {
       return send(422, { message: "Validation Failed", errors: ["bypass mode must not be 'PULL_REQUEST' for push rulesets"] });
     }
     let m;
+    if ((m = p.match(/^\/repos\/([^/]+)\/([^/]+)$/)) && m[1] === st.org) {
+      const r = st.repos.find((x) => x.name === m[2]);
+      if (!r) return send(404, { message: "Not Found" });
+      if (req.method === "PATCH") { Object.assign(r, body); save(); }
+      return send(200, { name: r.name, archived: !!r.archived, allow_squash_merge: r.allow_squash_merge ?? true, allow_merge_commit: r.allow_merge_commit ?? true });
+    }
     if (!(m = p.match(/^\/orgs\/([^/]+)\/(.+)$/)) || m[1] !== st.org) return send(404, { message: `stub: no route ${p}` });
     const rest = m[2];
     if (rest === "repos") return send(200, st.repos.map((r) => ({ name: r.name, full_name: `${st.org}/${r.name}`, archived: !!r.archived })));

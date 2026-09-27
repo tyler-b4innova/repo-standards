@@ -12,16 +12,20 @@ import { client } from "../lib/sync.mjs";
 const DEF = JSON.parse(readFileSync(new URL("./rulesets.json", import.meta.url), "utf8"));
 const MANIFEST = JSON.parse(readFileSync(new URL("./app-manifest.json", import.meta.url), "utf8"));
 const byName = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
-const sorted = (a) => [...(a ?? [])].sort((x, y) => byName(JSON.stringify(x), JSON.stringify(y)));
+// Objects with keys in sorted order, recursively, so member order from GitHub never reads as a change.
+const keysSorted = (v) => (Array.isArray(v) ? v.map(keysSorted) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, keysSorted(v[k])])) : v);
+const sorted = (a) => [...(a ?? [])].map(keysSorted).sort((x, y) => byName(JSON.stringify(x), JSON.stringify(y)));
 const PROPERTY_FIELDS = ["value_type", "allowed_values", "required", "default_value", "values_editable_by", "description"];
 
 // Fill `$` placeholders from overlay.org_admin; a placeholder inside an array spreads a list value.
 export function render(overlay) {
   const oa = overlay.org_admin ?? {};
-  if (!Number.isInteger(oa.app?.id) || !oa.app?.slug) throw new Error("overlay org_admin.app.id (number) and org_admin.app.slug are required");
+  if (!Number.isInteger(oa.app?.id) || oa.app.id <= 0 || !oa.app?.slug) throw new Error("overlay org_admin.app.id (a positive number, not the example's 0) and org_admin.app.slug are required");
+  if (oa.gate_integration_id !== undefined && !(Number.isInteger(oa.gate_integration_id) && oa.gate_integration_id > 0)) throw new Error("overlay org_admin.gate_integration_id must be a positive number when set");
   const vars = {
     review_thread_resolution: oa.review_thread_resolution === true,
     strict_status_checks: oa.strict_status_checks === true,
+    gate_integration_id: oa.gate_integration_id ?? null, // null: `gate` is accepted from any source
     "extra_checks.default": oa.extra_checks?.default ?? [],
     "extra_checks.staged_main": oa.extra_checks?.staged_main ?? [],
     "extra_checks.staging": oa.extra_checks?.staging ?? [],
@@ -89,7 +93,7 @@ export function canon(r, prDefaults = {}) {
   }
   // GitHub reads an org-admin actor back with actor_id null.
   const bypass = (r.bypass_actors ?? []).map((b) => ({ actor_id: b.actor_type === "OrganizationAdmin" ? null : b.actor_id, actor_type: b.actor_type, bypass_mode: b.bypass_mode }));
-  return { name: r.name, target: r.target, enforcement: r.enforcement, bypass_actors: sorted(bypass), conditions: cond, rules };
+  return { name: r.name, target: r.target, enforcement: r.enforcement, bypass_actors: sorted(bypass), conditions: keysSorted(cond), rules: keysSorted(rules) };
 }
 
 const toApi = (c) => ({
@@ -121,6 +125,14 @@ export async function plan(gh, overlay) {
 
   const repos = (await gh("GET", `orgs/${org}/repos?per_page=100&type=all`)).filter((r) => !r.archived).map((r) => r.name);
   const staged = new Set(overlay.org_admin.staged ?? []);
+  // A ruleset can only narrow merge methods the repository allows: every repo needs squash, and a staged
+  // repo also needs merge commits for promotions into main.
+  for (const r of repos) {
+    const repo = await gh("GET", `repos/${org}/${r}`);
+    const need = { allow_squash_merge: true, ...(staged.has(r) && { allow_merge_commit: true }) };
+    const off = Object.keys(need).filter((k) => repo[k] === false);
+    if (off.length) steps.push({ what: `repo ${r}: enable ${off.join(", ")}`, detail: [], call: ["PATCH", `repos/${org}/${r}`, Object.fromEntries(off.map((k) => [k, true]))] });
+  }
   for (const s of staged) if (!repos.includes(s)) console.error(`warning: org_admin.staged names ${s}, which is not an active repository in ${org}`);
   const values = await gh("GET", `orgs/${org}/properties/values?per_page=100`);
   const current = Object.fromEntries(values.map((v) => [v.repository_name, v.properties.find((p) => p.property_name === "flow")?.value ?? null]));
