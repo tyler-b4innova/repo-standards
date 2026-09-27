@@ -185,10 +185,10 @@ out=$(node --input-type=module -e '
 import { renderFiles, loadOverlay } from "./lib/engine.mjs";
 const o = loadOverlay(process.argv[1]), bad = [];
 for (const p of ["internal", "client"]) {
-  const files = renderFiles(o, p, "0.1.0").filter(([f]) => !f.startsWith("scripts/agent/sentry-setup") && !f.startsWith("scripts/agent/deploy.sh"));
-  const total = files.reduce((a, [, c]) => a + Buffer.byteLength(c), 0);
-  if (total > 40960) bad.push(`${p} pack is ${total} bytes (limit 40960)`);
-  for (const [f, c] of files.filter(([f]) => f.endsWith("SKILL.md"))) {
+  const core = renderFiles({ ...o, modules: {} }, p, "0.1.0"); // overlay modules are opt-in extras outside the core budget
+  const total = core.reduce((a, [, c]) => a + Buffer.byteLength(c), 0);
+  if (total > 40960) bad.push(`${p} core pack is ${total} bytes (limit 40960)`);
+  for (const [f, c] of renderFiles({ ...o, modules: { error_tracker: true, deploy: true } }, p, "0.1.0").filter(([f]) => f.endsWith("SKILL.md"))) {
     if (Buffer.byteLength(c) > 1536) bad.push(`${f} is ${Buffer.byteLength(c)} bytes (limit 1536)`);
     if (!/^---\nname: [\w-]+\ndescription: .+\n/.test(c)) bad.push(`${f} lacks name/description frontmatter`);
   }
