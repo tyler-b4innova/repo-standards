@@ -143,11 +143,11 @@ R=$(mkrepo); mkdir -p "$R/docs/guide" && echo "We chose X." > "$R/docs/guide/set
 if [ $all = 1 ]; then ok no-decision-records-in-tree; else fail no-decision-records-in-tree; fi
 
 all=1
-for f in .env .env.production .dev.vars certs/app.pem; do
+for f in .env .env.local .env.production.local .dev.vars certs/app.pem; do
   R=$(mkrepo); mkdir -p "$R/$(dirname "$f")" && echo "K=v" > "$R/$f" && git -C "$R" add -f "$f"
   out=$(check "$R"); [ $? -eq 1 ] && has "secret-bearing file tracked: $f" "$out" || all=0
 done
-R=$(mkrepo); echo "K=" > "$R/.env.example" && git -C "$R" add .env.example; check "$R" >/dev/null || all=0
+R=$(mkrepo); echo "K=" > "$R/.env.example" && echo "VITE_X=1" > "$R/.env.production" && git -C "$R" add .env.example .env.production; check "$R" >/dev/null || all=0
 if [ $all = 1 ]; then ok engine-no-secret-files; else fail engine-no-secret-files; fi
 
 R=$(mkrepo); mkdir -p "$R/.evidence" && echo png > "$R/.evidence/a.png" && git -C "$R" add -f .evidence

@@ -85,7 +85,7 @@ else {
     const name = f.split("/").pop(), dirs = f.split("/").slice(0, -1).map((d) => d.toLowerCase());
     if (f === "CONTEXT.md") fail("CONTEXT.md at the root is forbidden", `git rm ${f}   (rules go in AGENTS.md)`);
     if (f === ".mcp.json") fail(".mcp.json is committed", "git rm --cached .mcp.json && echo .mcp.json >> .gitignore");
-    if ((/^\.env(\..+)?$/.test(name) && name !== ".env.example") || name === ".dev.vars" || name.endsWith(".pem"))
+    if (/^\.env(\..*)?\.local$|^\.env$|^\.dev\.vars$|\.pem$/.test(name)) // .env.<mode> without .local is public build config
       fail(`secret-bearing file tracked: ${f}`, `git rm --cached ${f} && echo ${name} >> .gitignore`);
     if (f.startsWith(".evidence/")) fail(`.evidence/ is tracked (${f})`, "git rm -r .evidence   (pr.sh evidence removes it after posting)");
     if ((/\.(md|markdown)$/i.test(name) && dirs.some((d) => pack.decision_dirs.includes(d))) || /^ADR-.*\.md$/i.test(name) || pack.decision_record_globs.some((g) => glob(g).test(f)))
