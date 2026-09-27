@@ -125,7 +125,8 @@ if [ $rc1 -eq 0 ] && [ "$d1" = 1 ] && [ "$a1" != "$a0" ] && [ "$(anc acme/alpha 
   && [ -n "$(printf '%s' "$alpha_row2" | grep -F "| landed $(printf '%.7s' "$a2") (gate ")" ] \
   && [ -z "$(heads acme/alpha | grep standards/)" ] && [ "$(q acme/alpha "$prs.length")" = 0 ] && [ -n "$(heads acme/boot | grep main)" ] \
   && [ -z "$(heads acme/boot | grep standards/)" ] && [ "$do" = 2 ] && [ "$(anc acme/boot "$o0" "$o1")" = yes ] && [ "$o1" != "$o0" ] \
-  && [ -n "$(printf '%s' "$boot_row1" | grep -F "| landed $(printf '%.7s' "$o1") (gate ")" ] && [ "$(q acme/boot "$prs.length")" = 0 ]; then
+  && [ -n "$(printf '%s' "$boot_row1" | grep -F "| landed $(printf '%.7s' "$o1") (gate ")" ] && [ "$(q acme/boot "$prs.length")" = 0 ] \
+  && [ -n "$(printf '%s\n' "$out1" | grep -E "^acme/alpha: landed $(printf '%.7s' "$a1") ")" ] && [ -n "$(printf '%s\n' "$out1" | grep -E '^acme/boot: landed ')" ]; then
   ok sync-lands-direct-when-green
 else fail sync-lands-direct-when-green "rc=$rc1 dispatches=$d1/$d2 a0=$a0 a1=$a1 a2=$a2 moved=$moved heads=$(heads acme/alpha) patch=$patch1 msg=$msg1 rows: $alpha_row1 / $alpha_row2 / boot $do $boot_row1 out: $out1 $out2"; fi
 

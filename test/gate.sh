@@ -172,6 +172,18 @@ mkdir -p "$R/src" && echo "<b/>" > "$R/src/App.svelte" && printf '0000  src/App.
 p2=$(pe); ps2=$?
 if [ $ps1 -eq 0 ] && has "pack-only update" "$p1" && [ $ps3 -eq 1 ] && has "not the sync App" "$p3" && [ $ps2 -eq 1 ] && has "src/App.svelte" "$p2"; then ok sync-lands-direct-when-green
 else fail sync-lands-direct-when-green "pack-only=$ps1 user=$ps3 other=$ps2: $p1 $p3 $p2"; fi
+# A PR changing only documents accepts before-N/after-N page images; a web change does not.
+R=$(mkev); PAGES='img(U+"before-1.png")+img(U+"after-1.png")+img(U+"after-2.png")'
+PC='contents:["before-1","after-1","after-2"].map((n)=>process.env.SHA+":.evidence/"+n+".png")'
+fx "{files:{8:[\"docs/report.docx\",\"deck/q3.pptx\"]},$PC,comments:{8:[c(51,\"alice\",$PAGES)]}}"; d1=$(ev "$R" 8); y1=$?
+fx "{files:{8:[\"docs/report.docx\",\"app.css\"]},$PC,comments:{8:[c(52,\"alice\",$PAGES)]}}"; d2=$(ev "$R" 8); y2=$?
+fx "{files:{8:[\"docs/report.docx\"]},$PC,comments:{8:[c(53,\"alice\",img(U+\"after-1.png\")+img(U+\"after-2.png\"))]}}"; d3=$(ev "$R" 8); y3=$?
+fx "{files:{8:[\"docs/report.docx\"]},contents:[\"before-01\",\"after-02\"].map((n)=>process.env.SHA+\":.evidence/\"+n+\".png\"),comments:{8:[c(54,\"alice\",img(U+\"before-01.png\")+img(U+\"after-02.png\"))]}}"; d4=$(ev "$R" 8); y4=$?
+# web captures are not document pages, even when both names end in the same number
+fx "{files:{8:[\"docs/report.docx\"]},comments:{8:[c(55,\"alice\",$GOOD)]}}"; d5=$(ev "$R" 8); y5=$?
+if [ $y1 -eq 0 ] && has "evidence: accepted" "$d1" && [ $y5 -eq 1 ] && has "missing before pages" "$d5" && [ $y2 -eq 1 ] && has "missing before 400px" "$d2" && [ $y3 -eq 1 ] && has "missing before pages" "$d3" && [ $y4 -eq 1 ] && has "missing a page with both before and after" "$d4"; then ok evidence-document-pages
+else fail evidence-document-pages "docs=$y1 mixed=$y2 no-before=$y3 unpaired=$y4 web-on-docs=$y5: $d1 | $d2 | $d3 | $d4 | $d5"; fi
+
 # A landing branch scans only what the default branch lacks, so old leaks on main do not block it (linux x64 only:
 # the scanner is the pinned gitleaks build).
 if [ "$(uname -s)-$(uname -m)" = Linux-x86_64 ]; then

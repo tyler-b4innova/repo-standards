@@ -78,6 +78,20 @@ apply "$R" >/dev/null || why="$why; old-format lock refused"
 [ -f "$R/example" ] || why="$why; a lock header line deleted a repo file"
 if [ -z "$why" ]; then ok apply-no-symlink-writes; else fail apply-no-symlink-writes "$why"; fi
 
+# standards.json allow_paths exempts shipped content (a plugin's .mcp.json) and nothing else; re-apply keeps it
+why=""
+R=$(mkrepo); mkdir -p "$R/plugins/clerk" && echo '{}' > "$R/plugins/clerk/.mcp.json" && commit "$R"
+out=$(check "$R") && why="tracked plugin .mcp.json passed without allow_paths"
+jset "$R/standards.json" 'o.allow_paths=["plugins/*/.mcp.json"]'; commit "$R"
+out=$(check "$R") || why="$why; allowed path still failed: $out"
+apply "$R" >/dev/null; [ "$(node -p 'JSON.stringify(require(process.argv[1]).allow_paths)' "$R/standards.json")" = '["plugins/*/.mcp.json"]' ] || why="$why; re-apply dropped allow_paths"
+echo '{}' > "$R/.mcp.json" && commit "$R"; out=$(check "$R") && why="$why; root .mcp.json passed"
+has ".mcp.json is committed" "$out" || why="$why; root message: $out"
+git -C "$R" rm -q --cached .mcp.json && rm "$R/.mcp.json" && jset "$R/standards.json" 'o.allow_paths="plugins"'; commit "$R"
+out=$(check "$R") && why="$why; a non-list allow_paths passed"
+has "standards.json allow_paths is" "$out" || why="$why; non-list message: $out"
+if [ -z "$why" ]; then ok repo-allow-paths; else fail repo-allow-paths "$why"; fi
+
 # the SessionStart hook: once, under startup|resume, next to the repo's own hooks
 why=""
 R=$(mkrepo)

@@ -33,7 +33,7 @@ cat >"$T/state.json" <<'JSON'
       "bypass_actors": [{"actor_id": 1, "actor_type": "OrganizationAdmin", "bypass_mode": "always"}],
       "conditions": { "ref_name": {"include": ["refs/heads/main", "~DEFAULT_BRANCH"], "exclude": []}, "repository_name": {"include": ["~ALL"], "exclude": []} },
       "rules": [ {"type": "deletion"}, {"type": "non_fast_forward"},
-                 {"type": "pull_request", "parameters": {"required_approving_review_count": 0, "dismiss_stale_reviews_on_push": false, "require_code_owner_review": false, "require_last_push_approval": false, "required_review_thread_resolution": false, "allowed_merge_methods": ["merge","squash","rebase"]}},
+                 {"type": "pull_request", "parameters": {"required_approving_review_count": 0, "dismiss_stale_reviews_on_push": false, "require_code_owner_review": false, "require_last_push_approval": false, "required_review_thread_resolution": false, "require_extra_approval_for_unattributed_changes": true, "allowed_merge_methods": ["merge","squash","rebase"]}},
                  {"type": "required_status_checks", "parameters": {"strict_required_status_checks_policy": false, "do_not_enforce_on_create": true, "required_status_checks": [{"context": "gate", "integration_id": 42}]}} ] },
     { "name": "stray", "target": "branch", "enforcement": "active", "bypass_actors": [],
       "conditions": { "ref_name": {"include": ["refs/heads/release"], "exclude": []}, "repository_name": {"include": ["~ALL"], "exclude": []} },
@@ -49,11 +49,12 @@ out=$(node --input-type=module -e '
   import { readFileSync } from "node:fs";
   const o = JSON.parse(readFileSync(process.argv[1], "utf8"));
   const a = render(o);
-  o.org_admin.review_thread_resolution = true; o.org_admin.strict_status_checks = true; o.org_admin.extra_checks = { default: [{ context: "lint" }], staged_main: [{ context: "promote-main" }], staging: [{ context: "preview" }] }; o.org_admin.push_ignored_paths = [".env.example"]; o.org_admin.max_file_size_mb = 20;
+  o.org_admin.review_thread_resolution = true; o.org_admin.strict_status_checks = true; o.org_admin.extra_checks = { default: [{ context: "lint" }], staged_main: [{ context: "promote-main" }], staging: [{ context: "preview" }] }; o.org_admin.push_ignored_paths = [".env.example"]; o.org_admin.max_file_size_mb = 20; o.org_admin.push_app_bypass = true; o.org_admin.require_extra_approval_for_unattributed_changes = true;
   const b = render(o);
   const rs = (x, n) => x.rulesets.find((r) => r.name.includes(n)).rules;
   const refuse = (oa) => { try { render({ org_admin: oa }); return false; } catch { return true; } };
-  const refused = refuse({}) && refuse({ app: { id: 0, slug: "x" } }) && refuse({ app: { id: 1, slug: "x" }, gate_integration_id: "15" });
+  const refused = refuse({}) && refuse({ app: { id: 0, slug: "x" } }) && refuse({ app: { id: 1, slug: "x" }, gate_integration_id: "15" })
+    && refuse({ app: { id: 1, slug: "x" }, push_app_bypass: "yes" }) && refuse({ app: { id: 1, slug: "x" }, require_extra_approval_for_unattributed_changes: 1 });
   const unpinned = render({ org_admin: { app: { id: 1, slug: "x" } } }).rulesets.find((r) => r.name.includes("default branch")).rules.required_status_checks.required_status_checks;
   console.log(JSON.stringify({
     bypass: [...new Set(a.rulesets.map((r) => `${r.target}:${JSON.stringify(r.bypass_actors)}`))].sort(),
@@ -66,19 +67,24 @@ out=$(node --input-type=module -e '
     checks: ["default branch", "staged main", "org: staging"].map((n) => rs(b, n).required_status_checks.required_status_checks.map((c) => c.context).join("+")),
     ignored: [rs(a, "push").file_path_restriction.ignored_file_paths ?? null, rs(b, "push").file_path_restriction.ignored_file_paths],
     pinned: rs(a, "default branch").required_status_checks.required_status_checks, unpinned,
+    pushOptIn: b.rulesets.find((r) => r.target === "push").bypass_actors,
+    unattributed: [a, b].map((x) => [...new Set(x.rulesets.flatMap((r) => r.rules.pull_request ? [r.rules.pull_request.require_extra_approval_for_unattributed_changes] : []))]),
     placeholders: JSON.stringify(a).includes("\"$"), refused }));' "$T/org.json" 2>&1)
-want='{"bypass":["branch:[{\"actor_id\":4242,\"actor_type\":\"Integration\",\"bypass_mode\":\"always\"},{\"actor_id\":null,\"actor_type\":\"OrganizationAdmin\",\"bypass_mode\":\"pull_request\"}]","push:[{\"actor_id\":4242,\"actor_type\":\"Integration\",\"bypass_mode\":\"always\"}]"],"threadOff":false,"threadOn":true,"stagingThreadOn":true,"direct":["squash"],"staged":["merge"],"vault":true,"size":[50,20],"strict":[[false],[true]],"checks":["gate+lint","gate+promote-main","gate+preview"],"ignored":[null,[".env.example"]],"pinned":[{"context":"gate","integration_id":42}],"unpinned":[{"context":"gate"}],"placeholders":false,"refused":true}'
+want='{"bypass":["branch:[{\"actor_id\":4242,\"actor_type\":\"Integration\",\"bypass_mode\":\"always\"},{\"actor_id\":null,\"actor_type\":\"OrganizationAdmin\",\"bypass_mode\":\"pull_request\"}]","push:[]"],"threadOff":false,"threadOn":true,"stagingThreadOn":true,"direct":["squash"],"staged":["merge"],"vault":true,"size":[50,20],"strict":[[false],[true]],"checks":["gate+lint","gate+promote-main","gate+preview"],"ignored":[null,[".env.example"]],"pinned":[{"context":"gate","integration_id":42}],"unpinned":[{"context":"gate"}],"pushOptIn":[{"actor_id":4242,"actor_type":"Integration","bypass_mode":"always"}],"unattributed":[[false],[true]],"placeholders":false,"refused":true}'
 [ "$out" = "$want" ] && ok org-rulesets-render || fail org-rulesets-render "$out"
 
 # engine-org-dry-run-diff: a dry run names each change (field diffs for a matched ruleset, its old name, creates,
 # the stray delete, the property, a staged repo's missing merge-commit setting, the repo flows) and sends only GETs.
 start "$T/state.json"
 out=$(run --dry-run)
-if [ "$(writes)" = 0 ] && grep -q 'update (was "hand-made main")' <<<"$out" && grep -q 'rules.pull_request.allowed_merge_methods: \["merge","rebase","squash"\] -> \["merge","squash"\]' <<<"$out" \
+# the live ruleset's extra approval for unattributed changes is kept unless the overlay sets it
+node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8")); o.org_admin.require_extra_approval_for_unattributed_changes=false; require("fs").writeFileSync(f+".ua",JSON.stringify(o))' "$T/org.json"
+ua=$(node org/apply.mjs --overlay "$T/org.json.ua" --dry-run 2>&1)
+if ! grep -q unattributed <<<"$out" && grep -q 'rules.pull_request.require_extra_approval_for_unattributed_changes: true -> false' <<<"$ua" && [ "$(writes)" = 0 ] && grep -q 'update (was "hand-made main")' <<<"$out" && grep -q 'rules.pull_request.allowed_merge_methods: \["merge","rebase","squash"\] -> \["merge","squash"\]' <<<"$out" \
   && grep -q 'bypass_actors: .*OrganizationAdmin.* -> \[{"actor_id":4242' <<<"$out" && grep -q '"stray" #[0-9]*: delete' <<<"$out" \
   && grep -q 'repo site: enable allow_merge_commit' <<<"$out" && ! grep -q 'repo app:' <<<"$out" && grep -q 'property flow: create' <<<"$out" && grep -q 'flow=staged: site' <<<"$out" && grep -q 'flow=direct: app$' <<<"$out" && ! grep -q gone <<<"$out"; then
   ok engine-org-dry-run-diff
-else fail engine-org-dry-run-diff "$out"; fi
+else fail engine-org-dry-run-diff "$out :: $ua"; fi
 
 # engine-org-apply-order: apply writes the property, then enables required merge methods, then repo flows, then creates and updates, and deletes last,
 # so no branch loses its required check mid-apply.

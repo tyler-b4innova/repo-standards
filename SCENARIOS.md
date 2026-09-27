@@ -9,6 +9,7 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 - **`ui-paths-evidence-required`**: a pull request changing a UI path (markup, styles, components, .docx, .pptx) fails without an accepted evidence comment and passes with one.
 - **`evidence-comment-author-or-app`**: an evidence comment by anyone but the PR author, an app or an overlay-trusted login is rejected (a forged comment once passed).
 - **`evidence-images-pinned-resolving`**: every evidence image must be in this repository at a 40-hex commit and exist there, as four distinct image files (before and after at 400 and 1280px); the PR helper posts images that way and re-posting updates one comment.
+- **`evidence-document-pages`**: a PR whose UI paths are all documents (.docx, .pptx and similar) accepts before and after page images (`before-N`, `after-N`); a PR that also changes web UI still needs the 400 and 1280px set.
 - **`ui-paths-repo-override`**: `standards.json` `ui_paths` replaces the default globs, and `{ "ignore": [...] }` keeps them while exempting paths (release notes generated upstream once tripped the evidence gate).
 - **`ui-paths-empty-warns`**: an explicit `ui_paths: []` turns the evidence gate off, and `--check` warns naming tracked files the defaults would cover.
 - **`no-evidence-on-main`**: tracked `.evidence/` fails `--check` and `gate`; the PR helper leaves no `.evidence/` on the branch tip after posting.
@@ -32,6 +33,7 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 - **`claude-md-no-own-content`**: a CLAUDE.md with its own instructions fails; `@AGENTS.md` alone passes in `import-only` mode and fails in `forbid` mode.
 - **`model-defaults-repo-scoped`**: apply writes the Claude and Codex model defaults only where the repository sets none; a repository's own model survives `--check` and re-apply (Tyler's rule: a repo override beats the engine default), and a user-level override only warns.
 - **`apply-no-symlink-writes`**: apply writes and deletes only its own paths inside the repository: it refuses, changing nothing, when a path's parent is a symlink or lies outside the tree; a lock line naming anything outside the pack's managed paths, or traversing out of one with `..`, is never deleted; old lock formats are read so retired pack paths are removed (apply once wrote through a symlinked parent).
+- **`repo-allow-paths`**: `standards.json` `allow_paths` (a list of globs) exempts matching tracked files from the `.mcp.json` and forbidden-path checks only (a client plugin ships its own `.mcp.json`); other paths still fail, a non-list fails, and re-apply keeps the key.
 - **`session-hook-single`**: apply keeps the repository's own SessionStart hooks and leaves exactly one `setup.sh --check` hook under matcher `startup|resume`; `--check` fails when the hook sits under another matcher (apply once dropped a repo's hooks with the old group).
 - **`agent-deny-secrets-and-force-push`**: apply writes the deny set (secret reads, `op`, force-push) replacing any repo list, the Codex bypass keys above the first table, and Codex rules that forbid `op` and force-push but allow `--force-with-lease`; a repository that ignores `.codex/` in any form still commits the engine's Codex files.
 
@@ -49,7 +51,7 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 
 ## Org settings (`org/`)
 
-- **`org-rulesets-render`**: the org ruleset set renders from the overlay: PR rule and required `gate` on default branches, promotions on staged `main`, the sync App's bypass.
+- **`org-rulesets-render`**: the org ruleset set renders from the overlay: PR rule and required `gate` on default branches, promotions on staged `main`, the sync App's bypass (on push rulesets only when the overlay sets `push_app_bypass`); a live ruleset's extra approval for unattributed changes is kept unless the overlay sets it.
 - **`org-apply-idempotent`**: `org-apply --dry-run` shows the diff against live settings, and a second apply changes nothing.
 
 ## Engine
