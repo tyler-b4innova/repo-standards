@@ -146,8 +146,8 @@ if (cmd === "classify") {
     // a PR changing only documents needs before and after page images (pdftoppm's before-N/after-N).
     const img = (n, st) => new RegExp(`(^|[/_-])${st}[_-]`, "i").test(n) && !new RegExp(`(^|[/_-])${st === "before" ? "after" : "before"}[_-]`, "i").test(n);
     const shot = (state, w) => names.some((n) => img(n, state) && new RegExp(`(^|[^0-9])${w}\\.(png|jpe?g|webp|gif)$`, "i").test(n));
-    // Document pages pair up by number: at least one page has both a before and an after image.
-    const pages = (state) => new Set(names.filter((n) => img(n, state)).map((n) => n.match(/[_-]0*(\d+)\.(png|jpe?g|webp|gif)$/i)?.[1]).filter(Boolean));
+    // Document pages are pdftoppm's before-N/after-N files, paired by number: at least one page has both.
+    const pages = (state) => new Set(names.map((n) => n.split("/").pop().match(new RegExp(`^${state}-0*(\\d+)\\.(png|jpe?g|webp|gif)$`, "i"))?.[1]).filter(Boolean));
     const [pb, pa] = [pages("before"), pages("after")], paired = [...pb].some((x) => pa.has(x));
     const gaps = docsOnly ? (paired ? [] : [!pb.size ? "before pages" : !pa.size ? "after pages" : "a page with both before and after"])
       : ["before", "after"].flatMap((st) => [400, 1280].filter((w) => !shot(st, w)).map((w) => `${st} ${w}px`));
