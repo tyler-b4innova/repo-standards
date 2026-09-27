@@ -3,7 +3,7 @@
 name: std-gate-rerun
 on:
   issue_comment:
-    types: [created, edited]
+    types: [created, edited, deleted]
   pull_request_review:
     types: [submitted, dismissed]
   pull_request_review_comment:
@@ -17,7 +17,11 @@ concurrency:
   cancel-in-progress: true
 jobs:
   rerun:
-    if: github.event.pull_request || github.event.issue.pull_request
+    # PR comments only, and only from members, collaborators or apps, so outsiders cannot keep gate running.
+    if: >-
+      (github.event.pull_request || github.event.issue.pull_request) &&
+      (github.event.sender.type == 'Bot' ||
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association || github.event.review.author_association))
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     env:

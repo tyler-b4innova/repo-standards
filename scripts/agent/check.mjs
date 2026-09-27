@@ -102,7 +102,8 @@ else {
   }
   for (const host of pack.shared_preview_hosts)
     for (const f of tracked.filter((f) => /(^|\/)wrangler\.(jsonc?|toml)$/.test(f)))
-      if (new RegExp(`(^|[^a-z0-9-])${host.replace(/\./g, "\\.")}`).test(read(f) ?? ""))
+      // The exact host only: {label}.preview.<zone> is the per-Worker form and must not match preview.<zone>.
+      if (new RegExp(`(^|[^a-z0-9.-])${host.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![a-z0-9.-])`, "i").test(read(f) ?? ""))
         fail(`${f} uses the shared preview host ${host} (it binds to one Worker)`, `use a per-Worker host: ${pack.preview_host_pattern ?? "preview.<zone>"}`);
   if (Array.isArray(std?.ui_paths) && !std.ui_paths.length) {
     const ui = tracked.filter((f) => pack.ui_paths.some((g) => glob(g).test(f)) && !pack.ui_ignore.some((g) => glob(g).test(f)));

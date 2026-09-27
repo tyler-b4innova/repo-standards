@@ -143,7 +143,9 @@ if (cmd === "classify") {
     if (!names.some((n) => /(^|[^0-9])400\.[a-z]+$/i.test(n)) || !names.some((n) => /(^|[^0-9])1280\.[a-z]+$/i.test(n))) { bad.push(`${who}: needs captures at 400 and 1280px`); continue; }
     const outside = shas.filter((x) => !inHead(x));
     if (outside.length) { bad.push(`${who}: evidence commit ${outside[0].slice(0, 7)} is not in this PR's history`); continue; }
-    const stale = shas.flatMap(later).find((x) => ui(git("diff-tree", "--no-commit-id", "--name-only", "-r", x).split("\n").filter((f) => f && !f.startsWith(".evidence/"))).length);
+    // Each first-parent commit against its first parent, so a merged side branch's UI changes count too.
+    const touched = (x) => { try { return git("diff", "--name-only", `${x}^1`, x).split("\n").filter((f) => f && !f.startsWith(".evidence/")); } catch { return []; } };
+    const stale = shas.flatMap(later).find((x) => ui(touched(x)).length);
     if (stale) { bad.push(`${who}: UI changed after the evidence (commit ${stale.slice(0, 7)}); capture again`); continue; }
     console.log(`evidence: accepted ${c.html_url}`);
     process.exit(0);
@@ -169,16 +171,23 @@ if (cmd === "classify") {
   const reviewed = (row && head.startsWith(row[2]) && /Completed/i.test(row[1])) || (!summary && (await get(`/pulls/${n}/reviews?per_page=100`)).some((r) => bot(r.user) && r.commit_id === head));
   if (!summary && !reviewed) {
     let seen = false;
-    for (const p of (await get(`/pulls?state=all&per_page=6`)).filter((p) => p.number !== n))
+    // Codex skips drafts and may skip bot PRs, so sample up to 20 recent ready PRs by people.
+    for (const p of (await get(`/pulls?state=all&per_page=40`)).filter((p) => p.number !== n && !p.draft && p.user?.type !== "Bot").slice(0, 20))
       if ((await get(`/issues/${p.number}/comments?per_page=100`)).some((c) => bot(c.user) && c.body?.includes(MARK))) { seen = true; break; }
     if (!seen) { console.log("::notice::codex: no Codex reviews on this repo's recent PRs; not required"); process.exit(0); }
   }
   if (reviewed) {
-    const q = `query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100){nodes{isResolved comments(first:1){nodes{author{login} url}}}}}}}`;
+    const q = `query($o:String!,$r:String!,$n:Int!,$c:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$c){pageInfo{hasNextPage endCursor} nodes{isResolved comments(first:1){nodes{author{login} url}}}}}}}`;
     const gql = env.GITHUB_GRAPHQL_URL || (base.endsWith("/api/v3") ? base.replace(/\/v3$/, "/graphql") : `${base}/graphql`);
-    const [o, r] = repo.split("/"), res = await fetch(gql, { method: "POST", headers: { ...auth, "Content-Type": "application/json" }, body: JSON.stringify({ query: q, variables: { o, r, n } }) });
-    const threads = (await res.json())?.data?.repository?.pullRequest?.reviewThreads?.nodes;
-    if (!threads) fail("codex: could not read review threads", "re-run gate");
+    const [o, r] = repo.split("/"), threads = [];
+    for (let c = null; ; ) {
+      const res = await fetch(gql, { method: "POST", headers: { ...auth, "Content-Type": "application/json" }, body: JSON.stringify({ query: q, variables: { o, r, n, c } }) });
+      const page = (await res.json())?.data?.repository?.pullRequest?.reviewThreads;
+      if (!page) fail("codex: could not read review threads", "re-run gate");
+      threads.push(...page.nodes);
+      if (!page.pageInfo?.hasNextPage) break;
+      c = page.pageInfo.endCursor;
+    }
     const open = threads.filter((t) => !t.isResolved && /codex/i.test(t.comments.nodes[0]?.author?.login ?? ""));
     if (open.length) fail(`codex: ${open.length} unresolved Codex thread(s): ${open.slice(0, 3).map((t) => t.comments.nodes[0].url).join(" ")}`, "fix each finding or reply with the reason and resolve the thread, then comment on the PR to re-run gate");
     console.log(`codex: verdict on ${head.slice(0, 7)}, no open findings`);

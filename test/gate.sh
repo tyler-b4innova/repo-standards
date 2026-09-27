@@ -145,11 +145,15 @@ else fail evidence-images-pinned-resolving "bad-images=$s1 good=$s2: $out1"; fi
 # Stale or incomplete evidence: a later UI commit, a commit outside the PR, or no 1280px capture.
 R=$(mkev); echo "a{}" > "$R/app.css" && commit "$R" "UI after the evidence"
 fx '{files:{7:["app.css"]},comments:{7:[c(41,"alice",'"$GOOD"')]}}'; st1=$(ev "$R" 7); x1=$?
+# A side branch with a UI change merged after the evidence makes it stale too.
+R=$(mkev); gc -C "$R" checkout -qb side; echo "b{}" > "$R/side.css" && commit "$R" "side UI"; gc -C "$R" checkout -q main
+echo x > "$R/notes.txt" && commit "$R" "unrelated"; gc -C "$R" merge -q --no-ff --no-edit side
+fx '{files:{7:["side.css"]},comments:{7:[c(44,"alice",'"$GOOD"')]}}'; st4=$(ev "$R" 7); x4=$?
 R=$(mkev); RND=$(node -e 'console.log(require("crypto").randomBytes(20).toString("hex"))')
 fx "{files:{7:[\"app.css\"]},contents:[\"$RND:.evidence/a-400.png\",\"$RND:.evidence/a-1280.png\"],comments:{7:[c(42,\"alice\",img(\"https://github.com/acme/demo/blob/$RND/.evidence/a-400.png\")+img(\"https://github.com/acme/demo/blob/$RND/.evidence/a-1280.png\"))]}}"; st2=$(ev "$R" 7); x2=$?
 fx '{files:{7:["app.css"]},comments:{7:[c(43,"alice",img(U+"after-home-400.png?raw=true"))]}}'; st3=$(ev "$R" 7); x3=$?
-if [ $x1 -eq 1 ] && has "UI changed after the evidence" "$st1" && [ $x2 -eq 1 ] && has "not in this PR's history" "$st2" && [ $x3 -eq 1 ] && has "400 and 1280px" "$st3"; then ok evidence-images-pinned-resolving
-else fail evidence-images-pinned-resolving "stale=$x1 outside=$x2 no1280=$x3: $st1 | $st2 | $st3"; fi
+if [ $x1 -eq 1 ] && has "UI changed after the evidence" "$st1" && [ $x2 -eq 1 ] && has "not in this PR's history" "$st2" && [ $x3 -eq 1 ] && has "400 and 1280px" "$st3" && [ $x4 -eq 1 ] && has "UI changed after the evidence" "$st4"; then ok evidence-images-pinned-resolving
+else fail evidence-images-pinned-resolving "stale=$x1 outside=$x2 no1280=$x3 merged=$x4: $st1 | $st2 | $st3 | $st4"; fi
 
 # A push to standards/vX.Y.Z (sync's landing branch) passes the evidence step only when it changes pack-managed paths.
 R=$(mkrepo); gc -C "$R" update-ref refs/remotes/origin/main HEAD

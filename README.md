@@ -29,6 +29,8 @@ Models: Claude `opus` for the main thread and subagents (`/model` still switches
 
 ## Gotchas
 
+- The `deploy` module runs `wrangler deploy` only; a Worker with D1 must run `wrangler d1 migrations apply <db> --remote` before it.
+
 - In issues and comments write "the Codex mention", never the literal handle: any comment containing it starts a paid task, even on a closed issue.
 
 ## Develop
