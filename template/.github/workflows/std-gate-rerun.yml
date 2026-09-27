@@ -12,9 +12,6 @@ permissions:
   actions: write
   contents: read
   pull-requests: read
-concurrency:
-  group: std-gate-rerun-${{ github.event.pull_request.number || github.event.issue.number }}
-  cancel-in-progress: true
 jobs:
   rerun:
     # PR comments only, and only from the PR author (whose evidence gate trusts), members, collaborators or apps,
@@ -30,14 +27,23 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       PR: ${{ github.event.pull_request.number || github.event.issue.number }}
     steps:
+      # No concurrency group: a cancelled run of this job stays on the PR as a failed check and GitHub then reports
+      # the PR UNSTABLE. Each run waits for the gate run instead, and skips when another event already re-ran it.
       - run: |
           set -euo pipefail
+          start=$(date -u +%s)
+          api="repos/$GITHUB_REPOSITORY/actions"
           sha=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq .head.sha)
           for i in $(seq 70); do
-            run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/std-gate.yml/runs?event=pull_request&head_sha=$sha&per_page=20" --jq "[.workflow_runs[] | select(any(.pull_requests[]; .number == $PR))][0] // empty | \"\\(.id) \\(.status)\"")
+            run=$(gh api "$api/workflows/std-gate.yml/runs?event=pull_request&head_sha=$sha&per_page=20" --jq "[.workflow_runs[] | select(any(.pull_requests[]; .number == $PR))][0] // empty | \"\\(.id) \\(.status) \\(.run_started_at | fromdateiso8601)\"")
             [ -n "$run" ] || { echo "no pull_request gate run for $sha yet"; exit 0; }
-            [ "${run#* }" = completed ] && break
+            read -r id status started <<<"$run"
+            [ "$status" = completed ] && break
             sleep 30
           done
-          echo "re-running gate run ${run% *} for ${sha:0:7}"
-          gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/${run% *}/rerun"
+          [ "$status" = completed ] || { echo "gate run $id is still $status; the next event re-runs it"; exit 0; }
+          [ "$started" -lt "$start" ] || { echo "gate run $id already re-ran after this event"; exit 0; }
+          echo "re-running gate run $id for ${sha:0:7}"
+          gh api -X POST "$api/runs/$id/rerun" >/dev/null && exit 0
+          [ "$(gh api "$api/runs/$id" --jq .status)" != completed ] || exit 1
+          echo "another event re-ran gate run $id first"

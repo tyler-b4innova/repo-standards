@@ -180,11 +180,13 @@ $r1
 $r2"; fi
 
 
-# A closed mapping PR leaves its branch behind; a rerun reuses the branch (file sha from the branch) and opens a new PR.
+# A closed mapping PR leaves its branch behind, possibly with someone's later work: a rerun never deletes it; it opens
+# a new PR from the next free name (…-2), and a further rerun sees that open PR.
 n=$(q acme/filer 's.items.find(i => i.pull && i.state === "open")?.number')
 curl -s -X PATCH -d '{"state":"closed"}' "$API/repos/acme/filer/pulls/$n" >/dev/null
-r3=$(setup); rc=$?
-prs=$(q acme/filer 's.items.filter(i => i.pull).length + " " + s.items.filter(i => i.pull && i.state === "open").length')
-if [ $rc -eq 0 ] && [ "$prs" = "2 1" ] && [ -n "$(printf '%s' "$r3" | grep 'mapping PR')" ]; then ok error-tracker-rerun-safe
-else fail error-tracker-rerun-safe "rc=$rc prs=$prs $r3"; fi
+g2=$(mark); r3=$(setup); rc=$?; r4=$(setup)
+prs=$(q acme/filer 's.items.filter(i => i.pull).map(i => i.state + ":" + i.head).join(" ")')
+if [ $rc -eq 0 ] && [ "$prs" = "closed:chore/sentry-project-web open:chore/sentry-project-web-2" ] && [ -n "$(printf '%s' "$r3" | grep 'mapping PR')" ] \
+  && [ -z "$(writes_since "$g2" | grep DELETE)" ] && [ -n "$(printf '%s' "$r4" | grep 'mapping PR already open')" ]; then ok error-tracker-rerun-safe
+else fail error-tracker-rerun-safe "rc=$rc prs=$prs deletes=$(writes_since "$g2" | grep DELETE) $r3 | $r4"; fi
 done_cases

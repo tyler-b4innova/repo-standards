@@ -92,6 +92,18 @@ out=$(check "$R") && why="$why; a non-list allow_paths passed"
 has "standards.json allow_paths is" "$out" || why="$why; non-list message: $out"
 if [ -z "$why" ]; then ok repo-allow-paths; else fail repo-allow-paths "$why"; fi
 
+# overlay-launcher-validated: the example's launcher settings load; typos, unknown vendors or lanes, bad schedules and
+# credential-looking values are refused before anything is written
+why=""
+R=$(mkrepo) || why="example overlay with launcher refused"
+lbad() { node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));(new Function("l",process.argv[3]))(o.launcher);require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$T/lov.json" "$1"
+  local d; d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; OVERLAY="$T/lov.json" apply "$d" 2>&1 && echo "ACCEPTED"; [ -z "$(ls -A "$d" | grep -v '^.git$')" ] || echo "WROTE"; }
+for c in 'l.lane=[]|launcher.lane is not a launcher setting' 'l.lanes[0].vendor="gpt"|vendor must be claude or codex' 'l.unassigned=["ghost"]|names ghost, which is not a lane' \
+  'l.dispatch[0].every="hourly"|every must look like' 'l.lanes[1].accounts=["gh"+"p_"+"a".repeat(36)]|looks like a credential' 'l.lanes.push({name:"claude",vendor:"codex"})|duplicate lane claude'; do
+  out=$(lbad "${c%%|*}"); has "${c#*|}" "$out" && ! has ACCEPTED "$out" && ! has WROTE "$out" || why="$why; [${c%%|*}] $out"
+done
+if [ -z "$why" ]; then ok overlay-launcher-validated; else fail overlay-launcher-validated "$why"; fi
+
 # the SessionStart hook: once, under startup|resume, next to the repo's own hooks
 why=""
 R=$(mkrepo)

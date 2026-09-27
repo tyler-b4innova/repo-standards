@@ -68,5 +68,36 @@
       "example-org-bot[bot]"
     ]
   },
-  "design_signoff": true
+  "design_signoff": true,
+  "launcher": {
+    "repos": "*",
+    "lanes": [
+      {
+        "name": "claude",
+        "vendor": "claude",
+        "slots": 2,
+        "timeoutMin": 60
+      },
+      {
+        "name": "codex",
+        "vendor": "codex",
+        "slots": 2
+      }
+    ],
+    "unassigned": [
+      "codex"
+    ],
+    "dispatch": [
+      {
+        "repo": "standards",
+        "workflow": "sync.yml",
+        "every": "1h"
+      }
+    ],
+    "sections": [
+      "Goal",
+      "Acceptance criteria"
+    ],
+    "bodyBudget": 8000
+  }
 }

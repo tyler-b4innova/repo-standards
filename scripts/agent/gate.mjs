@@ -120,7 +120,7 @@ if (cmd === "classify") {
   }
   if (!changed.length) { console.log("evidence: no UI paths changed; not required"); process.exit(0); }
   console.log(`UI paths changed:\n  ${changed.join("\n  ")}`);
-  const docsOnly = changed.every((f) => /\.(docx|pptx|xlsx|odt|odp|ods|pdf)$/i.test(f));
+  const isDoc = (f) => /\.(docx|pptx|xlsx|odt|odp|ods|pdf)$/i.test(f), docs = changed.some(isDoc), web = changed.some((f) => !isDoc(f));
   const trusted = pk.evidence_trusted_authors ?? ["pr_author", "app"];
   const trust = (c) => (trusted.includes("pr_author") && c.user?.login === pr.user.login) || (trusted.includes("app") && c.performed_via_github_app) || trusted.includes(c.user?.login);
   const esc = (s) => s.replace(/[.]/g, "\\.");
@@ -143,15 +143,17 @@ if (cmd === "classify") {
     if (miss.length) { bad.push(`${who}: unresolved (need this repo, a 40-hex SHA, the file):\n    ${miss.join("\n    ")}`); continue; }
     const shas = [...new Set(urls.map((u) => u.match(pin)[1]))], names = urls.map((u) => decodeURIComponent(u.match(pin)[2]));
     // Distinct images: a file counts for one state only. Web changes need before and after at 400 and 1280px;
-    // a PR changing only documents needs before and after page images (pdftoppm's before-N/after-N).
+    // document changes need before and after page images (pdftoppm's before-N/after-N); a PR with both needs both.
     const img = (n, st) => new RegExp(`(^|[/_-])${st}[_-]`, "i").test(n) && !new RegExp(`(^|[/_-])${st === "before" ? "after" : "before"}[_-]`, "i").test(n);
     const shot = (state, w) => names.some((n) => img(n, state) && new RegExp(`(^|[^0-9])${w}\\.(png|jpe?g|webp|gif)$`, "i").test(n));
     // Document pages are pdftoppm's before-N/after-N files, paired by number: at least one page has both.
     const pages = (state) => new Set(names.map((n) => n.split("/").pop().match(new RegExp(`^${state}-0*(\\d+)\\.(png|jpe?g|webp|gif)$`, "i"))?.[1]).filter(Boolean));
     const [pb, pa] = [pages("before"), pages("after")], paired = [...pb].some((x) => pa.has(x));
-    const gaps = docsOnly ? (paired ? [] : [!pb.size ? "before pages" : !pa.size ? "after pages" : "a page with both before and after"])
-      : ["before", "after"].flatMap((st) => [400, 1280].filter((w) => !shot(st, w)).map((w) => `${st} ${w}px`));
-    if (gaps.length) { bad.push(`${who}: needs ${docsOnly ? "before and after page images (before-N, after-N)" : "before and after captures at 400 and 1280px"} (missing ${gaps.join(", ")})`); continue; }
+    // Each kind that changed needs its own set: web captures at both widths, document pages.
+    const gaps = [...(web ? ["before", "after"].flatMap((st) => [400, 1280].filter((w) => !shot(st, w)).map((w) => `${st} ${w}px`)) : []),
+      ...(docs && !paired ? [!pb.size ? "before pages" : !pa.size ? "after pages" : "a page with both before and after"] : [])];
+    const need = [web && "before and after captures at 400 and 1280px", docs && "before and after page images (before-N, after-N)"].filter(Boolean).join(" and ");
+    if (gaps.length) { bad.push(`${who}: needs ${need} (missing ${gaps.join(", ")})`); continue; }
     const outside = shas.filter((x) => !inHead(x));
     if (outside.length) { bad.push(`${who}: evidence commit ${outside[0].slice(0, 7)} is not in this PR's history`); continue; }
     // Each first-parent commit against its first parent, so a merged side branch's UI changes count too.

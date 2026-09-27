@@ -71,17 +71,20 @@ else {
 }
 
 // 3. projects.json in the filer repo, by PR
-const branch = `chore/sentry-project-${repo}`;
+const stem = `chore/sentry-project-${repo}`;
 const file = await gh("GET", `repos/${FILER}/contents/projects.json`);
 const projects = file ? JSON.parse(Buffer.from(file.content, "base64").toString("utf8")) : {};
-const [pr] = await gh("GET", `repos/${FILER}/pulls?state=open&head=${FILER.split("/")[0]}:${encodeURIComponent(branch)}`);
+const mine = (ref) => ref === stem || (ref.startsWith(`${stem}-`) && /^\d+$/.test(ref.slice(stem.length + 1)));
+const pr = (await gh("GET", `repos/${FILER}/pulls?state=open&per_page=100`)).find((p) => mine(p.head?.ref ?? ""));
 if (JSON.stringify(projects[repo]) === JSON.stringify(entry)) step(`${FILER} already files ${repo}`);
 else if (pr) step(`${FILER} mapping PR already open: ${pr.html_url}`);
 else if (dry) step(`would open a ${FILER} PR mapping ${repo} → ${JSON.stringify(entry)}`);
 else {
   const main = (await gh("GET", `repos/${FILER}`)).default_branch;
-    // A leftover branch (earlier run, PR closed) is re-created from the current default so the new PR cannot conflict.
-  if (await gh("GET", `repos/${FILER}/git/ref/heads/${encodeURIComponent(branch)}`)) await gh("DELETE", `repos/${FILER}/git/refs/heads/${encodeURIComponent(branch)}`);
+  // A leftover branch (earlier run, PR closed) may hold someone's later work: never delete it; take the next free
+  // name (<stem>-2, -3, …) from the current default so the new PR cannot conflict.
+  let branch = stem;
+  for (let n = 2; await gh("GET", `repos/${FILER}/git/ref/heads/${encodeURIComponent(branch)}`); n++) branch = `${stem}-${n}`;
   const head = (await gh("GET", `repos/${FILER}/git/ref/heads/${main}`)).object.sha;
   await gh("POST", `repos/${FILER}/git/refs`, { ref: `refs/heads/${branch}`, sha: head });
   const onBranch = await gh("GET", `repos/${FILER}/contents/projects.json?ref=${encodeURIComponent(branch)}`);

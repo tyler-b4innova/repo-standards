@@ -1,6 +1,19 @@
 # repo-standards
 
-An org-neutral engine for repo-scoped agent standards. Each organization keeps a small overlay (`org.json`, data only) in its own standards repository and pins an engine release; the engine renders and applies the pack from it. Top-level keys the engine does not read (for example `launcher`, which the org's dispatcher reads) pass through untouched.
+An org-neutral engine for repo-scoped agent standards. Each organization keeps a small overlay (`org.json`, data only) in its own standards repository and pins an engine release; the engine renders and applies the pack from it. The optional `launcher` key holds that org's own launcher settings (each org runs its own launcher deployment); the engine validates it on every load and never writes it into repositories:
+
+```json
+"launcher": {
+  "repos": "*",
+  "lanes": [{ "name": "claude", "vendor": "claude", "slots": 2, "accounts": ["<account id>"], "base": "<branch>", "timeoutMin": 60, "github": "<login>" }],
+  "unassigned": ["<lane>"],
+  "dispatch": [{ "repo": "standards", "workflow": "sync.yml", "every": "1h" }],
+  "sections": ["Goal", "Acceptance criteria"], "bodyBudget": 8000, "uiPaths": ["<glob>"],
+  "duplicates": { "apps": ["<app slug>"] }
+}
+```
+
+Every key is optional except a lane's `name` and `vendor` (`claude` or `codex`). Unknown keys, lanes named in `unassigned` that do not exist, schedules other than `<n>m|h|d`, and credential-looking values are refused. Other top-level keys the engine does not read pass through untouched.
 
 ## Consumer repositories
 
@@ -17,7 +30,7 @@ npx -y github:tyler-b4innova/repo-standards#vX.Y.Z apply --target <repo> --overl
 
 ## Gate
 
-`gate` runs the offline check, evidence (a PR changing UI paths needs a comment by a trusted author with images pinned to a commit in this repo: before and after at 400 and 1280px, or before-N/after-N page images when only documents changed), a checksum-pinned secret scan, install/typecheck/build, the e2e suite (none fails unless `"e2e": false`), and `scripts/agent/gate.local.sh`. **Promotions** (flow `staged`: default branch into another branch) need no evidence comment; a promotion that changes UI paths passes only with an APPROVED review on the current head SHA by a human with write access (the review event re-runs `gate`, so auto-merge completes). Non-UI promotions pass on green. The last step, **codex review**, passes a non-draft PR only when the Codex summary comment shows the current head as Completed and no Codex thread is unresolved; it waits up to 20 minutes after a push or ready-for-review, then fails so the launcher can request a review. Drafts, repos with no Codex reviews, `codex_review: false`, and the sync's fallback PRs are exempt. `std-gate-rerun.yml` re-runs the PR's gate run when a comment or review lands (so the Codex summary edit, or an approval, re-evaluates it); resolving a thread fires no event, so comment afterwards.
+`gate` runs the offline check, evidence (a PR changing UI paths needs a comment by a trusted author with images pinned to a commit in this repo: before and after at 400 and 1280px for web changes, and before-N/after-N page images for documents), a checksum-pinned secret scan, install/typecheck/build, the e2e suite (none fails unless `"e2e": false`), and `scripts/agent/gate.local.sh`. **Promotions** (flow `staged`: default branch into another branch) need no evidence comment; a promotion that changes UI paths passes only with an APPROVED review on the current head SHA by a human with write access (the review event re-runs `gate`, so auto-merge completes). Non-UI promotions pass on green. The last step, **codex review**, passes a non-draft PR only when the Codex summary comment shows the current head as Completed and no Codex thread is unresolved; it waits up to 20 minutes after a push or ready-for-review, then fails so the launcher can request a review. Drafts, repos with no Codex reviews, `codex_review: false`, and the sync's fallback PRs are exempt. `std-gate-rerun.yml` re-runs the PR's gate run when a comment or review lands (so the Codex summary edit, or an approval, re-evaluates it); resolving a thread fires no event, so comment afterwards.
 
 ## One-time, per person
 
