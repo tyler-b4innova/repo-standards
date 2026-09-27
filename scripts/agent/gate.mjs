@@ -76,7 +76,7 @@ if (cmd === "classify") {
   if (!pr && env.GITHUB_EVENT_NAME === "push" && /^standards\/v\d+\.\d+\.\d+$/.test(env.GITHUB_REF_NAME ?? "")) {
     const app = (json("scripts/agent/pack.json") ?? {}).sync_app_login;
     if (!app || event.sender?.login !== app) fail(`${env.GITHUB_REF_NAME} was pushed by @${event.sender?.login}, not the sync App${app ? ` @${app}` : " (overlay sync.app_login unset)"}`, "only the org's sync App pushes standards/v branches; open a pull request instead");
-    const def = event.repository?.default_branch ?? "main", paths = (t) => (t ?? "").split("\n").filter((l) => l && !l.startsWith("#")).map((l) => l.split(/\s+/)[1]);
+    const def = event.repository?.default_branch ?? "main", paths = (t) => (t ?? "").split("\n").map((l) => l.match(/^(?:sha256 )?[0-9a-f]{64}\s+(\S+)\s*$/)?.[1]).filter(Boolean);
     let base = "";
     try { base = git("show", `origin/${def}:standards.lock`); } catch {}
     const prefix = /^(\.agents\/skills\/std-[^/]+\/|scripts\/agent\/|\.github\/workflows\/std-[^/]+$|\.github\/(PULL_REQUEST_TEMPLATE\.md|ISSUE_TEMPLATE\/agent-task\.md)$|\.codex\/rules\/)/;
@@ -124,7 +124,7 @@ if (cmd === "classify") {
   const esc = (s) => s.replace(/[.]/g, "\\.");
   const pin = new RegExp(`^${esc(env.GITHUB_SERVER_URL || "https://github.com")}/${esc(repo)}/(?:blob|raw)/([0-9a-f]{40})/(\\.evidence/[^?#]+)(?:[?#].*)?$`, "i");
   // Accepted: a trusted comment whose images are all in this repo at a commit in the PR head's history, covering
-  // 400 and 1280px, with no later first-parent commit touching a UI path (evidence goes stale when the UI changes).
+  // before and after at 400 and 1280px, with no later first-parent commit touching a UI path (evidence goes stale when the UI changes).
   const head = live.head.sha, inHead = (c) => { try { git("merge-base", "--is-ancestor", c, head); return true; } catch { return false; } };
   const later = (c) => { try { return git("log", "--first-parent", "--format=%H", `${c}..${head}`).split("\n").filter(Boolean); } catch { return []; } };
   const bad = [];
@@ -140,7 +140,9 @@ if (cmd === "classify") {
     }
     if (miss.length) { bad.push(`${who}: unresolved (need this repo, a 40-hex SHA, the file):\n    ${miss.join("\n    ")}`); continue; }
     const shas = [...new Set(urls.map((u) => u.match(pin)[1]))], names = urls.map((u) => decodeURIComponent(u.match(pin)[2]));
-    if (!names.some((n) => /(^|[^0-9])400\.[a-z]+$/i.test(n)) || !names.some((n) => /(^|[^0-9])1280\.[a-z]+$/i.test(n))) { bad.push(`${who}: needs captures at 400 and 1280px`); continue; }
+    const shot = (state, w) => names.some((n) => new RegExp(`(^|[/_-])${state}[_-].*(^|[^0-9])${w}\\.[a-z]+$`, "i").test(n));
+    const gaps = ["before", "after"].flatMap((st) => [400, 1280].filter((w) => !shot(st, w)).map((w) => `${st} ${w}px`));
+    if (gaps.length) { bad.push(`${who}: needs before and after captures at 400 and 1280px (missing ${gaps.join(", ")})`); continue; }
     const outside = shas.filter((x) => !inHead(x));
     if (outside.length) { bad.push(`${who}: evidence commit ${outside[0].slice(0, 7)} is not in this PR's history`); continue; }
     // Each first-parent commit against its first parent, so a merged side branch's UI changes count too.
@@ -166,7 +168,9 @@ if (cmd === "classify") {
   if (pr.draft) { console.log("codex: draft, not evaluated"); process.exit(0); }
   if (pk.sync_app_login && pr.user?.login === pk.sync_app_login && /^standards\/v\d+\.\d+\.\d+$/.test(pr.head.ref)) { console.log("codex: pack-sync fallback PR, exempt"); process.exit(0); }
   const bot = (u) => /codex/i.test(u?.login ?? "") && u?.type === "Bot", MARK = "<!-- codex-pull-request-review-summary -->";
-  const summary = (await get(`/issues/${n}/comments?per_page=100`)).filter((c) => bot(c.user) && c.body?.includes(MARK)).at(-1);
+  const comments = [];
+  for (let page = 1; ; page++) { const b = await get(`/issues/${n}/comments?per_page=100&page=${page}`); comments.push(...b); if (b.length < 100) break; }
+  const summary = comments.filter((c) => bot(c.user) && c.body?.includes(MARK)).at(-1);
   const row = summary?.body.match(/\|[^|\n]*Code Review[^|\n]*\|([^|\n]*)\|\s*`([0-9a-f]{7,40})`\s*\|/i);
   const reviewed = (row && head.startsWith(row[2]) && /Completed/i.test(row[1])) || (!summary && (await get(`/pulls/${n}/reviews?per_page=100`)).some((r) => bot(r.user) && r.commit_id === head));
   if (!summary && !reviewed) {

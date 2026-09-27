@@ -34,7 +34,7 @@ else {
   else {
     const one = (k, vals) => vals.includes(std[k]) || fail(`standards.json ${k} is ${JSON.stringify(std[k])}`, `use one of ${vals.join("|")}`);
     one("pack", [pack.pack]); one("profile", ["internal", "client"]); one("dispatch", ["auto", "manual", "off"]);
-    one("sensitive", [true, false]); one("e2e", [undefined, false]); one("flow", [undefined, "staged", "direct"]); one("design_signoff", [undefined, true, false]);
+    one("sensitive", [true, false]); if (!(std.e2e === undefined || std.e2e === false || (typeof std.e2e === "string" && std.e2e.trim()))) fail(`standards.json e2e is ${JSON.stringify(std.e2e)}`, "use false (docs/static only) or the e2e command"); one("flow", [undefined, "staged", "direct"]); one("design_signoff", [undefined, true, false]);
     if (!/^\d+\.\d+\.\d+$/.test(std.version ?? "")) fail("standards.json version is not X.Y.Z", restore("standards.json"));
     const globs = (v) => v === undefined || (Array.isArray(v) && v.every((g) => typeof g === "string"));
     const ui = std.ui_paths;

@@ -90,11 +90,11 @@ PORT=$(wait_port "$T/port") || { fail stub-start "gate-github stub did not start
 # fx '<js object>': write the fixture; helpers c(id, login, body, app) and img(url-suffix); files: {pr: [...]}
 fx() { node -e 'const S=process.env.SHA,U="https://github.com/acme/demo/blob/"+S+"/.evidence/",img=(u)=>"![shot]("+u+")",
 c=(id,login,body,app)=>({id,html_url:"https://github.com/acme/demo/pull/9#issuecomment-"+id,user:{login},performed_via_github_app:app?{slug:"evidence-app"}:null,body});
-require("fs").writeFileSync(process.env.FX,JSON.stringify({repo:"acme/demo",files:{},comments:{},contents:[S+":.evidence/after-home-400.png",S+":.evidence/after-home-1280.png"],...eval("("+process.argv[1]+")")}))' "$1"; }
+require("fs").writeFileSync(process.env.FX,JSON.stringify({repo:"acme/demo",files:{},comments:{},contents:["before","after"].flatMap((b)=>[S+":.evidence/"+b+"-home-400.png",S+":.evidence/"+b+"-home-1280.png"]),...eval("("+process.argv[1]+")")}))' "$1"; }
 # ev <repo> <pr>: the evidence step on a pull_request event
 ev() { printf '{"pull_request":{"number":%s,"user":{"login":"alice"},"head":{"sha":"%s","ref":"feat"},"base":{"ref":"main"}}}\n' "$2" "$(git -C "$1" rev-parse HEAD)" > "$T/event.json"
   (cd "$1" && GITHUB_EVENT_PATH="$T/event.json" GITHUB_API_URL="http://127.0.0.1:$PORT" GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=stub-token node scripts/agent/gate.mjs evidence) 2>&1; }
-GOOD='img(U+"after-home-400.png?raw=true")+"\n"+img(U+"after-home-1280.png?raw=true")'
+GOOD='["before","after"].flatMap((b)=>[img(U+b+"-home-400.png?raw=true"),img(U+b+"-home-1280.png?raw=true")]).join("\n")'
 
 R=$(mkev)
 fx '{files:{1:[...Array.from({length:150},(_,i)=>"lib/m"+i+".mjs"),"src/components/Button.tsx"]}}'
@@ -150,9 +150,9 @@ R=$(mkev); gc -C "$R" checkout -qb side; echo "b{}" > "$R/side.css" && commit "$
 echo x > "$R/notes.txt" && commit "$R" "unrelated"; gc -C "$R" merge -q --no-ff --no-edit side
 fx '{files:{7:["side.css"]},comments:{7:[c(44,"alice",'"$GOOD"')]}}'; st4=$(ev "$R" 7); x4=$?
 R=$(mkev); RND=$(node -e 'console.log(require("crypto").randomBytes(20).toString("hex"))')
-fx "{files:{7:[\"app.css\"]},contents:[\"$RND:.evidence/a-400.png\",\"$RND:.evidence/a-1280.png\"],comments:{7:[c(42,\"alice\",img(\"https://github.com/acme/demo/blob/$RND/.evidence/a-400.png\")+img(\"https://github.com/acme/demo/blob/$RND/.evidence/a-1280.png\"))]}}"; st2=$(ev "$R" 7); x2=$?
-fx '{files:{7:["app.css"]},comments:{7:[c(43,"alice",img(U+"after-home-400.png?raw=true"))]}}'; st3=$(ev "$R" 7); x3=$?
-if [ $x1 -eq 1 ] && has "UI changed after the evidence" "$st1" && [ $x2 -eq 1 ] && has "not in this PR's history" "$st2" && [ $x3 -eq 1 ] && has "400 and 1280px" "$st3" && [ $x4 -eq 1 ] && has "UI changed after the evidence" "$st4"; then ok evidence-images-pinned-resolving
+fx "{files:{7:[\"app.css\"]},contents:[\"before\",\"after\"].flatMap((b)=>[\"$RND:.evidence/\"+b+\"-a-400.png\",\"$RND:.evidence/\"+b+\"-a-1280.png\"]),comments:{7:[c(42,\"alice\",[\"before\",\"after\"].flatMap((b)=>[img(\"https://github.com/acme/demo/blob/$RND/.evidence/\"+b+\"-a-400.png\"),img(\"https://github.com/acme/demo/blob/$RND/.evidence/\"+b+\"-a-1280.png\")]).join(\"\"))]}}"; st2=$(ev "$R" 7); x2=$?
+fx '{files:{7:["app.css"]},comments:{7:[c(43,"alice",img(U+"before-home-400.png?raw=true")+img(U+"after-home-400.png?raw=true")+img(U+"after-home-1280.png?raw=true"))]}}'; st3=$(ev "$R" 7); x3=$?
+if [ $x1 -eq 1 ] && has "UI changed after the evidence" "$st1" && [ $x2 -eq 1 ] && has "not in this PR's history" "$st2" && [ $x3 -eq 1 ] && has "missing before 1280px" "$st3" && [ $x4 -eq 1 ] && has "UI changed after the evidence" "$st4"; then ok evidence-images-pinned-resolving
 else fail evidence-images-pinned-resolving "stale=$x1 outside=$x2 no1280=$x3 merged=$x4: $st1 | $st2 | $st3 | $st4"; fi
 
 # A push to standards/vX.Y.Z (sync's landing branch) passes the evidence step only when it changes pack-managed paths.
