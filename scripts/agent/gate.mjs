@@ -166,7 +166,7 @@ if (cmd === "classify") {
   if (std.codex_review === false || pk.codex_review === false) { console.log("codex: review is off for this repo"); process.exit(0); }
   const repo = env.GITHUB_REPOSITORY, base = env.GITHUB_API_URL || "https://api.github.com", API = `${base}/repos/${repo}`;
   const auth = { Authorization: `Bearer ${env.GH_TOKEN || env.GITHUB_TOKEN}`, Accept: "application/vnd.github+json" };
-  const get = async (p) => { const r = await fetch(`${API}${p}`, { headers: auth }); if (!r.ok) fail(`GET ${p}: ${r.status}`, "grant the job pull-requests: read"); return r.json(); };
+  const get = async (p) => { const r = await fetch(`${API}${p}`, { headers: auth }); if (!r.ok) fail(`GET ${p}: ${r.status}`, "grant the job actions, pull-requests and issues read"); return r.json(); };
   const n = event.pull_request.number, pr = await get(`/pulls/${n}`), head = pr.head.sha;
   if (pr.draft) { console.log("codex: draft, not evaluated"); process.exit(0); }
   if (pk.sync_app_login && pr.user?.login === pk.sync_app_login && /^standards\/v\d+\.\d+\.\d+$/.test(pr.head.ref)) { console.log("codex: pack-sync fallback PR, exempt"); process.exit(0); }
@@ -231,11 +231,12 @@ if (cmd === "classify") {
   if (got !== SUM) fail(`gitleaks archive checksum mismatch: got ${got}, want ${SUM}`, "do not run it; re-run, or pin a new version and checksum in the engine");
   if (!linux) notLinux();
   must("tar", ["-xzf", tgz, "-C", dir, "gitleaks"]);
-  // Always scan commits: PR base..head, merge group base..head, push before..sha (a new branch or an unreachable
-  // before scans all of sha's history); RANGE overrides.
+  // Always scan commits: PR base..head, merge group base..head, push before..sha. A new branch (or an unreachable
+  // before) scans what the default branch lacks, or all of sha's history when it is the default branch; RANGE overrides.
   const ev = env.GITHUB_EVENT_PATH ? json(env.GITHUB_EVENT_PATH) ?? {} : {}, reach = (x) => { try { git("cat-file", "-e", `${x}^{commit}`); return true; } catch { return false; } };
+  const def = ev.repository?.default_branch, fresh = (b) => !b || /^0+$/.test(b) || !reach(b);
   const pair = ev.pull_request ? [ev.pull_request.base.sha, ev.pull_request.head.sha] : ev.merge_group ? [ev.merge_group.base_sha, ev.merge_group.head_sha]
-    : ev.after ? [ev.before, ev.after] : [null, env.GITHUB_SHA || "HEAD"];
+    : ev.after ? [fresh(ev.before) && def && ev.ref !== `refs/heads/${def}` && reach(`origin/${def}`) ? `origin/${def}` : ev.before, ev.after] : [null, env.GITHUB_SHA || "HEAD"];
   const r = env.RANGE || (pair[0] && !/^0+$/.test(pair[0]) && reach(pair[0]) ? `${pair[0]}..${pair[1]}` : pair[1]);
   console.log(`secrets: gitleaks git --log-opts=${r}`);
   if (sh(`${dir}/gitleaks`, ["git", `--log-opts=${r}`, "--redact", "--no-banner", "-v", "."]))

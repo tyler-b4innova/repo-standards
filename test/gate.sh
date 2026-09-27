@@ -172,4 +172,17 @@ mkdir -p "$R/src" && echo "<b/>" > "$R/src/App.svelte" && printf '0000  src/App.
 p2=$(pe); ps2=$?
 if [ $ps1 -eq 0 ] && has "pack-only update" "$p1" && [ $ps3 -eq 1 ] && has "not the sync App" "$p3" && [ $ps2 -eq 1 ] && has "src/App.svelte" "$p2"; then ok sync-lands-direct-when-green
 else fail sync-lands-direct-when-green "pack-only=$ps1 user=$ps3 other=$ps2: $p1 $p3 $p2"; fi
+# A landing branch scans only what the default branch lacks, so old leaks on main do not block it (linux x64 only:
+# the scanner is the pinned gitleaks build).
+if [ "$(uname -s)-$(uname -m)" = Linux-x86_64 ]; then
+  O=$T/leak.git; git init -q --bare -b main "$O"; W=$(mkrepo); git -C "$W" remote add origin "$O"
+  echo "token = ghp_$(printf 'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0hJ3lN6')" > "$W/old.txt" && commit "$W" "old leak" && gc -C "$W" push -q origin main
+  gc -C "$W" checkout -qb standards/v9.9.9; echo ok > "$W/clean.txt" && commit "$W" clean && gc -C "$W" push -q origin standards/v9.9.9
+  pe() { printf '{"ref":"refs/heads/standards/v9.9.9","before":"%s","after":"%s","repository":{"default_branch":"main"}}\n' "$(printf '0%.0s' $(seq 40))" "$(git -C "$W" rev-parse HEAD)" > "$T/push.json"
+    (cd "$W" && GITHUB_EVENT_PATH="$T/push.json" node scripts/agent/gate.mjs secrets) 2>&1; }
+  o1=$(pe); x1=$?
+  echo "token = ghp_$(printf 'Zy8xW7vU6tS5rQ4pO3nM2lK1jI0hG9fE8dC7')" > "$W/new.txt" && commit "$W" "new leak"; o2=$(pe); x2=$?
+  if [ $x1 -eq 0 ] && has "origin/main.." "$o1" && [ $x2 -eq 1 ]; then ok sync-lands-direct-when-green
+  else fail sync-lands-direct-when-green "landing-branch scan: clean=$x1 leak=$x2: $o1 | $o2"; fi
+fi
 done_cases

@@ -43,5 +43,7 @@ st false alice feat "$OLD" '✅ **Completed** now' 30 "[]" yes "$HEAD1" "$OLD"; 
 st true alice feat none x 30 "[]" yes "$HEAD1" "$OLD"; chk 0 "draft, not evaluated"
 st false alice feat none x 30 "[]" no "$HEAD1" "$OLD"; chk 0 "no Codex reviews on this repo"
 st false 'example-sync[bot]' standards/v1.2.3 none x 30 "[]" yes "$HEAD1" "$OLD"; chk 0 "pack-sync fallback PR"
+# the step reads run lists, so the job needs actions: read (private repos 403 without it)
+grep -qE '^  actions: read$' "$R/.github/workflows/std-gate.yml" || r="$r [std-gate.yml lacks actions: read]"
 if [ -z "$r" ]; then ok codex-verdict-required; else fail codex-verdict-required "$r"; fi
 done_cases
