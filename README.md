@@ -1,33 +1,36 @@
 # repo-standards
 
-An org-neutral engine for repo-scoped agent standards. Each organization keeps a small overlay (`org.json`: data only) in its own standards repository; the engine renders and applies the pack from it.
+An org-neutral engine for repo-scoped agent standards. Each organization keeps a small overlay (`org.json`, data only) in its own standards repository and pins an engine release; the engine renders and applies the pack from it.
 
-## What a consumer repository carries
+## Consumer repositories
 
-Every managed file is committed in the repository, so cloud sessions and sandboxes with no network still have everything: the managed `AGENTS.md` block, `.agents/skills/std-*` (+ `.claude/skills` link), `scripts/agent/` (`setup.sh`, `check.mjs`, `gate.mjs`, `pr.sh`, `evidence.mjs`, `pack.json`), `.github/workflows/std-gate.yml` (the one required check, `gate`), PR and issue templates, `.claude/settings.json` (session hook, model defaults, allow rules) and `.codex/config.toml` (model defaults), plus `standards.json` (repo-owned) and `standards.lock` (sha256 of each managed path).
-
-Consumer repositories never depend on this engine at run time. Only the organization's sync job fetches it, pinned to a release:
+Every managed file is committed, so offline cloud sessions and sandboxes have everything: the managed `AGENTS.md` block, `.agents/skills/std-*` (+ `.claude/skills` link), `scripts/agent/` (`setup.sh`, `check.mjs`, `gate.mjs`, `pr.sh`, `evidence.mjs`, `pack.json`), `.github/workflows/std-gate.yml` (the one required check, `gate`), PR/issue templates, `.claude/settings.json`, `.codex/config.toml`, `.codex/rules/std.rules`, and `standards.json` (repo-owned; states the pack version) + `standards.lock` (sha256 per managed path, engine version). Consumers never fetch the engine; only the org's sync job does:
 
 ```sh
-npx -y github:tyler-b4innova/repo-standards#v0.2.0 apply --target <repo> --overlay org.json --version <org release>
-npx -y github:tyler-b4innova/repo-standards#v0.2.0 sync --overlay org.json --version <org release>   # GH_TOKEN = App token
-npx -y github:tyler-b4innova/repo-standards#v0.2.0 expiry --overlay org.json
+npx -y github:tyler-b4innova/repo-standards#vX.Y.Z sync --overlay org.json --version <org release>   # GH_TOKEN = org App token
+npx -y github:tyler-b4innova/repo-standards#vX.Y.Z apply --target <repo> --overlay org.json --version <org release>
 ```
 
-## Behaviour
+**Org contract:** run `sync` (and `expiry`) from a `workflow_dispatch` / `repository_dispatch` workflow in the org's standards repository, triggered by the org's dispatcher or a release. Never rely on `schedule`: it has not fired for either org. Credentials: repo variable `STANDARDS_APP_CLIENT_ID`, secret `STANDARDS_APP_PRIVATE_KEY`. Sync applies only a released overlay with the engine version it pins, and arms auto-merge only where `gate` is a required check.
 
-`SCENARIOS.md` is the contract: every behaviour has a stable id, and `test/run.sh` prints `ok <id>` / `FAIL <id>` for each one and fails if any id is missing. Overlay keys and rules are described there and in `examples/overlay.json`.
+**Precedence:** restrictions are additive (engine, then overlay, then repo can only add). Data is repo-owned and replaces: `standards.json` `ui_paths` (explicit `[]` = no UI, with a `--check` warning), `profile`, `dispatch`, `sensitive`, `e2e`, `flow`, `design_signoff`.
 
-Model defaults (effort stays at provider defaults):
-- Claude: project `.claude/settings.json` sets `model: opus` and `CLAUDE_CODE_SUBAGENT_MODEL=opus`; project settings outrank user settings, and `/model` still switches a session. Claude cloud sessions on one repository read this file; multi-repository sessions do not.
-- Codex: `.codex/config.toml` sets `model` and `[agents] default_subagent_model`. Codex reads it only in trusted projects; `setup.sh --check` warns with the fix when a checkout is not trusted. Codex Cloud tasks have no per-task model; they use the workspace default.
+## Gate
 
-Budgets: rendered block ≤1800 bytes, each skill ≤1536 bytes, core pack ≤40 KB (overlay modules `error_tracker` and `deploy` add their own files).
+`gate` runs the offline check, evidence (a PR changing UI paths needs a comment by a trusted author with images pinned to a commit in this repo), a checksum-pinned secret scan, install/typecheck/build, the e2e suite (none fails unless `"e2e": false`), and `scripts/agent/gate.local.sh`. **Promotions** (flow `staged`: default branch into another branch) need no evidence comment; a promotion that changes UI paths passes only with an APPROVED review on the current head SHA by a human with write access (the review event re-runs `gate`, so auto-merge completes). Non-UI promotions pass on green.
+
+## One-time, per person
+
+- Claude: bypass cannot be set from a repository. Set `permissions.defaultMode: "bypassPermissions"` in `~/.claude/settings.json` (or run `claude --dangerously-skip-permissions` once and accept the dialog). `setup.sh --check` warns while it is off.
+- Codex: trust each repository (accept the prompt, or add `[projects."<path>"] trust_level = "trusted"`). Until then Codex ignores the repo's model, bypass and rules; `setup.sh --check` warns with the fix.
+- Deny rules bind even under bypass: agents cannot read secret files or run `op`, and cannot force-push. Repo scripts that need a secret (for example `sentry-setup`) read it themselves.
+
+Models: Claude `opus` for the main thread and subagents (`/model` still switches a session); Codex `gpt-6-sol` for both. Claude cloud reads these in single-repository sessions; Codex Cloud tasks ignore the repo's model keys and use the workspace or composer model (there is no per-task model option).
+
+## Gotchas
+
+- In issues and comments write "the Codex mention", never the literal handle: any comment containing it starts a paid task, even on a closed issue.
 
 ## Develop
 
-```sh
-test/run.sh                                  # every scenario, plus neutrality of tree and history
-node tools/neutrality.mjs --history          # this repository names no organization, host or account
-node bin/repo-standards.mjs apply --target . --overlay examples/overlay.json --version "$(node -p 'require("./package.json").version')"
-```
+`test/run.sh` runs every scenario in `SCENARIOS.md` (each prints `ok <id>`) plus the neutrality check over the tree and full history. After changing `template/`, re-apply to this repository: `node bin/repo-standards.mjs apply --target . --overlay examples/overlay.json --version "$(node -p 'require("./package.json").version')"`.

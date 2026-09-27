@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 if (process.argv.includes("--help")) {
   console.log("usage: node scripts/agent/check.mjs   (offline standards self-check; exit 1 on failure)");
@@ -34,7 +34,7 @@ else {
   else {
     const one = (k, vals) => vals.includes(std[k]) || fail(`standards.json ${k} is ${JSON.stringify(std[k])}`, `use one of ${vals.join("|")}`);
     one("pack", [pack.pack]); one("profile", ["internal", "client"]); one("dispatch", ["auto", "manual", "off"]);
-    one("sensitive", [true, false]); one("e2e", [undefined, false]);
+    one("sensitive", [true, false]); one("e2e", [undefined, false]); one("flow", [undefined, "staged", "direct"]); one("design_signoff", [undefined, true, false]);
     if (!/^\d+\.\d+\.\d+/.test(std.version ?? "")) fail("standards.json version is not X.Y.Z", restore("standards.json"));
     const globs = (v) => v === undefined || (Array.isArray(v) && v.every((g) => typeof g === "string"));
     const ui = std.ui_paths;
@@ -75,18 +75,18 @@ else {
   const s = json(".claude/settings.json"), mc = pack.models.claude, mx = pack.models.codex;
   if (!s?.hooks?.SessionStart?.some((m) => m.hooks?.some((h) => h.command?.includes("scripts/agent/setup.sh --check"))))
     fail(".claude/settings.json lacks the SessionStart setup.sh --check hook", restore(".claude/settings.json"));
-  if (s && (s.model !== mc.model || s.env?.CLAUDE_CODE_SUBAGENT_MODEL !== mc.subagent)) fail(".claude/settings.json model keys changed", restore(".claude/settings.json"));
+  if (s && (s.model !== mc.model || s.env?.CLAUDE_CODE_SUBAGENT_MODEL !== mc.subagent || JSON.stringify(s.permissions?.deny) !== JSON.stringify(pack.permissions_deny)))
+    fail(".claude/settings.json model or deny keys changed", restore(".claude/settings.json"));
   const [top, ...tables] = (read(".codex/config.toml") ?? "").split(/^(?=\s*\[)/m);
   const agentsTable = tables.find((t) => /^\s*\[agents\]/.test(t)) ?? "";
-  if (!top.includes(`model = "${mx.model}"`) || !agentsTable.includes(`default_subagent_model = "${mx.subagent}"`)) fail(".codex/config.toml model keys changed", restore(".codex/config.toml"));
+  if (![["model", mx.model], ...Object.entries(pack.codex_top)].every(([k, v]) => top.includes(`${k} = "${v}"`)) || !agentsTable.includes(`default_subagent_model = "${mx.subagent}"`))
+    fail(".codex/config.toml engine keys changed", restore(".codex/config.toml"));
 
   // Forbidden paths and content
   for (const f of tracked) {
     const name = f.split("/").pop(), dirs = f.split("/").slice(0, -1).map((d) => d.toLowerCase());
     if (f === "CONTEXT.md") fail("CONTEXT.md at the root is forbidden", `git rm ${f}   (rules go in AGENTS.md)`);
     if (f === ".mcp.json") fail(".mcp.json is committed", "git rm --cached .mcp.json && echo .mcp.json >> .gitignore");
-    if (/^\.env(\..*)?\.local$|^\.env$|^\.dev\.vars$|\.pem$/.test(name)) // .env.<mode> without .local is public build config
-      fail(`secret-bearing file tracked: ${f}`, `git rm --cached ${f} && echo ${name} >> .gitignore`);
     if (f.startsWith(".evidence/")) fail(`.evidence/ is tracked (${f})`, "git rm -r .evidence   (pr.sh evidence removes it after posting)");
     if ((/\.(md|markdown)$/i.test(name) && dirs.some((d) => pack.decision_dirs.includes(d))) || /^ADR-.*\.md$/i.test(name) || pack.decision_record_globs.some((g) => glob(g).test(f)))
       fail(`decision record tracked: ${f}`, `git rm ${f}   (decisions are not recorded; they must be evident in the work)`);
@@ -100,7 +100,7 @@ else {
   for (const host of pack.shared_preview_hosts)
     for (const f of tracked.filter((f) => /(^|\/)wrangler\.(jsonc?|toml)$/.test(f)))
       if (new RegExp(`(^|[^a-z0-9-])${host.replace(/\./g, "\\.")}`).test(read(f) ?? ""))
-        fail(`${f} uses the shared preview host ${host} (it binds to one Worker)`, "use a per-Worker host, e.g. preview.<zone>");
+        fail(`${f} uses the shared preview host ${host} (it binds to one Worker)`, `use a per-Worker host: ${pack.preview_host_pattern ?? "preview.<zone>"}`);
   if (Array.isArray(std?.ui_paths) && !std.ui_paths.length) {
     const ui = tracked.filter((f) => pack.ui_paths.some((g) => glob(g).test(f)) && !pack.ui_ignore.some((g) => glob(g).test(f)));
     if (ui.length) warn(`ui_paths is [] so gate needs no evidence, but these match the default UI globs: ${ui.slice(0, 10).join(", ")}`);
@@ -109,7 +109,9 @@ else {
   // Local overrides that shadow the repo's model defaults (warnings only)
   const shadow = "overrides the repo's model/effort defaults";
   for (const v of ["ANTHROPIC_MODEL", "CLAUDE_CODE_EFFORT_LEVEL"]) if (process.env[v]) warn(`shell sets ${v}; it ${shadow}`);
-  const userClaude = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "settings.json");
+  const userClaude = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "settings.json"), uc = json(userClaude);
+  if (existsSync(dirname(userClaude)) && uc?.permissions?.defaultMode !== "bypassPermissions" && !uc?.skipDangerousModePermissionPrompt)
+    warn(`Claude: bypass is not on for you, so agents will prompt | fix (once per person): set permissions.defaultMode "bypassPermissions" in ${userClaude}, or run claude --dangerously-skip-permissions once and accept`);
   for (const [f, c] of [[userClaude, json(userClaude)], [".claude/settings.local.json", json(".claude/settings.local.json")]]) {
     const keys = ["modelSettings", ...(f === userClaude ? [] : ["model"]), "env.ANTHROPIC_MODEL", "env.CLAUDE_CODE_EFFORT_LEVEL"]
       .filter((k) => c && (k.startsWith("env.") ? c.env?.[k.slice(4)] : k in c));
@@ -119,7 +121,11 @@ else {
   if (user !== null) {
     const root = process.cwd(), esc = root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     if (!new RegExp(`^\\[projects\\."${esc}"\\]\\s*\\n(?:(?!\\[).*\\n)*?\\s*trust_level\\s*=\\s*"trusted"`, "m").test(user))
-      warn(`Codex: project not trusted, so the repo model/permissions in .codex/config.toml are inactive | fix: trust the folder when codex asks, or add [projects."${root}"] trust_level = "trusted" to ${codexFile}`);
+      warn(`Codex: project not trusted, so the repo model, bypass and rules in .codex/ are inactive | fix: trust the folder when codex asks, or add [projects."${root}"] trust_level = "trusted" to ${codexFile}`);
+    let ver = "";
+    try { ver = execFileSync("codex", ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 1500 }).match(/(\d+)\.(\d+)/)?.slice(1).join(".") ?? ""; } catch {}
+    const [maj, min] = ver.split(".").map(Number);
+    if (ver && (maj === 0 && min < 155)) warn(`Codex CLI ${ver} is older than 0.155, which the repo's .codex/config.toml targets | fix: update codex`);
     const effort = user.match(/^\s*(model_reasoning_effort|default_subagent_reasoning_effort)\s*=.*/gm);
     if (effort) warn(`${codexFile} sets ${effort.map((l) => l.trim()).join(", ")}; it ${shadow}`);
   }

@@ -1,0 +1,13 @@
+# Managed by the standards pack. Codex loads these only in trusted projects.
+prefix_rule(
+    pattern=["op"],
+    decision="forbidden",
+    justification="Secrets are read by the repo scripts that need them, never with bare op.",
+)
+prefix_rule(
+    pattern=["git", "push", ["--force", "-f"]],
+    decision="forbidden",
+    justification="No force push; --force-with-lease on your own branch is allowed.",
+    match=["git push --force origin x", "git push -f origin x"],
+    not_match=["git push --force-with-lease origin x", "git push origin x"],
+)

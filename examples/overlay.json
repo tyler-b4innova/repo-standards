@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "engine": "0.2.0-dev",
+  "engine": "0.2.0",
   "pack": "example",
   "title": "Example standards",
   "org": "example-org",
@@ -35,6 +35,7 @@
   "shared_preview_hosts": [
     "preview.example.com"
   ],
+  "preview_host_pattern": "{label}.preview.example.com",
   "expiring_credentials": [],
   "modules": {
     "error_tracker": false,
@@ -60,5 +61,11 @@
       ],
       "pr_body_model_line": false
     }
-  }
+  },
+  "evidence": {
+    "trusted_authors": [
+      "example-org-bot[bot]"
+    ]
+  },
+  "design_signoff": true
 }

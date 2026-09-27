@@ -23,4 +23,5 @@ trigger 1477542a-ed67-4c5a-9f0f-943faadd42b7 timeout 1200000"
 if printf '%s\n' "$accept" | scan; then ok engine-neutral-allows-pins-and-docs; else fail engine-neutral-allows-pins-and-docs "$(printf '%s\n' "$accept" | node tools/neutrality.mjs --stdin 2>&1)"; fi
 if node tools/neutrality.mjs >/dev/null 2>&1; then ok engine-neutral-tree; else fail engine-neutral-tree "$(node tools/neutrality.mjs 2>&1)"; fi
 if node tools/neutrality.mjs --history >/dev/null 2>&1; then ok engine-neutral-history; else fail engine-neutral-history "$(node tools/neutrality.mjs --history 2>&1 | head -20)"; fi
+if [ "$FAILS" -eq 0 ]; then ok engine-neutral; else fail engine-neutral "$FAILS neutrality case(s) failed"; fi
 done_cases

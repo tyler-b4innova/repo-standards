@@ -26,10 +26,7 @@
       "subagent": "gpt-6-sol"
     }
   },
-  "permissions_allow": [
-    "Bash(scripts/agent/pr.sh:*)",
-    "Bash(node scripts/agent/evidence.mjs:*)"
-  ],
+  "permissions_allow": [],
   "forbidden_files": [
     "CONTEXT.md",
     ".mcp.json"
@@ -39,5 +36,29 @@
     "adrs",
     "decisions",
     "decision-records"
+  ],
+  "permissions_deny": [
+    "Read(~/.ssh/**)",
+    "Read(~/.aws/**)",
+    "Read(~/.config/**)",
+    "Read(**/.env)",
+    "Read(**/.env.*)",
+    "Read(**/.dev.vars)",
+    "Read(**/*.pem)",
+    "Bash(op *)",
+    "Bash(git push --force *)",
+    "Bash(git push -f *)",
+    "Bash(git push * --force)",
+    "Bash(git push * --force *)",
+    "Bash(git push * -f)",
+    "Bash(git push * -f *)"
+  ],
+  "codex_top": {
+    "approval_policy": "never",
+    "sandbox_mode": "danger-full-access"
+  },
+  "evidence_trusted_authors": [
+    "pr_author",
+    "app"
   ]
 }

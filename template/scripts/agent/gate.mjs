@@ -77,9 +77,27 @@ if (cmd === "classify") {
       if (b.length < 100) return out;
     }
   };
+  const get = async (path) => { const r = await fetch(`${API}${path}`, { headers: auth }); return r.ok ? r.json() : null; };
+  const pk = json("scripts/agent/pack.json") ?? {}, info = (await get("")) ?? {}, live = (await get(`/pulls/${pr.number}`)) ?? pr;
   const changed = ui((await list(`pulls/${pr.number}/files`)).map((f) => f.filename));
+  // A promotion (staged flow: default branch -> another branch) needs no evidence comment (it is on the original
+  // PRs), but a design change needs an APPROVED review on the current head from a human with write access.
+  const flow = std.flow ?? info.custom_properties?.flow;
+  if (flow === "staged" && live.head.ref === info.default_branch && live.base.ref !== info.default_branch) {
+    if (!changed.length || std.design_signoff === false || pk.design_signoff === false) { console.log("promotion: no design sign-off needed"); process.exit(0); }
+    const latest = new Map();
+    for (const r of await list(`pulls/${pr.number}/reviews`)) latest.set(r.user?.login, r);
+    for (const r of latest.values()) {
+      if (r.state !== "APPROVED" || r.commit_id !== live.head.sha || r.user?.type !== "User" || r.user.login === live.user?.login) continue;
+      const perm = await get(`/collaborators/${r.user.login}/permission`);
+      if (["admin", "maintain", "write"].includes(perm?.permission)) { console.log(`promotion: design change approved by @${r.user.login} on ${live.head.sha.slice(0, 7)}`); process.exit(0); }
+    }
+    fail(`design change in this promotion (${changed.slice(0, 5).join(", ")}) has no human approval on ${live.head.sha.slice(0, 7)}`, "design change: approve this promotion after checking the staging preview");
+  }
   if (!changed.length) { console.log("evidence: no UI paths changed; not required"); process.exit(0); }
   console.log(`UI paths changed:\n  ${changed.join("\n  ")}`);
+  const trusted = pk.evidence_trusted_authors ?? ["pr_author", "app"];
+  const trust = (c) => (trusted.includes("pr_author") && c.user?.login === pr.user.login) || (trusted.includes("app") && c.performed_via_github_app) || trusted.includes(c.user?.login);
   const esc = (s) => s.replace(/[.]/g, "\\.");
   const pin = new RegExp(`^${esc(env.GITHUB_SERVER_URL || "https://github.com")}/${esc(repo)}/(?:blob|raw)/([0-9a-f]{40})/(\\.evidence/[^?#]+)(?:[?#].*)?$`, "i");
   const bad = [];
@@ -87,7 +105,7 @@ if (cmd === "classify") {
     const urls = [...new Set(c.body?.match(/https?:\/\/[^\s)"'<>]*\/\.evidence\/[^\s)"'<>]*/g) ?? [])];
     const who = `${c.html_url} by @${c.user?.login}`;
     if (!urls.length) continue;
-    if (c.user?.login !== pr.user.login && !c.performed_via_github_app) { bad.push(`${who}: not the PR author @${pr.user.login} or an app`); continue; }
+    if (!trust(c)) { bad.push(`${who}: not a trusted author (${trusted.join(", ")}; PR author @${pr.user.login})`); continue; }
     const miss = [];
     for (const u of urls) {
       const m = u.match(pin);

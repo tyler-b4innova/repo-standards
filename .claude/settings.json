@@ -21,6 +21,22 @@
     "allow": [
       "Bash(scripts/agent/pr.sh:*)",
       "Bash(node scripts/agent/evidence.mjs:*)"
+    ],
+    "deny": [
+      "Read(~/.ssh/**)",
+      "Read(~/.aws/**)",
+      "Read(~/.config/**)",
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(**/.dev.vars)",
+      "Read(**/*.pem)",
+      "Bash(op *)",
+      "Bash(git push --force *)",
+      "Bash(git push -f *)",
+      "Bash(git push * --force)",
+      "Bash(git push * --force *)",
+      "Bash(git push * -f)",
+      "Bash(git push * -f *)"
     ]
   }
 }

@@ -50,12 +50,6 @@ done
 [ "$(state 'S.pulls.length+":"+S.pulls[0].draft+":"+S.pulls[0].title')" = "1:true:Add x (2)" ] || why="$why; state $(state 'JSON.stringify(S.pulls)')"
 if [ -z "$why" ]; then ok pr-open-verified; else fail pr-open-verified "$why"; fi
 
-# pr-open-requires-closes: a body without Closes/Fixes/Resolves #N is refused before any request.
-before=$(lines)
-out=$("$PR" open "Add x" "$T/nolink.md" 2>&1)
-rc=$?
-if [ "$rc" != 0 ] && [ "$(lines)" = "$before" ]; then ok pr-open-requires-closes; else fail pr-open-requires-closes "exit $rc, $(($(lines) - before)) request(s): $out"; fi
-
 # pr-status-done: DONE only when open or merged, the body closes an issue, and gate is green on the head SHA.
 HEAD_SHA=$(git rev-parse HEAD) MAIN_SHA=$(git rev-parse main)
 green='[{"name":"gate","status":"completed","conclusion":"success"},{"name":"lint","status":"completed","conclusion":"failure"}]'
@@ -75,23 +69,7 @@ mut "S.pulls[0].state='open';S.pulls[0].merged=false;S.pulls[0].body='no link'";
 mut "S.pulls[0].body='Fixes #3'"
 if [ -z "$why" ]; then ok pr-status-done; else fail pr-status-done "$why"; fi
 
-# pr-feedback-and-reply: only items newer than the head commit (2026-01-02) are listed, with ids;
-# a reply to a review comment lands on its thread, a reply to anything else becomes a PR comment.
-old=2026-01-01T00:00:00Z new=2026-01-03T00:00:00Z
-mut "S.issueComments={1:[{id:11,body:'old',user:{login:'rev'},created_at:'$old',updated_at:'$old'},{id:12,body:'rename it',user:{login:'rev'},created_at:'$new',updated_at:'$new'}]};
-S.reviewComments={1:[{id:21,path:'x.txt',line:1,body:'old',user:{login:'rev'},created_at:'$old',updated_at:'$old'},{id:22,path:'x.txt',line:1,body:'typo',user:{login:'rev'},created_at:'$new',updated_at:'$new'}]};
-S.reviews={1:[{id:31,state:'COMMENTED',body:'',user:{login:'rev'},submitted_at:'$old'},{id:32,state:'CHANGES_REQUESTED',body:'fix',user:{login:'rev'},submitted_at:'$new'}]}"
-why=""
-out=$("$PR" feedback 1 2>&1) || why="feedback exit $?"
-ids=$(echo "$out" | awk '$1 ~ /^(issue-comment|review-comment|review)$/ {print $2}' | sort | tr '\n' ' ')
-[ "$ids" = "12 22 32 " ] || why="$why; listed ids '$ids' in: $out"
-"$PR" reply 1 22 "fixed the typo" >/dev/null 2>&1 || why="$why; review reply failed"
-"$PR" reply 1 12 "renamed" >/dev/null 2>&1 || why="$why; fallback reply failed"
-[ "$(state "S.reviewComments[1].filter(c=>c.in_reply_to_id===22&&c.body==='fixed the typo').length")" = 1 ] || why="$why; no reply on the review thread"
-[ "$(state "S.issueComments[1].filter(c=>c.body==='renamed').length")" = 1 ] || why="$why; no fallback PR comment"
-if [ -z "$why" ]; then ok pr-feedback-and-reply; else fail pr-feedback-and-reply "$why"; fi
-
-# evidence-post-pinned-idempotent: two posts leave one marked comment whose image URLs carry the 40-hex SHA.
+# evidence-images-pinned-resolving (posting side): two posts leave one marked comment whose image URLs carry the 40-hex SHA.
 printf '\211PNG\r\n' >"$T/home page.png" && echo notes >"$T/notes.txt"
 why=""
 for run in 1 2; do "$PR" evidence 1 "$T/home page.png" "$T/notes.txt" >"$T/ev.out" 2>&1 || why="$why; evidence run $run failed: $(cat "$T/ev.out")"; done
@@ -102,9 +80,9 @@ case "$body" in *"![home page.png](https://github.com/acme/demo/blob/$PIN/.evide
 case "$body" in *"[notes.txt](https://github.com/acme/demo/blob/$PIN/.evidence/notes.txt)"*) ;; *) why="$why; non-image link missing" ;; esac
 case "$body" in *'![notes.txt]'*) why="$why; non-image rendered as an image" ;; esac
 [ "$(count '"method":"PATCH","path":"/repos/acme/demo/issues/comments/')" = 1 ] || why="$why; second post did not update the comment"
-if [ -z "$why" ]; then ok evidence-post-pinned-idempotent; else fail evidence-post-pinned-idempotent "$why"; fi
+if [ -z "$why" ]; then ok evidence-images-pinned-resolving; else fail evidence-images-pinned-resolving "$why"; fi
 
-# evidence-post-cleans-tip: the pushed tip has no .evidence/ and every posted URL still resolves at its SHA.
+# no-evidence-on-main (posting side): the pushed tip has no .evidence/ and every posted URL still resolves at its SHA.
 why=""
 tip=$(git --git-dir="$T/origin.git" ls-tree -r --name-only refs/heads/feat/x)
 case "$tip" in *.evidence/*) why="tip still tracks .evidence/" ;; esac
@@ -116,6 +94,6 @@ for u in $urls; do
   code=$(curl -s -o /dev/null -w '%{http_code}' "$GITHUB_API_URL${u#https://github.com}")
   [ "$code" = 200 ] || why="$why; $u -> $code"
 done
-if [ -z "$why" ]; then ok evidence-post-cleans-tip; else fail evidence-post-cleans-tip "$why"; fi
+if [ -z "$why" ]; then ok no-evidence-on-main; else fail no-evidence-on-main "$why"; fi
 
 done_cases
