@@ -1,0 +1,254 @@
+{
+  "$comment": "Org-level rulesets every org gets. `org/apply.mjs` renders them with the overlay's `org_admin` (App bypass, thread resolution, strict checks, extra checks per ruleset, extra restricted and ignored push paths, max file size, an external push ruleset) and owns every organization-level ruleset: names not listed here are deleted on apply. `$`-prefixed strings are overlay placeholders.",
+  "property": {
+    "property_name": "flow",
+    "value_type": "single_select",
+    "allowed_values": [
+      "direct",
+      "staged"
+    ],
+    "required": true,
+    "default_value": "direct",
+    "values_editable_by": "org_actors",
+    "description": "direct: work merges to the default branch. staged: work merges to staging (the default branch) and is promoted to main."
+  },
+  "rulesets": [
+    {
+      "name": "org: default branch and main (PR + gate)",
+      "target": "branch",
+      "conditions": {
+        "ref_name": {
+          "include": [
+            "~DEFAULT_BRANCH",
+            "refs/heads/main"
+          ],
+          "exclude": []
+        },
+        "repository_name": {
+          "include": [
+            "~ALL"
+          ],
+          "exclude": [],
+          "protected": false
+        }
+      },
+      "rules": [
+        {
+          "type": "deletion"
+        },
+        {
+          "type": "non_fast_forward"
+        },
+        {
+          "type": "pull_request",
+          "parameters": {
+            "required_approving_review_count": 0,
+            "dismiss_stale_reviews_on_push": true,
+            "require_code_owner_review": false,
+            "require_last_push_approval": false,
+            "required_review_thread_resolution": "$review_thread_resolution",
+            "require_extra_approval_for_unattributed_changes": false,
+            "required_reviewers": [],
+            "allowed_merge_methods": [
+              "merge",
+              "squash"
+            ]
+          }
+        },
+        {
+          "type": "required_status_checks",
+          "parameters": {
+            "strict_required_status_checks_policy": "$strict_status_checks",
+            "do_not_enforce_on_create": true,
+            "required_status_checks": [
+              {
+                "context": "gate",
+                "integration_id": "$gate_integration_id"
+              },
+              "$extra_checks.default"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "org: direct repos squash-merge",
+      "target": "branch",
+      "conditions": {
+        "ref_name": {
+          "include": [
+            "~DEFAULT_BRANCH",
+            "refs/heads/main"
+          ],
+          "exclude": []
+        },
+        "repository_property": {
+          "include": [
+            {
+              "name": "flow",
+              "source": "custom",
+              "property_values": [
+                "direct"
+              ]
+            }
+          ],
+          "exclude": []
+        }
+      },
+      "rules": [
+        {
+          "type": "pull_request",
+          "parameters": {
+            "allowed_merge_methods": [
+              "squash"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "org: staged main takes promotions (merge commit)",
+      "target": "branch",
+      "conditions": {
+        "ref_name": {
+          "include": [
+            "refs/heads/main"
+          ],
+          "exclude": []
+        },
+        "repository_property": {
+          "include": [
+            {
+              "name": "flow",
+              "source": "custom",
+              "property_values": [
+                "staged"
+              ]
+            }
+          ],
+          "exclude": []
+        }
+      },
+      "rules": [
+        {
+          "type": "pull_request",
+          "parameters": {
+            "allowed_merge_methods": [
+              "merge"
+            ]
+          }
+        },
+        {
+          "type": "required_status_checks",
+          "parameters": {
+            "strict_required_status_checks_policy": "$strict_status_checks",
+            "do_not_enforce_on_create": true,
+            "required_status_checks": [
+              {
+                "context": "gate",
+                "integration_id": "$gate_integration_id"
+              },
+              "$extra_checks.staged_main"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "org: staging (PR + gate, squash)",
+      "target": "branch",
+      "conditions": {
+        "ref_name": {
+          "include": [
+            "refs/heads/staging"
+          ],
+          "exclude": []
+        },
+        "repository_name": {
+          "include": [
+            "~ALL"
+          ],
+          "exclude": [],
+          "protected": false
+        }
+      },
+      "rules": [
+        {
+          "type": "deletion"
+        },
+        {
+          "type": "non_fast_forward"
+        },
+        {
+          "type": "pull_request",
+          "parameters": {
+            "required_review_thread_resolution": "$review_thread_resolution",
+            "allowed_merge_methods": [
+              "squash"
+            ]
+          }
+        },
+        {
+          "type": "required_status_checks",
+          "parameters": {
+            "strict_required_status_checks_policy": "$strict_status_checks",
+            "do_not_enforce_on_create": true,
+            "required_status_checks": [
+              {
+                "context": "gate",
+                "integration_id": "$gate_integration_id"
+              },
+              "$extra_checks.staging"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "org: push hygiene (secret files, large files)",
+      "target": "push",
+      "conditions": {
+        "repository_name": {
+          "include": [
+            "~ALL"
+          ],
+          "exclude": [],
+          "protected": false
+        }
+      },
+      "rules": [
+        {
+          "type": "file_path_restriction",
+          "parameters": {
+            "restricted_file_paths": [
+              ".env",
+              "**/.env",
+              ".env*.local",
+              "**/.env*.local",
+              ".dev.vars",
+              "**/.dev.vars",
+              "*.pem",
+              "**/*.pem",
+              "*.p12",
+              "**/*.p12",
+              "*.key",
+              "**/*.key",
+              "*.tfvars",
+              "**/*.tfvars",
+              "$extra_restricted_paths"
+            ],
+            "ignored_file_paths": [
+              "$push_ignored_paths"
+            ]
+          }
+        },
+        {
+          "type": "max_file_size",
+          "parameters": {
+            "max_file_size": "$max_file_size_mb"
+          }
+        }
+      ]
+    }
+  ]
+}
