@@ -35,6 +35,8 @@ else {
     const one = (k, vals) => vals.includes(std[k]) || fail(`standards.json ${k} is ${JSON.stringify(std[k])}`, `use one of ${vals.join("|")}`);
     one("pack", [pack.pack]); one("profile", ["internal", "client"]); one("dispatch", ["auto", "manual", "off"]);
     one("sensitive", [true, false]); if (!(std.e2e === undefined || std.e2e === false || (typeof std.e2e === "string" && std.e2e.trim()))) fail(`standards.json e2e is ${JSON.stringify(std.e2e)}`, "use false (docs/static only) or the e2e command"); one("flow", [undefined, "staged", "direct"]); one("design_signoff", [undefined, true, false]);
+    if (std.allow_paths !== undefined && !(Array.isArray(std.allow_paths) && std.allow_paths.every((g) => typeof g === "string" && g.trim())))
+      fail(`standards.json allow_paths is ${JSON.stringify(std.allow_paths)}`, 'a list of globs, e.g. ["plugins/*/.mcp.json"]');
     if (!/^\d+\.\d+\.\d+$/.test(std.version ?? "")) fail("standards.json version is not X.Y.Z", restore("standards.json"));
     const globs = (v) => v === undefined || (Array.isArray(v) && v.every((g) => typeof g === "string"));
     const ui = std.ui_paths;
@@ -86,14 +88,17 @@ else {
     fail(".codex/config.toml engine keys changed", restore(".codex/config.toml"));
 
   // Forbidden paths and content
+  // standards.json allow_paths: repo-owned globs for shipped content that looks like agent config (a plugin's .mcp.json);
+  // they exempt the .mcp.json and forbidden-path checks only.
+  const allowed = (std?.allow_paths ?? []).map(glob);
   for (const f of tracked) {
-    const name = f.split("/").pop(), dirs = f.split("/").slice(0, -1).map((d) => d.toLowerCase());
+    const name = f.split("/").pop(), dirs = f.split("/").slice(0, -1).map((d) => d.toLowerCase()), ok = allowed.some((r) => r.test(f));
     if (f === "CONTEXT.md") fail("CONTEXT.md at the root is forbidden", `git rm ${f}   (rules go in AGENTS.md)`);
-    if (name === ".mcp.json") fail(`${f} is committed`, `git rm --cached ${f} && echo .mcp.json >> .gitignore`);
+    if (name === ".mcp.json" && !ok) fail(`${f} is committed`, `git rm --cached ${f} && echo .mcp.json >> .gitignore`);
     if (f.startsWith(".evidence/")) fail(`.evidence/ is tracked (${f})`, "git rm -r .evidence   (pr.sh evidence removes it after posting)");
     if ((/\.(md|markdown)$/i.test(name) && dirs.some((d) => pack.decision_dirs.includes(d))) || /^ADR-.*\.md$/i.test(name) || pack.decision_record_globs.some((g) => glob(g).test(f)))
       fail(`decision record tracked: ${f}`, `git rm ${f}   (decisions are not recorded; they must be evident in the work)`);
-    for (const g of pack.forbid_paths) if (glob(g).test(f)) fail(`${f} matches the org's forbidden path ${g}`, `git rm -r --cached ${f}`);
+    if (!ok) for (const g of pack.forbid_paths) if (glob(g).test(f)) fail(`${f} matches the org's forbidden path ${g}`, `git rm -r --cached ${f}`);
   }
   for (const pat of pack.forbid_patterns) {
     let hit = "";

@@ -11,6 +11,8 @@ echo '{}' > "$T/state.json"
 node test/stubs/codex-github.mjs "$T/port" "$T/state.json" & STUB=$!
 for i in $(seq 50); do [ -s "$T/port" ] && break; sleep 0.1; done
 echo '{"pull_request":{"number":7}}' > "$T/event.json"
+# the job token's scopes, read from the workflow the repo runs (every case below uses them)
+export WF_PERMS=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8").match(/^permissions:\n((?:  .*\n)+)/m)[1];console.log([...y.matchAll(/^  ([a-z-]+): (read|write)$/gm)].map((m)=>m[1]).join(" "))' "$R/.github/workflows/std-gate.yml")
 iso() { node -e 'console.log(new Date(Date.now()-Number(process.argv[1])*60000).toISOString())' "$1"; }
 # st <draft> <user> <ref> <summary-sha|none> <status> <pushed-min-ago> [threads-json] [recent-summary: yes|no]
 st() {
@@ -20,7 +22,7 @@ st() {
     const when = new Date(Date.now() - Number(ago) * 60000).toISOString();
     console.log(JSON.stringify({ pr: { number: 7, draft: draft === "true", user: { login: user }, head: { sha: process.argv[9], ref }, created_at: when },
       comments: { 7: sha === "none" ? [] : [sum(sha)], 3: recent === "yes" ? [sum(process.argv[10])] : [] },
-      recent: [{ number: 7 }, { number: 3 }], threads: JSON.parse(threads || "[]"), pushed: when, timeline: JSON.parse(process.env.TIMELINE || "[]"), reviews: JSON.parse(process.env.REVIEWS || "[]") }));
+      recent: [{ number: 7 }, { number: 3 }], threads: JSON.parse(threads || "[]"), pushed: when, timeline: JSON.parse(process.env.TIMELINE || "[]"), perms: (process.env.PERMS ?? process.env.WF_PERMS).split(" "), reviews: JSON.parse(process.env.REVIEWS || "[]") }));
   ' "$@" > "$T/state.json"; }
 gate() { (cd "$R" && GITHUB_API_URL="http://127.0.0.1:$(cat "$T/port")" GITHUB_GRAPHQL_URL="http://127.0.0.1:$(cat "$T/port")/graphql" GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_EVENT_PATH="$T/event.json" node scripts/agent/gate.mjs codex) 2>&1; }
 has() { case "$2" in *"$1"*) return 0 ;; esac; return 1; }
@@ -43,7 +45,7 @@ st false alice feat "$OLD" '✅ **Completed** now' 30 "[]" yes "$HEAD1" "$OLD"; 
 st true alice feat none x 30 "[]" yes "$HEAD1" "$OLD"; chk 0 "draft, not evaluated"
 st false alice feat none x 30 "[]" no "$HEAD1" "$OLD"; chk 0 "no Codex reviews on this repo"
 st false 'example-sync[bot]' standards/v1.2.3 none x 30 "[]" yes "$HEAD1" "$OLD"; chk 0 "pack-sync fallback PR"
-# the step reads run lists, so the job needs actions: read (private repos 403 without it)
-grep -qE '^  actions: read$' "$R/.github/workflows/std-gate.yml" || r="$r [std-gate.yml lacks actions: read]"
+# without actions: read (a private repo) the run-list read fails: the stand-in grants only what std-gate.yml lists
+PERMS="contents pull-requests issues" st false alice feat "$HEAD1" '✅ **Completed** now' 5 "$DONE" yes "$HEAD1" "$HEAD1"; chk 1 "/actions/runs?head_sha=$HEAD1&event=pull_request&per_page=100: 403"
 if [ -z "$r" ]; then ok codex-verdict-required; else fail codex-verdict-required "$r"; fi
 done_cases

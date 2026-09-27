@@ -22,6 +22,8 @@ export function render(overlay) {
   const oa = overlay.org_admin ?? {};
   if (!Number.isInteger(oa.app?.id) || oa.app.id <= 0 || !oa.app?.slug) throw new Error("overlay org_admin.app.id (a positive number, not the example's 0) and org_admin.app.slug are required");
   if (oa.gate_integration_id !== undefined && !(Number.isInteger(oa.gate_integration_id) && oa.gate_integration_id > 0)) throw new Error("overlay org_admin.gate_integration_id must be a positive number when set");
+  for (const k of ["require_extra_approval_for_unattributed_changes", "push_app_bypass"])
+    if (oa[k] !== undefined && typeof oa[k] !== "boolean") throw new Error(`overlay org_admin.${k} must be true or false when set`);
   const vars = {
     review_thread_resolution: oa.review_thread_resolution === true,
     strict_status_checks: oa.strict_status_checks === true,
@@ -44,11 +46,13 @@ export function render(overlay) {
   };
   // Org admins bypass only through a PR (break-glass merge): local agent sessions run on an admin's
   // gh login, and "always" would let them push or force-push to protected branches. Push rulesets
-  // refuse the pull_request mode, so there the App alone bypasses.
+  // refuse the pull_request mode, so there only the App can bypass, and only when the overlay opts in.
   const app = { actor_id: oa.app.id, actor_type: "Integration", bypass_mode: "always" };
   const admin = { actor_id: null, actor_type: "OrganizationAdmin", bypass_mode: "pull_request" };
-  const bypass = (r) => (r.target === "push" ? [app] : [app, admin]);
-  const prDefaults = { required_review_thread_resolution: vars.review_thread_resolution };
+  const bypass = (r) => (r.target === "push" ? (oa.push_app_bypass === true ? [app] : []) : [app, admin]);
+  // Unset, extra approval for unattributed changes keeps each live ruleset's value (plan fills it in).
+  const prDefaults = { required_review_thread_resolution: vars.review_thread_resolution,
+    ...(oa.require_extra_approval_for_unattributed_changes !== undefined && { require_extra_approval_for_unattributed_changes: oa.require_extra_approval_for_unattributed_changes }) };
   // push_ruleset "external": the org keeps its own push ruleset; org-apply neither writes nor deletes push rulesets.
   const external = oa.push_ruleset === "external";
   return {
@@ -164,11 +168,14 @@ export async function plan(gh, overlay) {
     if (match[i]) used.add(match[i].id);
   });
   const deletes = [];
-  for (const [i, w] of want.rulesets.entries()) {
+  for (let [i, w] of want.rulesets.entries()) {
     const l = match[i];
     if (!l) steps.push({ what: `ruleset "${w.name}": create`, detail: [], call: ["POST", `orgs/${org}/rulesets`, toApi(w)] });
     else {
-      const d = fieldDiff(canon(l), w);
+      const cl = canon(l), key = "require_extra_approval_for_unattributed_changes";
+      if (overlay.org_admin[key] === undefined && w.rules.pull_request && cl.rules.pull_request)
+        want.rulesets[i] = w = { ...w, rules: { ...w.rules, pull_request: { ...w.rules.pull_request, [key]: cl.rules.pull_request[key] } } };
+      const d = fieldDiff(cl, w);
       if (d.length) steps.push({ what: `ruleset "${w.name}" #${l.id}: update${l.name === w.name ? "" : ` (was "${l.name}")`}`, detail: d, call: ["PUT", `orgs/${org}/rulesets/${l.id}`, toApi(w)] });
     }
   }

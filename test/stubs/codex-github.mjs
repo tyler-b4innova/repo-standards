@@ -13,6 +13,9 @@ const server = createServer((req, res) => {
     const url = new URL(req.url, "http://stub"), p = url.pathname.replace(/^\/repos\/acme\/demo/, "");
     const send = (code, body) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(body)); };
     let m;
+    // A private repository: the job token reads only what the workflow's permissions block grants.
+    const scope = p.startsWith("/actions/") ? "actions" : p.startsWith("/pulls") || p === "/graphql" ? "pull-requests" : p.startsWith("/issues") ? "issues" : null;
+    if (st.perms && scope && !st.perms.includes(scope)) return send(403, { message: "Resource not accessible by integration" });
     if (p === "/graphql") return send(200, { data: { repository: { pullRequest: { reviewThreads: { nodes: st.threads ?? [] } } } } });
     if (p === "/pulls/7") return send(200, st.pr);
     if (p === "/pulls") return send(200, st.recent ?? []);
