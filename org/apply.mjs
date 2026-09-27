@@ -21,6 +21,7 @@ export function render(overlay) {
   if (!Number.isInteger(oa.app?.id) || !oa.app?.slug) throw new Error("overlay org_admin.app.id (number) and org_admin.app.slug are required");
   const vars = {
     review_thread_resolution: oa.review_thread_resolution === true,
+    strict_status_checks: oa.strict_status_checks === true,
     "extra_checks.staged_main": oa.extra_checks?.staged_main ?? [],
     extra_restricted_paths: oa.extra_restricted_paths ?? [],
     max_file_size_mb: oa.max_file_size_mb ?? 50,

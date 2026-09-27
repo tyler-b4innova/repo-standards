@@ -10,7 +10,7 @@ One ruleset set, one `flow` property and one App definition for every organizati
 | staging | every repo with a `staging` branch (a staged repo's work lane, or a preview branch) | PR (squash only), `gate`, no deletion, no force-push |
 | push hygiene | every repo | no private env files, keys or tfvars, plus `extra_restricted_paths`; files up to `max_file_size_mb` |
 
-A staged repo's default branch is `staging`; work squash-merges there and is promoted to `main` with a merge commit. A repo whose work lands on `main` is `direct`. `gate` is not strict (merge-commit promotions leave `staging` behind `main`). Bypass: the org App `always` (it fast-forwards gated pack commits), org admins `pull_request` only, because local agent sessions run on an admin's `gh` login and `always` would let them push or force-push to protected branches; an admin can still merge a PR past a failing requirement as break-glass. Push rulesets refuse `pull_request` mode, so push hygiene has the App alone. `apply.mjs` owns every organization-level ruleset: an unlisted one is deleted, and one with the same target and conditions is renamed in place.
+A staged repo's default branch is `staging`; work squash-merges there and is promoted to `main` with a merge commit. A repo whose work lands on `main` is `direct`. `gate` is not strict by default (merge-commit promotions leave `staging` behind `main`); `strict_status_checks` turns it on. Bypass: the org App `always` (it fast-forwards gated pack commits), org admins `pull_request` only, because local agent sessions run on an admin's `gh` login and `always` would let them push or force-push to protected branches; an admin can still merge a PR past a failing requirement as break-glass. Push rulesets refuse `pull_request` mode, so push hygiene has the App alone. `apply.mjs` owns every organization-level ruleset: an unlisted one is deleted, and one with the same target and conditions is renamed in place.
 
 ```sh
 node org/apply.mjs --overlay org.json --dry-run    # diff against the live org; only GETs
@@ -27,10 +27,11 @@ Overlay:
   "app": { "id": 0, "slug": "<app slug>", "name": "<App name>" },
   "staged": ["<repo>"],
   "review_thread_resolution": false,
+  "strict_status_checks": false,
   "extra_checks": { "staged_main": [] },
   "extra_restricted_paths": [],
   "max_file_size_mb": 50
 }
 ```
 
-`review_thread_resolution` stays `false` until the open-PR review backlog is cleared. App permissions are listed with their callers in `app-manifest.json`; the App has no webhook because the launcher polls.
+`review_thread_resolution` and `strict_status_checks` default to `false`; each org sets them in its overlay. App permissions are listed with their callers in `app-manifest.json`; the App has no webhook because the launcher polls.

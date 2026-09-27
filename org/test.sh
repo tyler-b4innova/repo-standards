@@ -40,7 +40,7 @@ cat >"$T/state.json" <<'JSON'
       "rules": [ {"type": "deletion"} ] } ] }
 JSON
 
-# org-rulesets-render: placeholders filled from the overlay; bypass is the org App (always) and org admins
+# org-rulesets-render: placeholders filled from the overlay (thread resolution and strict checks off unless set); bypass is the org App (always) and org admins
 # (pull_request only, branch rulesets; GitHub refuses that mode on push rulesets); thread resolution off
 # unless the overlay turns it on; extra paths and checks spread into their lists; no App id is refused.
 out=$(node --input-type=module -e '
@@ -48,7 +48,7 @@ out=$(node --input-type=module -e '
   import { readFileSync } from "node:fs";
   const o = JSON.parse(readFileSync(process.argv[1], "utf8"));
   const a = render(o);
-  o.org_admin.review_thread_resolution = true; o.org_admin.extra_checks = { staged_main: [{ context: "promote-main" }] }; o.org_admin.max_file_size_mb = 20;
+  o.org_admin.review_thread_resolution = true; o.org_admin.strict_status_checks = true; o.org_admin.extra_checks = { staged_main: [{ context: "promote-main" }] }; o.org_admin.max_file_size_mb = 20;
   const b = render(o);
   const rs = (x, n) => x.rulesets.find((r) => r.name.includes(n)).rules;
   let refused = false; try { render({ org_admin: {} }); } catch { refused = true; }
@@ -59,9 +59,10 @@ out=$(node --input-type=module -e '
     direct: rs(a, "direct").pull_request.allowed_merge_methods, staged: rs(a, "staged main").pull_request.allowed_merge_methods,
     vault: rs(a, "push").file_path_restriction.restricted_file_paths.includes("vault/**"),
     size: [rs(a, "push").max_file_size.max_file_size, rs(b, "push").max_file_size.max_file_size],
+    strict: [a, b].map((x) => [...new Set(x.rulesets.flatMap((r) => r.rules.required_status_checks ? [r.rules.required_status_checks.strict_required_status_checks_policy] : []))]),
     checks: rs(b, "staged main").required_status_checks.required_status_checks.map((c) => c.context),
     placeholders: JSON.stringify(a).includes("\"$"), refused }));' "$T/org.json" 2>&1)
-want='{"bypass":["branch:[{\"actor_id\":4242,\"actor_type\":\"Integration\",\"bypass_mode\":\"always\"},{\"actor_id\":null,\"actor_type\":\"OrganizationAdmin\",\"bypass_mode\":\"pull_request\"}]","push:[{\"actor_id\":4242,\"actor_type\":\"Integration\",\"bypass_mode\":\"always\"}]"],"threadOff":false,"threadOn":true,"stagingThreadOn":true,"direct":["squash"],"staged":["merge"],"vault":true,"size":[50,20],"checks":["gate","promote-main"],"placeholders":false,"refused":true}'
+want='{"bypass":["branch:[{\"actor_id\":4242,\"actor_type\":\"Integration\",\"bypass_mode\":\"always\"},{\"actor_id\":null,\"actor_type\":\"OrganizationAdmin\",\"bypass_mode\":\"pull_request\"}]","push:[{\"actor_id\":4242,\"actor_type\":\"Integration\",\"bypass_mode\":\"always\"}]"],"threadOff":false,"threadOn":true,"stagingThreadOn":true,"direct":["squash"],"staged":["merge"],"vault":true,"size":[50,20],"strict":[[false],[true]],"checks":["gate","promote-main"],"placeholders":false,"refused":true}'
 [ "$out" = "$want" ] && ok org-rulesets-render || fail org-rulesets-render "$out"
 
 # engine-org-dry-run-diff: a dry run names each change (field diffs for a matched ruleset, its old name, creates,
