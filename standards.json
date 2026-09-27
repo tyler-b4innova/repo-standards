@@ -1,0 +1,7 @@
+{
+  "pack": "example",
+  "version": "0.2.0-dev",
+  "profile": "internal",
+  "dispatch": "manual",
+  "sensitive": false
+}

@@ -1,0 +1,98 @@
+#!/usr/bin/env node
+// Put this repo in the org's Sentry. Idempotent; every org value comes from scripts/agent/pack.json.
+//   scripts/agent/sentry-setup [--platform P] [--repo NAME] [--dry-run] [--help]
+// 1. creates the project (slug = repo name), 2. attaches its issue stream to the alert workflow,
+// 3. opens a PR mapping the project in the filer repo's projects.json (client profile: human-decision),
+// 4. writes the public DSN over the "set-by-sentry-setup" placeholder in the wrangler config.
+// Token: SENTRY_INTEGRATION_TOKEN, else the secrets store item named in pack.json (never prompts or prints it).
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { parseArgs } from "node:util";
+
+const { values: o } = parseArgs({ options: { platform: { type: "string" }, "dry-run": { type: "boolean", default: false }, repo: { type: "string" }, help: { type: "boolean" } } });
+if (o.help) { console.log(readFileSync(new URL(import.meta.url), "utf8").split("\n").slice(1, 8).map((l) => l.replace(/^\/\/ ?/, "")).join("\n")); process.exit(0); }
+const die = (msg) => { console.error(`sentry-setup: ${msg}`); process.exit(1); };
+const sh = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+const pack = JSON.parse(readFileSync(new URL("pack.json", import.meta.url), "utf8"));
+const et = pack.modules?.error_tracker;
+if (et?.kind !== "sentry") die(`pack.json modules.error_tracker.kind is "${et?.kind}", not sentry`);
+const { org: ORG, api_base: BASE, filer_repo: FILER, alert_workflow: WORKFLOW, credential_item: ITEM, secrets = {} } = et;
+const dry = o["dry-run"];
+const platform = o.platform ?? (existsSync("svelte.config.js") ? "javascript-sveltekit" : existsSync("wrangler.jsonc") || existsSync("wrangler.toml") ? "node-cloudflare-workers" : "node");
+const repo = o.repo ?? sh("git", ["remote", "get-url", "origin"]).replace(/\.git$/, "").split(/[/:]/).pop();
+const std = existsSync("standards.json") ? JSON.parse(readFileSync("standards.json", "utf8")) : {};
+const entry = std.profile === "client" ? { repo: `${pack.org}/${repo}`, labels: ["human-decision"] } : `${pack.org}/${repo}`;
+
+let token = process.env.SENTRY_INTEGRATION_TOKEN;
+if (!token && secrets.kind === "1password" && process.env[secrets.token_env]) token = sh("op", ["read", `op://${secrets.vault_id}/${ITEM}/credential`]);
+if (!token) die(`set SENTRY_INTEGRATION_TOKEN${secrets.kind === "1password" ? `, or ${secrets.token_env} to read "${ITEM}"` : ""} (never an interactive session)`);
+let ghToken = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
+try { ghToken ||= sh("gh", ["auth", "token"]); } catch {}
+
+async function call(base, auth, method, path, body) {
+  const res = await fetch(base + path, { method, headers: { Authorization: `Bearer ${auth}`, Accept: "application/json", "Content-Type": "application/json" }, body: body && JSON.stringify(body) });
+  if (res.status === 404 && method === "GET") return null;
+  const text = await res.text();
+  if (!res.ok) die(`${method} ${path}: ${res.status} ${text.slice(0, 300)}`);
+  return text ? JSON.parse(text) : null;
+}
+const api = (m, p, b) => call(BASE.replace(/\/$/, ""), token, m, p, b);
+const gh = (m, p, b) => call((process.env.GITHUB_API_URL || "https://api.github.com").replace(/\/$/, ""), ghToken, m, `/${p}`, b);
+const step = (msg) => console.log(`${dry ? "[dry-run] " : ""}${msg}`);
+
+// 1. project
+let project = await api("GET", `/api/0/projects/${ORG}/${repo}/`);
+if (project) step(`project ${repo} exists (id ${project.id})`);
+else if (dry) step(`would create project ${repo} (${platform})`);
+else {
+  project = await api("POST", `/api/0/teams/${ORG}/${et.team ?? ORG}/projects/`, { name: repo, slug: repo, platform });
+  if (project.slug !== repo) die(`Sentry created slug ${project.slug}, not ${repo}`);
+  step(`project ${repo} created (id ${project.id})`);
+}
+
+// 2. alert workflow ← the project's issue stream detector
+if (!project) step(`would attach ${repo}'s issue stream to "${WORKFLOW}"`);
+else {
+  const listed = (await api("GET", `/api/0/organizations/${ORG}/workflows/`)).find((w) => w.name === WORKFLOW);
+  if (!listed) die(`alert workflow "${WORKFLOW}" not found`);
+  const workflow = await api("GET", `/api/0/organizations/${ORG}/workflows/${listed.id}/`); // PUT needs the detail shape
+  const detector = (await api("GET", `/api/0/organizations/${ORG}/detectors/?project=${project.id}`)).find((d) => d.type === "issue_stream");
+  if (!detector) die(`no issue_stream detector on ${repo}`);
+  if (workflow.detectorIds.includes(detector.id)) step(`"${WORKFLOW}" already watches ${repo}`);
+  else if (dry) step(`would attach detector ${detector.id} to "${WORKFLOW}"`);
+  else {
+    const { name, enabled, config, environment, triggers, actionFilters } = workflow;
+    await api("PUT", `/api/0/organizations/${ORG}/workflows/${workflow.id}/`, { name, enabled, config, environment, triggers, actionFilters, detectorIds: [...workflow.detectorIds, detector.id] });
+    step(`"${WORKFLOW}" now watches ${repo} (detector ${detector.id})`);
+  }
+}
+
+// 3. projects.json in the filer repo, by PR
+const branch = `chore/sentry-project-${repo}`;
+const file = await gh("GET", `repos/${FILER}/contents/projects.json`);
+const projects = file ? JSON.parse(Buffer.from(file.content, "base64").toString("utf8")) : {};
+const [pr] = await gh("GET", `repos/${FILER}/pulls?state=open&head=${FILER.split("/")[0]}:${encodeURIComponent(branch)}`);
+if (JSON.stringify(projects[repo]) === JSON.stringify(entry)) step(`${FILER} already files ${repo}`);
+else if (pr) step(`${FILER} mapping PR already open: ${pr.html_url}`);
+else if (dry) step(`would open a ${FILER} PR mapping ${repo} → ${JSON.stringify(entry)}`);
+else {
+  const main = (await gh("GET", `repos/${FILER}`)).default_branch;
+  const next = Object.fromEntries(Object.entries({ ...projects, [repo]: entry }).sort(([a], [b]) => a.localeCompare(b)));
+  const head = (await gh("GET", `repos/${FILER}/git/ref/heads/${main}`)).object.sha;
+  await gh("POST", `repos/${FILER}/git/refs`, { ref: `refs/heads/${branch}`, sha: head }).catch(() => {});
+  await gh("PUT", `repos/${FILER}/contents/projects.json`, { message: `chore: file Sentry project ${repo}`, content: Buffer.from(JSON.stringify(next, null, 2) + "\n").toString("base64"), sha: file?.sha, branch });
+  const made = await gh("POST", `repos/${FILER}/pulls`, { title: `chore: file Sentry project ${repo}`, head: branch, base: main, body: `Adds \`${repo}\` to projects.json (from \`scripts/agent/sentry-setup\`).` });
+  step(`mapping PR ${made.html_url}`);
+}
+
+// 4. DSN
+if (!project) step("would write the public DSN over the set-by-sentry-setup placeholder");
+else {
+  const dsn = (await api("GET", `/api/0/projects/${ORG}/${repo}/keys/`))[0].dsn.public;
+  const cfgs = ["wrangler.jsonc", "wrangler.json", "wrangler.toml"].filter((f) => existsSync(f));
+  const cfg = cfgs.find((f) => readFileSync(f, "utf8").includes("set-by-sentry-setup"));
+  if (cfg && dry) step(`would write the DSN into ${cfg}`);
+  else if (cfg) { writeFileSync(cfg, readFileSync(cfg, "utf8").replaceAll("set-by-sentry-setup", dsn)); step(`${cfg}: DSN written (commit it)`); }
+  else if (cfgs.some((f) => readFileSync(f, "utf8").includes(dsn))) step(`${cfgs.find((f) => readFileSync(f, "utf8").includes(dsn))} already holds the DSN`);
+  console.log(`SENTRY_DSN=${dsn}`);
+}

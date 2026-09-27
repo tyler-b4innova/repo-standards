@@ -4,7 +4,21 @@
   "description": "Org-neutral engine for repo-scoped agent standards",
   "private": true,
   "type": "module",
-  "bin": { "repo-standards": "bin/repo-standards.mjs" },
-  "files": ["bin", "lib", "template", "modules", "defaults.json", "schema"],
-  "engines": { "node": ">=22" }
+  "bin": {
+    "repo-standards": "bin/repo-standards.mjs"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "template",
+    "modules",
+    "defaults.json",
+    "schema"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test:e2e": "test/run.sh"
+  }
 }

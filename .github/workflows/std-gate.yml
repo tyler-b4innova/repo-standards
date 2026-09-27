@@ -1,0 +1,48 @@
+# Managed by the standards pack: the one required check, job `gate`.
+# Repo-owned checks go in scripts/agent/gate.local.sh (run last when executable).
+name: std-gate
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main, staging]
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+concurrency:
+  group: std-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  gate:
+    name: gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+      - name: standards
+        run: scripts/agent/setup.sh --check
+      - name: evidence
+        run: node scripts/agent/gate.mjs evidence
+      - name: secrets
+        env:
+          RANGE: ${{ github.event.pull_request && format('{0}..{1}', github.event.pull_request.base.sha, github.event.pull_request.head.sha) || '' }}
+        run: node scripts/agent/gate.mjs secrets
+      - name: install
+        run: node scripts/agent/gate.mjs install
+      - name: typecheck
+        run: node scripts/agent/gate.mjs run typecheck
+      - name: build
+        run: node scripts/agent/gate.mjs run build
+      - name: e2e
+        run: node scripts/agent/gate.mjs e2e
+      - name: repo checks
+        run: if [ -x scripts/agent/gate.local.sh ]; then scripts/agent/gate.local.sh; else echo "notice: no scripts/agent/gate.local.sh"; fi

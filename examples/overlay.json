@@ -5,17 +5,60 @@
   "title": "Example standards",
   "org": "example-org",
   "standards_repo": "example-org/standards",
-  "identity": { "provider": "google-workspace", "idp_domain": "example.com" },
-  "accounts": { "cloudflare_account_id": "none", "secrets": { "kind": "none" }, "error_tracker": { "kind": "none" } },
-  "sync": { "app_client_id_var": "STANDARDS_APP_CLIENT_ID", "app_key_secret": "STANDARDS_APP_PRIVATE_KEY", "schedule": "17 * * * *", "compliance_issue_title": "Standards compliance" },
-  "fleet": { "mode": "discover", "include": [], "exclude": [] },
+  "identity": {
+    "provider": "google-workspace",
+    "idp_domain": "example.com"
+  },
+  "accounts": {
+    "cloudflare_account_id": "none",
+    "secrets": {
+      "kind": "none"
+    },
+    "error_tracker": {
+      "kind": "none"
+    }
+  },
+  "sync": {
+    "app_client_id_var": "STANDARDS_APP_CLIENT_ID",
+    "app_key_secret": "STANDARDS_APP_PRIVATE_KEY",
+    "schedule": "17 * * * *",
+    "compliance_issue_title": "Standards compliance"
+  },
+  "fleet": {
+    "mode": "discover",
+    "include": [],
+    "exclude": []
+  },
+  "claude_md": "import-only",
+  "decision_record_globs": [],
   "forbid_paths": [],
-  "shared_preview_hosts": ["preview.example.com"],
+  "shared_preview_hosts": [
+    "preview.example.com"
+  ],
   "expiring_credentials": [],
-  "modules": { "error_tracker": false, "deploy": false },
+  "modules": {
+    "error_tracker": false,
+    "deploy": false
+  },
   "permissions_allow": [],
   "profiles": {
-    "internal": { "block_lines": ["- Deploys run from the org's CI builds, never from a personal token."], "recall_scope": "org", "forbid_paths": [], "forbid_patterns": [], "pr_body_model_line": true },
-    "client": { "block_lines": ["- Client repo: PR bodies in plain client language; no internal hostnames or links outside this repo."], "recall_scope": "repo", "forbid_paths": [], "forbid_patterns": ["internal\\.example\\.com"], "pr_body_model_line": false }
+    "internal": {
+      "block_lines": [
+        "- Deploys run from the org's CI builds, never from a personal token."
+      ],
+      "forbid_paths": [],
+      "forbid_patterns": [],
+      "pr_body_model_line": true
+    },
+    "client": {
+      "block_lines": [
+        "- Client repo: PR bodies in plain client language; no internal hostnames or links outside this repo."
+      ],
+      "forbid_paths": [],
+      "forbid_patterns": [
+        "internal\\.example\\.com"
+      ],
+      "pr_body_model_line": false
+    }
   }
 }

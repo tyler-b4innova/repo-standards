@@ -1,20 +1,43 @@
 {
-  "limits": { "agents": 4096, "block": 1800, "overlay_lines": 225, "title": 20, "skill": 1536, "pack": 40960 },
+  "limits": {
+    "agents": 4096,
+    "block": 1800,
+    "skill": 1536,
+    "pack": 40960
+  },
   "ui_paths": [
     "**/*.{astro,svelte,vue,jsx,tsx,html,css,scss,docx,pptx}",
     "src/{components,layouts,styles,lib/components}/**",
     "{public,static}/**"
   ],
-  "ui_ignore": ["**/*.{test,spec}.*", "{test,tests,e2e}/**", "**/*.md", ".github/**"],
+  "ui_ignore": [
+    "**/*.{test,spec}.*",
+    "{test,tests,e2e}/**",
+    "**/*.md",
+    ".github/**"
+  ],
   "models": {
-    "claude": { "model": "opus", "subagent": "opus" },
-    "codex": { "model": "gpt-6-sol", "subagent": "gpt-6-sol" }
+    "claude": {
+      "model": "opus",
+      "subagent": "opus"
+    },
+    "codex": {
+      "model": "gpt-6-sol",
+      "subagent": "gpt-6-sol"
+    }
   },
   "permissions_allow": [
     "Bash(scripts/agent/pr.sh:*)",
-    "Bash(node scripts/agent/evidence.mjs:*)",
-    "Bash(scripts/agent/recall:*)"
+    "Bash(node scripts/agent/evidence.mjs:*)"
   ],
-  "forbidden_files": ["CONTEXT.md", ".mcp.json", ".dev.vars"],
-  "decision_dirs": ["adr", "adrs", "decisions", "decision-records"]
+  "forbidden_files": [
+    "CONTEXT.md",
+    ".mcp.json"
+  ],
+  "decision_dirs": [
+    "adr",
+    "adrs",
+    "decisions",
+    "decision-records"
+  ]
 }
