@@ -34,8 +34,8 @@ else {
   else {
     const one = (k, vals) => vals.includes(std[k]) || fail(`standards.json ${k} is ${JSON.stringify(std[k])}`, `use one of ${vals.join("|")}`);
     one("pack", [pack.pack]); one("profile", ["internal", "client"]); one("dispatch", ["auto", "manual", "off"]);
-    one("sensitive", [true, false]); one("e2e", [undefined, false]); one("flow", [undefined, "staged", "direct"]); one("design_signoff", [undefined, true, false]);
-    if (!/^\d+\.\d+\.\d+/.test(std.version ?? "")) fail("standards.json version is not X.Y.Z", restore("standards.json"));
+    one("sensitive", [true, false]); if (!(std.e2e === undefined || std.e2e === false || (typeof std.e2e === "string" && std.e2e.trim()))) fail(`standards.json e2e is ${JSON.stringify(std.e2e)}`, "use false (docs/static only) or the e2e command"); one("flow", [undefined, "staged", "direct"]); one("design_signoff", [undefined, true, false]);
+    if (!/^\d+\.\d+\.\d+$/.test(std.version ?? "")) fail("standards.json version is not X.Y.Z", restore("standards.json"));
     const globs = (v) => v === undefined || (Array.isArray(v) && v.every((g) => typeof g === "string"));
     const ui = std.ui_paths;
     if (!(globs(ui) || (ui && typeof ui === "object" && globs(ui.include) && globs(ui.ignore))))
@@ -47,8 +47,9 @@ else {
   const begin = `<!-- std:begin ${pack.pack} -->`, end = "<!-- std:end -->";
   if (!lock) fail("standards.lock missing", restore("standards.lock"));
   else {
-    const lockVersion = lock.match(/^# \S+ v(\S+)/)?.[1];
-    if (std && lockVersion !== std.version) fail(`standards.json version ${std.version} differs from standards.lock ${lockVersion}`, restore("standards.json standards.lock"));
+    const [, lp, lv, lpr] = lock.match(/^# (\S+) v(\S+) (\S+) engine \S+/) ?? [];
+    for (const [k, l] of [["pack", lp], ["version", lv], ["profile", lpr]])
+      if (std && std[k] !== l) fail(`standards.lock says ${k} ${l ?? "(no header)"}, standards.json ${std[k]}`, `${restore("standards.json standards.lock")}   (or re-apply the pack)`);
     for (const [want, path] of lock.split("\n").filter((l) => l && !l.startsWith("#")).map((l) => l.split(/\s+/))) {
       if (path === "AGENTS.md#std") {
         const lines = (agents ?? "").split("\n"), i = lines.indexOf(begin), j = lines.indexOf(end, i);
@@ -69,24 +70,26 @@ else {
   const claude = read("CLAUDE.md");
   if (claude !== null && (pack.claude_md === "forbid" || claude.trim() !== "@AGENTS.md"))
     fail("CLAUDE.md holds its own content", pack.claude_md === "forbid" ? "git rm CLAUDE.md   (agents read AGENTS.md)" : "move it to AGENTS.md; CLAUDE.md may only be @AGENTS.md");
+  if (claude === null && existsSync("CLAUDE.local.md")) warn("CLAUDE.local.md without CLAUDE.md makes Claude skip AGENTS.md | fix: add a CLAUDE.md holding @AGENTS.md, or remove CLAUDE.local.md");
   let link = null;
   try { link = readlinkSync(".claude/skills"); } catch {}
   if (link !== "../.agents/skills") fail(".claude/skills is not a link to ../.agents/skills", "rm -rf .claude/skills && ln -s ../.agents/skills .claude/skills");
-  const s = json(".claude/settings.json"), mc = pack.models.claude, mx = pack.models.codex;
-  if (!s?.hooks?.SessionStart?.some((m) => m.hooks?.some((h) => h.command?.includes("scripts/agent/setup.sh --check"))))
-    fail(".claude/settings.json lacks the SessionStart setup.sh --check hook", restore(".claude/settings.json"));
-  if (s && (s.model !== mc.model || s.env?.CLAUDE_CODE_SUBAGENT_MODEL !== mc.subagent || JSON.stringify(s.permissions?.deny) !== JSON.stringify(pack.permissions_deny)))
-    fail(".claude/settings.json model or deny keys changed", restore(".claude/settings.json"));
-  const [top, ...tables] = (read(".codex/config.toml") ?? "").split(/^(?=\s*\[)/m);
-  const agentsTable = tables.find((t) => /^\s*\[agents\]/.test(t)) ?? "";
-  if (![["model", mx.model], ...Object.entries(pack.codex_top)].every(([k, v]) => top.includes(`${k} = "${v}"`)) || !agentsTable.includes(`default_subagent_model = "${mx.subagent}"`))
+  const s = json(".claude/settings.json");
+  const on = (m) => ["", "*"].includes(m ?? "") || ["startup", "resume"].every((e) => m.split("|").includes(e));
+  if (!s?.hooks?.SessionStart?.some((m) => on(m.matcher) && m.hooks?.some((h) => h.command === '"$CLAUDE_PROJECT_DIR"/scripts/agent/setup.sh --check')))
+    fail(".claude/settings.json lacks the SessionStart setup.sh --check hook for startup and resume", restore(".claude/settings.json"));
+  // Model keys are repo defaults (a repo may choose its own); the deny set and Codex bypass keys are engine-owned.
+  if (s && JSON.stringify(s.permissions?.deny) !== JSON.stringify(pack.permissions_deny))
+    fail(".claude/settings.json deny set changed", restore(".claude/settings.json"));
+  const [top] = (read(".codex/config.toml") ?? "").split(/^(?=\s*\[)/m);
+  if (!Object.entries(pack.codex_top).every(([k, v]) => new RegExp(`^\\s*${k}\\s*=\\s*"${v}"\\s*(#.*)?$`, "m").test(top)))
     fail(".codex/config.toml engine keys changed", restore(".codex/config.toml"));
 
   // Forbidden paths and content
   for (const f of tracked) {
     const name = f.split("/").pop(), dirs = f.split("/").slice(0, -1).map((d) => d.toLowerCase());
     if (f === "CONTEXT.md") fail("CONTEXT.md at the root is forbidden", `git rm ${f}   (rules go in AGENTS.md)`);
-    if (f === ".mcp.json") fail(".mcp.json is committed", "git rm --cached .mcp.json && echo .mcp.json >> .gitignore");
+    if (name === ".mcp.json") fail(`${f} is committed`, `git rm --cached ${f} && echo .mcp.json >> .gitignore`);
     if (f.startsWith(".evidence/")) fail(`.evidence/ is tracked (${f})`, "git rm -r .evidence   (pr.sh evidence removes it after posting)");
     if ((/\.(md|markdown)$/i.test(name) && dirs.some((d) => pack.decision_dirs.includes(d))) || /^ADR-.*\.md$/i.test(name) || pack.decision_record_globs.some((g) => glob(g).test(f)))
       fail(`decision record tracked: ${f}`, `git rm ${f}   (decisions are not recorded; they must be evident in the work)`);
@@ -99,7 +102,8 @@ else {
   }
   for (const host of pack.shared_preview_hosts)
     for (const f of tracked.filter((f) => /(^|\/)wrangler\.(jsonc?|toml)$/.test(f)))
-      if (new RegExp(`(^|[^a-z0-9-])${host.replace(/\./g, "\\.")}`).test(read(f) ?? ""))
+      // The exact host only: {label}.preview.<zone> is the per-Worker form and must not match preview.<zone>.
+      if (new RegExp(`(^|[^a-z0-9.-])${host.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![a-z0-9.-])`, "i").test(read(f) ?? ""))
         fail(`${f} uses the shared preview host ${host} (it binds to one Worker)`, `use a per-Worker host: ${pack.preview_host_pattern ?? "preview.<zone>"}`);
   if (Array.isArray(std?.ui_paths) && !std.ui_paths.length) {
     const ui = tracked.filter((f) => pack.ui_paths.some((g) => glob(g).test(f)) && !pack.ui_ignore.some((g) => glob(g).test(f)));

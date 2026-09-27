@@ -16,7 +16,7 @@ note() { echo "setup: $*"; }
 try() { "$@" || note "failed (continuing): $*"; }
 online() { curl -sSfI --max-time 5 https://registry.npmjs.org/ >/dev/null 2>&1; }
 sudo=""
-[ "$(id -u)" = 0 ] || sudo=sudo
+[ "$(id -u)" = 0 ] || sudo="sudo -n" # never wait for a password
 
 if ! online; then
   note "offline: skipping installs"
@@ -30,16 +30,21 @@ else
     if command -v apt-get >/dev/null; then
       try $sudo apt-get update -qq
       try $sudo apt-get install -y -qq "${want[@]}"
+    elif command -v brew >/dev/null; then # macOS: brew names; LibreOffice is a cask
+      for p in "${want[@]}"; do
+        case $p in poppler-utils) try brew install poppler ;; libreoffice-writer) ;; libreoffice-impress) try brew install --cask libreoffice ;; *) try brew install "$p" ;; esac
+      done
     else
-      note "no apt-get; install manually if needed: ${want[*]}"
+      note "no apt-get or brew; install manually if needed: ${want[*]}"
     fi
   fi
   if [ -f package.json ]; then
-    if [ -f pnpm-lock.yaml ]; then try corepack enable; try pnpm install --frozen-lockfile
-    elif [ -f yarn.lock ]; then try corepack enable; if [ -f .yarnrc.yml ]; then try yarn install --immutable; else try yarn install --frozen-lockfile; fi
+    x="npx --no" # the repo's own playwright, so the browser matches the lockfile (never the registry's latest)
+    if [ -f pnpm-lock.yaml ]; then try corepack enable; try pnpm install --frozen-lockfile; x="pnpm exec"
+    elif [ -f yarn.lock ]; then try corepack enable; x=yarn; if [ -f .yarnrc.yml ]; then try yarn install --immutable; else try yarn install --frozen-lockfile; fi
     elif [ -f package-lock.json ]; then try npm ci
     else try npm install --no-package-lock; fi
-    if grep -qE '"(@playwright/test|playwright)"' package.json; then try npx playwright install --with-deps chromium; fi
+    if grep -qE '"(@playwright/test|playwright)"' package.json; then try $x playwright install --with-deps chromium; fi
   fi
 fi
 node scripts/agent/check.mjs

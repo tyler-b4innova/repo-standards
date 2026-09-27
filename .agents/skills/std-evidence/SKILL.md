@@ -6,7 +6,7 @@ description: Capture visual proof for a PR - before/after screenshots of a chang
 # Evidence
 
 1. Capture before (default branch: production, preview or a worktree) and after (your branch) for each changed surface:
-   - Web: `node scripts/agent/evidence.mjs --url <url> --path /page --name before|after` writes full-page PNGs at 400 and 1280px. Motion: `--video` (`--gif`/`--mp4` via ffmpeg). Interactions: `--script steps.mjs`.
+   - Web: `node scripts/agent/evidence.mjs --url <url> --path /page --name before|after` writes full-page PNGs at 400 and 1280px. Playwright not at the root (monorepo): run it from the package that has it, as `node "$(git rev-parse --show-toplevel)/scripts/agent/evidence.mjs" ...`. Motion: `--video` (`--gif`/`--mp4` via ffmpeg). Interactions: `--script steps.mjs`.
    - Documents: `soffice --headless --convert-to pdf <file>`, then `pdftoppm -png -r 80 <file>.pdf <name>` for the changed pages.
 2. Open every capture and look at it (both widths, overflow, contrast, what the issue asked for). Fix and recapture. Never post an image you have not viewed.
 3. Show the final images in chat.

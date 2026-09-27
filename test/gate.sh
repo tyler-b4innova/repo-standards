@@ -80,7 +80,9 @@ out2=$(G "$R" evidence); s2=$?
 if [ $s1 -eq 0 ] && [ $s2 -eq 1 ] && has ".evidence/ is tracked (.evidence/after-home-400.png)" "$out2"; then ok no-evidence-on-main
 else fail no-evidence-on-main "untracked=$s1 tracked=$s2: $out2"; fi
 
-FX=$T/fixture.json LOG=$T/stub.log SHA=$(node -e 'console.log(require("crypto").randomBytes(20).toString("hex"))')
+# Evidence repos are clones of one repo, so the pinned evidence commit is in every PR head's history.
+EV=$(mkrepo); mkev() { local d; d=$(mktemp -d "$T/ev.XXXXXX"); git clone -q "$EV" "$d" && echo "$d"; }
+FX=$T/fixture.json LOG=$T/stub.log SHA=$(git -C "$EV" rev-parse HEAD)
 export FX SHA
 echo '{"repo":"acme/demo"}' > "$FX"
 node test/stubs/gate-github.mjs "$T/port" "$LOG" "$FX" & PIDS="$PIDS $!"
@@ -88,13 +90,13 @@ PORT=$(wait_port "$T/port") || { fail stub-start "gate-github stub did not start
 # fx '<js object>': write the fixture; helpers c(id, login, body, app) and img(url-suffix); files: {pr: [...]}
 fx() { node -e 'const S=process.env.SHA,U="https://github.com/acme/demo/blob/"+S+"/.evidence/",img=(u)=>"![shot]("+u+")",
 c=(id,login,body,app)=>({id,html_url:"https://github.com/acme/demo/pull/9#issuecomment-"+id,user:{login},performed_via_github_app:app?{slug:"evidence-app"}:null,body});
-require("fs").writeFileSync(process.env.FX,JSON.stringify({repo:"acme/demo",files:{},comments:{},contents:[S+":.evidence/after-home-400.png",S+":.evidence/after-home-1280.png"],...eval("("+process.argv[1]+")")}))' "$1"; }
+require("fs").writeFileSync(process.env.FX,JSON.stringify({repo:"acme/demo",files:{},comments:{},contents:["before","after"].flatMap((b)=>[S+":.evidence/"+b+"-home-400.png",S+":.evidence/"+b+"-home-1280.png"]),...eval("("+process.argv[1]+")")}))' "$1"; }
 # ev <repo> <pr>: the evidence step on a pull_request event
-ev() { printf '{"pull_request":{"number":%s,"user":{"login":"alice"}}}\n' "$2" > "$T/event.json"
+ev() { printf '{"pull_request":{"number":%s,"user":{"login":"alice"},"head":{"sha":"%s","ref":"feat"},"base":{"ref":"main"}}}\n' "$2" "$(git -C "$1" rev-parse HEAD)" > "$T/event.json"
   (cd "$1" && GITHUB_EVENT_PATH="$T/event.json" GITHUB_API_URL="http://127.0.0.1:$PORT" GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=stub-token node scripts/agent/gate.mjs evidence) 2>&1; }
-GOOD='img(U+"after-home-400.png?raw=true")+"\n"+img(U+"after-home-1280.png?raw=true")'
+GOOD='["before","after"].flatMap((b)=>[img(U+b+"-home-400.png?raw=true"),img(U+b+"-home-1280.png?raw=true")]).join("\n")'
 
-R=$(mkrepo)
+R=$(mkev)
 fx '{files:{1:[...Array.from({length:150},(_,i)=>"lib/m"+i+".mjs"),"src/components/Button.tsx"]}}'
 : > "$LOG"; out1=$(ev "$R" 1); s1=$?; log=$(cat "$LOG")
 fx '{files:{1:[...Array.from({length:150},(_,i)=>"lib/m"+i+".mjs"),"src/components/Button.tsx"]},comments:{1:[c(11,"alice",'"$GOOD"')]}}'
@@ -113,7 +115,7 @@ cls=$(G "$R" classify HEAD); cs=$?
 if [ -z "$bad" ] && [ $cs -eq 0 ] && has site.css "$cls" && has docs/brief.docx "$cls" && ! has lib.mjs "$cls"; then ok ui-paths-evidence-required
 else fail ui-paths-evidence-required "not required:$bad classify($cs)=$cls"; fi
 
-R=$(mkrepo); r=""
+R=$(mkev); r=""
 t() { jset "$R/standards.json" "o.ui_paths=$1"; fx "{files:{3:[\"$2\"]}}"; out=$(ev "$R" 3); st=$?; [ $st -eq "$3" ] || r="$r [$1 $2 want $3 got $st]"; }
 t '["content/**"]' content/pricing.txt 1
 t '["content/**"]' src/components/Button.tsx 0
@@ -125,7 +127,7 @@ jset "$R/standards.json" 'o.ui_paths=["content/**"]'; mkdir -p "$R/content" && e
 cls=$(G "$R" classify HEAD)
 if [ -z "$r" ] && has content/a.txt "$cls" && ! has app.css "$cls"; then ok ui-paths-repo-override; else fail ui-paths-repo-override "$r classify=$cls"; fi
 
-R=$(mkrepo)
+R=$(mkev)
 fx '{files:{5:["src/app.css"]},comments:{5:[c(21,"mallory",'"$GOOD"')]}}'; out1=$(ev "$R" 5); s1=$?
 fx '{files:{5:["src/app.css"]},comments:{5:[c(22,"evidence-app[bot]",'"$GOOD"',true)]}}'; out2=$(ev "$R" 5); s2=$?
 fx '{files:{5:["src/app.css"]},comments:{5:[c(23,"alice",'"$GOOD"')]}}'; out3=$(ev "$R" 5); s3=$?
@@ -140,4 +142,34 @@ if [ $s1 -eq 1 ] && has "$B1" "$out1" && has "$B2" "$out1" && has "$B3" "$out1" 
   has "\"method\":\"HEAD\",\"path\":\"/repos/acme/demo/contents/.evidence/missing.png\",\"query\":\"?ref=$SHA\"" "$log" && [ $s2 -eq 0 ]; then ok evidence-images-pinned-resolving
 else fail evidence-images-pinned-resolving "bad-images=$s1 good=$s2: $out1"; fi
 
+# Stale or incomplete evidence: a later UI commit, a commit outside the PR, or no 1280px capture.
+R=$(mkev); echo "a{}" > "$R/app.css" && commit "$R" "UI after the evidence"
+fx '{files:{7:["app.css"]},comments:{7:[c(41,"alice",'"$GOOD"')]}}'; st1=$(ev "$R" 7); x1=$?
+# A side branch with a UI change merged after the evidence makes it stale too.
+R=$(mkev); gc -C "$R" checkout -qb side; echo "b{}" > "$R/side.css" && commit "$R" "side UI"; gc -C "$R" checkout -q main
+echo x > "$R/notes.txt" && commit "$R" "unrelated"; gc -C "$R" merge -q --no-ff --no-edit side
+fx '{files:{7:["side.css"]},comments:{7:[c(44,"alice",'"$GOOD"')]}}'; st4=$(ev "$R" 7); x4=$?
+R=$(mkev); RND=$(node -e 'console.log(require("crypto").randomBytes(20).toString("hex"))')
+fx "{files:{7:[\"app.css\"]},contents:[\"before\",\"after\"].flatMap((b)=>[\"$RND:.evidence/\"+b+\"-a-400.png\",\"$RND:.evidence/\"+b+\"-a-1280.png\"]),comments:{7:[c(42,\"alice\",[\"before\",\"after\"].flatMap((b)=>[img(\"https://github.com/acme/demo/blob/$RND/.evidence/\"+b+\"-a-400.png\"),img(\"https://github.com/acme/demo/blob/$RND/.evidence/\"+b+\"-a-1280.png\")]).join(\"\"))]}}"; st2=$(ev "$R" 7); x2=$?
+fx '{files:{7:["app.css"]},comments:{7:[c(43,"alice",img(U+"before-home-400.png?raw=true")+img(U+"after-home-400.png?raw=true")+img(U+"after-home-1280.png?raw=true"))]}}'; st3=$(ev "$R" 7); x3=$?
+# Two files cannot stand in for four captures, and only image files count.
+fx '{files:{7:["app.css"]},contents:[process.env.SHA+":.evidence/before-after-400.txt",process.env.SHA+":.evidence/before-after-1280.txt"],comments:{7:[c(45,"alice",img(U+"before-after-400.txt")+img(U+"before-after-1280.txt"))]}}'; st5=$(ev "$R" 7); x5=$?
+if [ $x1 -eq 1 ] && has "UI changed after the evidence" "$st1" && [ $x2 -eq 1 ] && has "not in this PR's history" "$st2" && [ $x3 -eq 1 ] && has "missing before 1280px" "$st3" && [ $x4 -eq 1 ] && has "UI changed after the evidence" "$st4" &&
+  [ $x5 -eq 1 ] && has "missing before 400px, before 1280px, after 400px, after 1280px" "$st5"; then ok evidence-images-pinned-resolving
+else fail evidence-images-pinned-resolving "stale=$x1 outside=$x2 no1280=$x3 merged=$x4 two-files=$x5: $st1 | $st2 | $st3 | $st4 | $st5"; fi
+
+# A push to standards/vX.Y.Z (sync's landing branch) passes the evidence step only when it changes pack-managed paths.
+R=$(mkrepo); gc -C "$R" update-ref refs/remotes/origin/main HEAD
+gc -C "$R" checkout -qb standards/v9.9.9
+node "$ENGINE/bin/repo-standards.mjs" apply --target "$R" --overlay "$ENGINE/examples/overlay.json" --version 9.9.9 >/dev/null && commit "$R" pack
+printf '{"repository":{"default_branch":"main"},"sender":{"login":"example-sync[bot]","type":"Bot"}}' > "$T/push.json"
+printf '{"repository":{"default_branch":"main"},"sender":{"login":"other-app[bot]","type":"Bot"}}' > "$T/push-user.json"
+pe() { (cd "$R" && GITHUB_EVENT_NAME=push GITHUB_REF_NAME=standards/v9.9.9 GITHUB_EVENT_PATH="$T/${1:-push}.json" node scripts/agent/gate.mjs evidence) 2>&1; }
+rm "$R/.github/ISSUE_TEMPLATE/agent-task.md" && commit "$R" "drop a managed path"
+p1=$(pe); ps1=$?
+p3=$(pe push-user); ps3=$?
+mkdir -p "$R/src" && echo "<b/>" > "$R/src/App.svelte" && printf '0000  src/App.svelte\n' >> "$R/standards.lock" && commit "$R" sneak
+p2=$(pe); ps2=$?
+if [ $ps1 -eq 0 ] && has "pack-only update" "$p1" && [ $ps3 -eq 1 ] && has "not the sync App" "$p3" && [ $ps2 -eq 1 ] && has "src/App.svelte" "$p2"; then ok sync-lands-direct-when-green
+else fail sync-lands-direct-when-green "pack-only=$ps1 user=$ps3 other=$ps2: $p1 $p3 $p2"; fi
 done_cases

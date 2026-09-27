@@ -1,13 +1,13 @@
 # Managed by the standards pack: the one required check, job `gate`.
-# Repo-owned checks go in scripts/agent/gate.local.sh (run last when executable).
+# Repo-owned checks go in scripts/agent/gate.local.sh. Review and comment events re-run this workflow's
+# pull_request run through std-gate-rerun.yml, so they never cancel a gate in flight.
 name: std-gate
 on:
   pull_request:
-  pull_request_review:
-    types: [submitted, dismissed]
+    types: [opened, synchronize, reopened, ready_for_review, edited] # edited: a base change re-evaluates the diff
   merge_group:
   push:
-    branches: [main, staging]
+    branches: [main, staging, "standards/v*"]
 permissions:
   contents: read
   pull-requests: read
@@ -20,8 +20,6 @@ jobs:
     name: gate
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    env:
-      GITHUB_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -33,10 +31,10 @@ jobs:
       - name: standards
         run: scripts/agent/setup.sh --check
       - name: evidence
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/agent/gate.mjs evidence
       - name: secrets
-        env:
-          RANGE: ${{ github.event.pull_request && format('{0}..{1}', github.event.pull_request.base.sha, github.event.pull_request.head.sha) || '' }}
         run: node scripts/agent/gate.mjs secrets
       - name: install
         run: node scripts/agent/gate.mjs install
@@ -48,4 +46,8 @@ jobs:
         run: node scripts/agent/gate.mjs e2e
       - name: repo checks
         run: |
-          if [ -x scripts/agent/gate.local.sh ]; then scripts/agent/gate.local.sh; else echo "notice: no scripts/agent/gate.local.sh"; fi
+          if [ -f scripts/agent/gate.local.sh ]; then bash scripts/agent/gate.local.sh; else echo "notice: no scripts/agent/gate.local.sh"; fi
+      - name: codex review
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/agent/gate.mjs codex

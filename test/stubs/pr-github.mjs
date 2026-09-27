@@ -12,7 +12,7 @@ const git = (...a) => { try { return execFileSync("git", ["--git-dir", origin, .
 const S = { pulls: [], issueComments: {}, reviewComments: {}, reviews: {}, checks: {} };
 let nextId = 1000;
 
-const pr = (x) => ({ ...x, html_url: `https://github.com/acme/demo/pull/${x.number}`, head: { ref: x.head, sha: git("rev-parse", `refs/heads/${x.head}`) } });
+const pr = (x) => ({ ...x, html_url: `https://github.com/acme/demo/pull/${x.number}`, head: { ref: x.head, sha: git("rev-parse", `refs/heads/${x.head}`), repo: { full_name: "acme/demo" } }, base: { ref: x.base } });
 
 createServer((req, res) => {
   let raw = "";
@@ -26,13 +26,15 @@ createServer((req, res) => {
     }
     appendFileSync(logFile, JSON.stringify({ method: req.method, path: p, query: url.search, auth: !!req.headers.authorization, body }) + "\n");
     let m;
+    if (p === "/user") return send(200, { login: "agent" });
     if (p === R) return send(200, { full_name: "acme/demo", default_branch: "main" });
     if ((m = p.match(/^\/repos\/acme\/demo\/branches\/(.+)$/))) {
-      const sha = git("rev-parse", "--verify", `refs/heads/${m[1]}`);
-      return sha ? send(200, { name: m[1], commit: { sha } }) : send(404, { message: "Branch not found" });
+      const name = decodeURIComponent(m[1]), sha = git("rev-parse", "--verify", `refs/heads/${name}`);
+      return sha ? send(200, { name, commit: { sha } }) : send(404, { message: "Branch not found" });
     }
     if (p === `${R}/pulls` && req.method === "GET")
-      return send(200, S.pulls.filter((x) => x.state === "open" && `acme:${x.head}` === url.searchParams.get("head")).map(pr));
+      return send(200, S.pulls.filter((x) => x.state === "open" && `acme:${x.head}` === url.searchParams.get("head")
+        && (!url.searchParams.has("base") || x.base === url.searchParams.get("base"))).map(pr));
     if (p === `${R}/pulls` && req.method === "POST") {
       const x = { number: S.pulls.length + 1, title: body.title, body: body.body, head: body.head, base: body.base, draft: !!body.draft, state: "open", merged: false };
       S.pulls.push(x);
@@ -52,6 +54,7 @@ createServer((req, res) => {
     if ((m = p.match(/^\/repos\/acme\/demo\/issues\/(\d+)\/comments$/))) {
       const list = (S.issueComments[m[1]] ??= []);
       if (req.method === "GET") return send(200, list);
+      if (S.failComments) return send(502, { message: "stub: posting fails" });
       const now = new Date().toISOString();
       const c = { id: nextId++, body: body.body, user: { login: "agent" }, created_at: now, updated_at: now, html_url: `https://github.com/acme/demo/pull/${m[1]}#issuecomment-${nextId - 1}` };
       list.push(c);
@@ -60,6 +63,7 @@ createServer((req, res) => {
     if ((m = p.match(/^\/repos\/acme\/demo\/issues\/comments\/(\d+)$/)) && req.method === "PATCH") {
       const c = Object.values(S.issueComments).flat().find((x) => x.id == m[1]);
       if (!c) return send(404, {});
+      if (S.failComments) return send(502, { message: "stub: posting fails" });
       c.body = body.body;
       c.updated_at = new Date().toISOString();
       return send(200, c);

@@ -1,0 +1,43 @@
+# Managed by the standards pack. A review, a review-thread reply or a comment (such as the Codex summary being
+# updated) re-runs the PR's latest `gate` run in place, after any run in flight finishes. Not a required check.
+name: std-gate-rerun
+on:
+  issue_comment:
+    types: [created, edited, deleted]
+  pull_request_review:
+    types: [submitted, dismissed]
+  pull_request_review_comment:
+    types: [created]
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+concurrency:
+  group: std-gate-rerun-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+jobs:
+  rerun:
+    # PR comments only, and only from the PR author (whose evidence gate trusts), members, collaborators or apps,
+    # so other outsiders cannot keep gate running.
+    if: >-
+      (github.event.pull_request || github.event.issue.pull_request) &&
+      (github.event.sender.type == 'Bot' ||
+       github.event.sender.login == (github.event.pull_request.user.login || github.event.issue.user.login) ||
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association || github.event.review.author_association))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+    steps:
+      - run: |
+          set -euo pipefail
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq .head.sha)
+          for i in $(seq 70); do
+            run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/std-gate.yml/runs?event=pull_request&head_sha=$sha&per_page=20" --jq "[.workflow_runs[] | select(any(.pull_requests[]; .number == $PR))][0] // empty | \"\\(.id) \\(.status)\"")
+            [ -n "$run" ] || { echo "no pull_request gate run for $sha yet"; exit 0; }
+            [ "${run#* }" = completed ] && break
+            sleep 30
+          done
+          echo "re-running gate run ${run% *} for ${sha:0:7}"
+          gh api -X POST "repos/$GITHUB_REPOSITORY/actions/runs/${run% *}/rerun"
