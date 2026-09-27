@@ -39,12 +39,18 @@ else
     fi
   fi
   if [ -f package.json ]; then
-    x="npx --no" # the repo's own playwright, so the browser matches the lockfile (never the registry's latest)
+    x=""
     if [ -f pnpm-lock.yaml ]; then try corepack enable; try pnpm install --frozen-lockfile; x="pnpm exec"
     elif [ -f yarn.lock ]; then try corepack enable; x=yarn; if [ -f .yarnrc.yml ]; then try yarn install --immutable; else try yarn install --frozen-lockfile; fi
     elif [ -f package-lock.json ]; then try npm ci
     else try npm install --no-package-lock; fi
-    if grep -qE '"(@playwright/test|playwright)"' package.json; then try $x playwright install --with-deps chromium; fi
+    # The repo's own playwright, so the browser matches the lockfile (never the registry's latest). Not npx: npm 6's
+    # npx reads `--no <pkg>` as an option value, and a missing local package would fetch the latest.
+    if grep -qE '"(@playwright/test|playwright)"' package.json; then
+      if [ -x node_modules/.bin/playwright ]; then try node_modules/.bin/playwright install --with-deps chromium
+      elif [ -n "$x" ]; then try $x playwright install --with-deps chromium # pnpm exec / yarn (Plug'n'Play has no node_modules)
+      else note "playwright is in package.json but not installed (did the install above fail?); no browser installed"; fi
+    fi
   fi
 fi
 node scripts/agent/check.mjs

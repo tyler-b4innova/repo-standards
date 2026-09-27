@@ -1,4 +1,4 @@
-# example v0.2.4 internal engine 0.2.4
+# example v0.2.5 internal engine 0.2.5
 7c294474713bb41df59f0151604edca7b79e05cb71d64c234999fd2c6ecb745c  .agents/skills/std-autoreview/SKILL.md
 843036b116bce8552de726308dd3f48b7c36b608d530f978a10cb3b0cb6d4e61  .agents/skills/std-babysit/SKILL.md
 7b7ce4283fa3114c477bfe13a496fc4674721bf151432f22701e137bb77bd41a  .agents/skills/std-evidence/SKILL.md
@@ -12,7 +12,7 @@ d5c1db5cda8fddb1912f91c9976ce4a4a23cb538293ae984e3161264c7835236  .github/ISSUE_
 3a790002f41193706041fba5c47a5908e9e506781228099640d648024966ff9c  scripts/agent/check.mjs
 04c219c30b3a0ec531806167b24d5b7803a20877fe970b050110f5ceca8b67b5  scripts/agent/evidence.mjs
 58478b9057d1cac32fc72e6349556fa75b80fe89a25894bf05aea8e89356cae1  scripts/agent/gate.mjs
-380d0cfff321e36497567dc3f95ee5f5ddc02508fd5af524034b9d5bc1d489d0  scripts/agent/pack.json
+0770d74011872a38663abbd9565bdaf0410a5be57d7bdd79477a14bcd01cfb6e  scripts/agent/pack.json
 ec3dff44939a44ce8045475cb6541751836d56d234b55570b559d0992aae5a04  scripts/agent/pr.sh
-313b6cbfd39a4a21267dc04ef397b6d7a37d0f403382a82e5b7087f140f8be7c  scripts/agent/setup.sh
+8c6be168ff69f9bf769b3fcc4942421a498fdea8df9b2c1e6a1d1085d33daed2  scripts/agent/setup.sh
 5722a9edec09905e63ac7ceaafe04a30c946ce17a5ed39ea987f9998399b492a  AGENTS.md#std

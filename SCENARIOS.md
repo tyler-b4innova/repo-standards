@@ -5,6 +5,7 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 ## Gate and evidence
 
 - **`gate-fails-without-e2e`**: a repository with no end-to-end suite fails `gate` (the suite was once skipped silently while `gate` went green). The workflow has exactly one job, `gate`, carrying every step.
+- **`setup-installs-repo-playwright`**: `setup.sh` installs the Chromium browser with the repository's own Playwright (`node_modules/.bin/playwright`), never through npx, and says so when the package is declared but not installed (npm 6's npx read `--no playwright` as an option value and installed nothing).
 - **`e2e-opt-out-honoured`**: `"e2e": false` in `standards.json` passes with a warning, and re-applying the pack keeps it.
 - **`ui-paths-evidence-required`**: a pull request changing a UI path (markup, styles, components, .docx, .pptx) fails without an accepted evidence comment and passes with one.
 - **`evidence-comment-author-or-app`**: an evidence comment by anyone but the PR author, an app or an overlay-trusted login is rejected (a forged comment once passed).
@@ -44,7 +45,7 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 - **`pr-open-verified`**: the PR helper sends nothing on a dry run, refuses a branch that is not on GitHub, reuses the open PR, and prints a URL only after reading the PR back.
 - **`pr-status-done`**: `DONE` only when the PR is open or merged, closes an issue, and `gate` is green on the head SHA.
 - **`sync-lands-direct-when-green`**: sync pushes `standards/v<ver>`, which starts that repository's own `gate`; green fast-forwards the default branch (staging on staged repositories, never main) and deletes the branch; `gate` on that branch accepts only pack-managed paths, and its secret scan covers only what the default branch lacks. The default branch moving first costs one re-apply, then it lands. No PR is opened (a pack PR once merged red).
-- **`sync-opens-pr-when-red`**: when `gate` stays red after one re-run, sync opens exactly one PR for a person, naming the run, without auto-merge, and leaves the default branch alone; a PR a person closed for the same content is not reopened.
+- **`sync-opens-pr-when-red`**: when `gate` stays red after one re-run, sync opens exactly one PR for a person, naming the run, without auto-merge, and leaves the default branch alone; a PR a person closed for the same content is not reopened. Its body tells a person how to fix it from a fresh branch (only the App may push `standards/v*`).
 - **`sync-applies-release`**: sync applies the released overlay with the engine version it pins and refuses a mismatch (an old sync script once ran from a release tag).
 
 ## Modules

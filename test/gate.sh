@@ -51,6 +51,17 @@ kept=$(node -e 'const s=require(process.argv[1]);console.log(s.e2e===false&&s.ve
 if [ $st -eq 0 ] && has '::warning::no e2e suite' "$out" && [ "$kept" = true ]; then ok e2e-opt-out-honoured
 else fail e2e-opt-out-honoured "exit=$st kept=$kept: $out"; fi
 
+# ---- setup installs the repo's own Playwright browser (npm 6's npx once ran /usr/bin/install instead; nothing was installed)
+R=$(mkrepo); P=$T/setup-bin; mkpath "$P"; shim "$P" curl 'exit 0'; shim "$P" npm 'echo "npm $*" >> "$SETUP_LOG"'
+shim "$P" npx 'echo "npx $*" >> "$SETUP_LOG"; exit 0' # an npx that installs nothing, as npm 6's did
+echo '{"name":"app","private":true,"devDependencies":{"@playwright/test":"1.63.0"}}' > "$R/package.json" && echo '{}' > "$R/package-lock.json"
+su() { : > "$T/setup.log"; (cd "$R" && SETUP_LOG="$T/setup.log" PATH="$P" bash scripts/agent/setup.sh) 2>&1; }
+o1=$(su); l1=$(cat "$T/setup.log")
+mkdir -p "$R/node_modules/.bin" && printf '#!/bin/sh\necho "playwright $*" >> "$SETUP_LOG"\n' > "$R/node_modules/.bin/playwright" && chmod +x "$R/node_modules/.bin/playwright"
+o2=$(su); l2=$(cat "$T/setup.log")
+if has "playwright is in package.json but not installed" "$o1" && ! has playwright "$l1" && has "npm ci" "$l2" && has "playwright install --with-deps chromium" "$l2" && ! has npx "$l2"
+then ok setup-installs-repo-playwright; else fail setup-installs-repo-playwright "missing: $o1 | $l1 || present: $o2 | $l2"; fi
+
 # ---- the rendered workflow
 R=$(mkrepo)
 shape=$(cd "$R" && node -e '
