@@ -45,4 +45,6 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 
 ## Engine
 
+- **`workflows-parse`**: every workflow the engine ships parses as YAML (an unquoted colon once disabled a workflow silently).
+
 - **`engine-neutral`**: no organization name, internal host, account, App or vault identifier appears in the tree or anywhere in history.

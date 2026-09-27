@@ -93,7 +93,9 @@ else {
   const made = await gh("POST", `repos/${FILER}/pulls`, { title: `chore: file Sentry project ${repo}`, head: branch, base: main, body: `Adds \`${repo}\` to projects.json (from \`scripts/agent/sentry-setup\`).` });
   step(`mapping PR ${made.html_url}`);
   // Auto-merge only where the filer requires gate (else it could merge red); GraphQL-only; failures are reported.
-  const rules = (await gh("GET", `repos/${FILER}/rules/branches/${main}`)) ?? [];
+  // A token that cannot read the rules leaves auto-merge off rather than aborting the rest of the setup.
+  const rr = await fetch(`${(process.env.GITHUB_API_URL || "https://api.github.com").replace(/\/$/, "")}/repos/${FILER}/rules/branches/${main}`, { headers: { Authorization: `Bearer ${ghToken}`, Accept: "application/vnd.github+json" } }).catch(() => null);
+  const rules = rr?.ok ? await rr.json() : [];
   const gated = rules.some((r) => r.type === "required_status_checks" && r.parameters?.required_status_checks?.some((c) => c.context === "gate"));
   if (!gated) console.log(`sentry-setup: ${FILER} does not require gate on ${main}; merge ${made.html_url} once gate is green`);
   else {
