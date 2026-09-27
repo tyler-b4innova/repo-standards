@@ -64,15 +64,19 @@ if (cmd === "classify") {
   const t = git("ls-files", "--", ".evidence").split("\n")[0];
   if (t) fail(`.evidence/ is tracked (${t}); it would reach the default branch`, "git rm -r --cached .evidence and commit");
   const event = env.GITHUB_EVENT_PATH ? json(env.GITHUB_EVENT_PATH) ?? {} : {}, pr = event.pull_request;
-  // A push to standards/vX.Y.Z (the sync's landing branch) may change only pack-managed paths: that run skips the PR
-  // checks, so anything else on such a branch must go through a pull request.
+  // A push to standards/vX.Y.Z is the sync's landing branch: that run skips the PR checks, so it must come from an App
+  // and change only pack paths (those in the base or new lock, within the managed prefixes).
   if (!pr && env.GITHUB_EVENT_NAME === "push" && /^standards\/v\d+\.\d+\.\d+$/.test(env.GITHUB_REF_NAME ?? "")) {
-    const def = event.repository?.default_branch ?? "main", lock = rd("standards.lock", "utf8");
-    const managed = new Set([...lock.split("\n").filter((l) => l && !l.startsWith("#")).map((l) => l.split(/\s+/)[1]),
+    if (event.sender?.type !== "Bot") fail(`${env.GITHUB_REF_NAME} was pushed by @${event.sender?.login}, not an App`, "only the org's sync App pushes standards/v branches; open a pull request instead");
+    const def = event.repository?.default_branch ?? "main", paths = (t) => (t ?? "").split("\n").filter((l) => l && !l.startsWith("#")).map((l) => l.split(/\s+/)[1]);
+    let base = "";
+    try { base = git("show", `origin/${def}:standards.lock`); } catch {}
+    const prefix = /^(\.agents\/skills\/std-[^/]+\/|scripts\/agent\/|\.github\/workflows\/std-[^/]+$|\.github\/(PULL_REQUEST_TEMPLATE\.md|ISSUE_TEMPLATE\/agent-task\.md)$|\.codex\/rules\/)/;
+    const managed = new Set([...paths(base), ...paths(rd("standards.lock", "utf8")).filter((f) => prefix.test(f)),
       "AGENTS.md", "standards.json", "standards.lock", ".gitignore", ".claude/settings.json", ".claude/skills", ".codex/config.toml"]);
     const other = git("diff", "--name-only", `origin/${def}...HEAD`).split("\n").filter((f) => f && !managed.has(f));
     if (other.length) fail(`standards/v branch changes non-pack paths: ${other.slice(0, 5).join(", ")}`, "open a pull request for these changes");
-    console.log(`evidence: pack-only update on ${env.GITHUB_REF_NAME}`);
+    console.log(`evidence: pack-only update on ${env.GITHUB_REF_NAME} by @${event.sender.login}`);
     process.exit(0);
   }
   if (!pr) { console.log("evidence: .evidence/ untracked; comment check runs on pull requests"); process.exit(0); }
