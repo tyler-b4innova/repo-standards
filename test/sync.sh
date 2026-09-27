@@ -91,6 +91,10 @@ msg1=$(git --git-dir "$R/acme/alpha.git" log -1 --format=%B staging)
 patch1=$(between "$m1" "$e1" | grep '"method":"PATCH","path":"/repos/acme/alpha/git/refs/heads/staging"' || true)
 beta_pr1=$(q acme/beta "JSON.stringify($prs.map(p => [p.number, p.state, p.head, p.title, p.auto_merge]))")
 beta_body1=$(q acme/beta "$prs[0]?.body")
+# the fix path in the body works as written from an existing clone that has not fetched since sync pushed
+fixc=$(printf '%s' "$beta_body1" | grep -o 'git fetch origin [^`]*FETCH_HEAD')
+git clone -q "$R/acme/beta.git" "$T/beta-old" && git -C "$T/beta-old" update-ref -d refs/remotes/origin/standards/v0.1.0 # stale: fetched before sync pushed
+fixed=$(cd "$T/beta-old" && git fetch -q origin main && eval "$fixc" 2>&1 && git rev-parse HEAD) fixwant=$(git --git-dir "$R/acme/beta.git" rev-parse standards/v0.1.0)
 
 # Run 2: release 0.2.0; someone lands on alpha's staging while its gate runs, so sync re-applies once.
 m2=$(mark)
@@ -146,7 +150,7 @@ m4=$(mark)
 out4=$(sync --version 0.2.0 --repo acme/beta); rc4=$?
 w4=$(writes_since "$m4")
 if [ "$db" = 2 ] && [ "$b1" = "$b0" ] && [ "$beta_pr1" = '[[1,"open","standards/v0.1.0","chore: standards v0.1.0 (needs a person)",null]]' ] \
-  && [ -n "$(printf '%s' "$beta_body1" | grep -F "gate run: https://github.com/acme/beta/actions/runs/")" ] && [ -n "$(printf '%s' "$beta_body1" | grep 'gate red')" ] && [ -n "$(printf '%s' "$beta_body1" | grep -F 'git switch -c fix/standards-v0.1.0 origin/standards/v0.1.0')" ] \
+  && [ -n "$(printf '%s' "$beta_body1" | grep -F "gate run: https://github.com/acme/beta/actions/runs/")" ] && [ -n "$(printf '%s' "$beta_body1" | grep 'gate red')" ] && [ -n "$fixc" ] && [ "$(printf '%s' "$fixed" | tail -1)" = "$fixwant" ] \
   && [ -z "$(grep enablePullRequestAutoMerge "$LOG")" ] && [ -n "$(printf '%s' "$beta_row1" | grep -F '| PR #1: gate red |')" ] \
   && [ "$(q acme/beta "JSON.stringify($prs.map(p => [p.number, p.state, p.head]))")" = '[[1,"closed","standards/v0.1.0"],[2,"closed","standards/v0.2.0"]]' ] \
   && [ -n "$(printf '%s' "$beta_row2" | grep -F '| PR #2: gate red |')" ] && [ "$(sha acme/beta main)" = "$b0" ] \
