@@ -65,7 +65,7 @@ out=$(apply "$R" 2>&1) && why="symlinked scripts/ accepted"
 has "scripts is a symlink" "$out" || why="$why; message: $out"
 [ -z "$(ls -A "$T/outside")" ] || why="$why; wrote through the link: $(ls -A "$T/outside")"
 R=$(mkrepo); echo keep >"$T/keep.txt"; echo "$(printf '%064d' 0)  ../keep.txt" >>"$R/standards.lock"
-out=$(apply "$R" 2>&1) && why="$why; lock path outside the repo accepted"
+out=$(apply "$R" 2>&1) || why="$why; a foreign lock line made apply fail: $out"
 [ -f "$T/keep.txt" ] || why="$why; deleted a file outside the repo"
 # an older pack's lock (`sha256 <hash> <path>` lines and `key value` headers): retired paths go, nothing else does
 R=$(mkrepo); mkdir -p "$R/scripts/agent" && echo old >"$R/scripts/agent/recall" && echo mine >"$R/example"
