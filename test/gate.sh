@@ -144,14 +144,14 @@ else fail evidence-images-pinned-resolving "bad-images=$s1 good=$s2: $out1"; fi
 R=$(mkrepo); gc -C "$R" update-ref refs/remotes/origin/main HEAD
 gc -C "$R" checkout -qb standards/v9.9.9
 node "$ENGINE/bin/repo-standards.mjs" apply --target "$R" --overlay "$ENGINE/examples/overlay.json" --version 9.9.9 >/dev/null && commit "$R" pack
-printf '{"repository":{"default_branch":"main"},"sender":{"login":"sync-app[bot]","type":"Bot"}}' > "$T/push.json"
-printf '{"repository":{"default_branch":"main"},"sender":{"login":"mallory","type":"User"}}' > "$T/push-user.json"
+printf '{"repository":{"default_branch":"main"},"sender":{"login":"example-sync[bot]","type":"Bot"}}' > "$T/push.json"
+printf '{"repository":{"default_branch":"main"},"sender":{"login":"other-app[bot]","type":"Bot"}}' > "$T/push-user.json"
 pe() { (cd "$R" && GITHUB_EVENT_NAME=push GITHUB_REF_NAME=standards/v9.9.9 GITHUB_EVENT_PATH="$T/${1:-push}.json" node scripts/agent/gate.mjs evidence) 2>&1; }
 rm "$R/.github/ISSUE_TEMPLATE/agent-task.md" && commit "$R" "drop a managed path"
 p1=$(pe); ps1=$?
 p3=$(pe push-user); ps3=$?
 mkdir -p "$R/src" && echo "<b/>" > "$R/src/App.svelte" && printf '0000  src/App.svelte\n' >> "$R/standards.lock" && commit "$R" sneak
 p2=$(pe); ps2=$?
-if [ $ps1 -eq 0 ] && has "pack-only update" "$p1" && [ $ps3 -eq 1 ] && has "not an App" "$p3" && [ $ps2 -eq 1 ] && has "src/App.svelte" "$p2"; then ok sync-lands-direct-when-green
+if [ $ps1 -eq 0 ] && has "pack-only update" "$p1" && [ $ps3 -eq 1 ] && has "not the sync App" "$p3" && [ $ps2 -eq 1 ] && has "src/App.svelte" "$p2"; then ok sync-lands-direct-when-green
 else fail sync-lands-direct-when-green "pack-only=$ps1 user=$ps3 other=$ps2: $p1 $p3 $p2"; fi
 done_cases

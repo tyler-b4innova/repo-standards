@@ -22,7 +22,8 @@
     "app_client_id_var": "STANDARDS_APP_CLIENT_ID",
     "app_key_secret": "STANDARDS_APP_PRIVATE_KEY",
     "schedule": "17 * * * *",
-    "compliance_issue_title": "Standards compliance"
+    "compliance_issue_title": "Standards compliance",
+    "app_login": "example-sync[bot]"
   },
   "fleet": {
     "mode": "discover",

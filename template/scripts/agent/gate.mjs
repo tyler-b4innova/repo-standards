@@ -67,7 +67,8 @@ if (cmd === "classify") {
   // A push to standards/vX.Y.Z is the sync's landing branch: that run skips the PR checks, so it must come from an App
   // and change only pack paths (those in the base or new lock, within the managed prefixes).
   if (!pr && env.GITHUB_EVENT_NAME === "push" && /^standards\/v\d+\.\d+\.\d+$/.test(env.GITHUB_REF_NAME ?? "")) {
-    if (event.sender?.type !== "Bot") fail(`${env.GITHUB_REF_NAME} was pushed by @${event.sender?.login}, not an App`, "only the org's sync App pushes standards/v branches; open a pull request instead");
+    const app = (json("scripts/agent/pack.json") ?? {}).sync_app_login;
+    if (!app || event.sender?.login !== app) fail(`${env.GITHUB_REF_NAME} was pushed by @${event.sender?.login}, not the sync App${app ? ` @${app}` : " (overlay sync.app_login unset)"}`, "only the org's sync App pushes standards/v branches; open a pull request instead");
     const def = event.repository?.default_branch ?? "main", paths = (t) => (t ?? "").split("\n").filter((l) => l && !l.startsWith("#")).map((l) => l.split(/\s+/)[1]);
     let base = "";
     try { base = git("show", `origin/${def}:standards.lock`); } catch {}
