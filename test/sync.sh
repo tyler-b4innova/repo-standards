@@ -122,7 +122,7 @@ else fail sync-applies-release "rc=$rc2 lock=$lock engine-mismatch: $bad_engine 
 # sync-lands-without-gate: run 1 fast-forwards alpha's default branch (staging; main untouched) and boot's main with a
 # commit whose only parent is the previous head, starts and waits for no gate run, and creates no branch or PR; run 2
 # finds staging moved after its clone, re-applies once on the new head and lands.
-gates=$(between "$m1" "$e2" | grep -c -E 'gate-start|/actions/runs' || true)
+gates=$(between "$m1" "$e2" | grep -c -E '"path":"[^"]*(gate-start|/actions/runs)' || true) # request paths only (a compliance body links the run)
 if [ $rc1 -eq 0 ] && [ "$gates" = 0 ] && [ "$(git --git-dir "$R/acme/alpha.git" rev-parse "$a1^")" = "$a0" ] && [ "$(sha acme/alpha main)" = "$am" ] \
   && [ "$(printf '%s\n' "$msg1" | head -1)" = "chore: standards v0.1.0" ] && [ -n "$(printf '%s' "$msg1" | grep -F "$RELEASE")" ] \
   && [ -n "$(printf '%s' "$alpha_row1" | grep -F "| landed $(printf '%.7s' "$a1") |")" ] && [ -z "$(heads acme/alpha | grep standards/)" ] && [ "$(q acme/alpha "$prs.length")" = 0 ] \
