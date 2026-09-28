@@ -5,21 +5,23 @@
 //   reviewStatus({ api, owner, repo, pr }) -> null | { state: "success"|"failure"|"pending", description, sha, target_url, details }
 // api(method, path, body?) resolves parsed JSON, null for a 404, and throws on any other failure. Paths are from the
 // API root ("/repos/o/r/pulls/7"); GraphQL is api("POST", "/graphql", { query, variables }).
-// null: not an engine-managed repository, a draft, or the repository's pack leaves review to gate (review_status off).
+// null: not an engine-managed repository, a draft, or the base branch's pack leaves review to gate (review_status off).
 
 const b64 = (f) => (f?.content ? JSON.parse(Buffer.from(f.content, "base64").toString("utf8")) : null);
 const glob = (g) => new RegExp("^" + g.replace(/[.+^$()|[\]\\]/g, "\\$&").replace(/\{([^}]+)\}/g, (_, a) => `(${a.split(",").join("|")})`)
   .replace(/\*\*\//g, "\0").replace(/\*\*/g, "\x01").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]").replace(/\0/g, "(.*/)?").replace(/\x01/g, ".*") + "$");
 const short = (s) => s.slice(0, 7);
 
-// files: optional { pack, std } already read (gate passes its checkout's); otherwise read at the PR head.
+// files: optional { pack, std } already read (gate passes its checkout's); otherwise read on the PR's base branch.
 export async function reviewStatus({ api, owner, repo, pr: n, files, now = Date.now(), serverUrl = "https://github.com", force = false }) {
   const R = `/repos/${owner}/${repo}`;
   const all = async (path) => { const out = []; for (let p = 1; ; p++) { const b = (await api("GET", `${path}${path.includes("?") ? "&" : "?"}per_page=100&page=${p}`)) ?? []; out.push(...b); if (b.length < 100) return out; } };
   const pr = await api("GET", `${R}/pulls/${n}`);
   if (!pr || (pr.state ?? "open") !== "open" || pr.draft) return null;
   const head = pr.head.sha;
-  const read = async (f) => b64(await api("GET", `${R}/contents/${f}?ref=${head}`));
+  // The rule and whether the org posts it come from the base branch (the org's current pack and the repository's
+  // settings there), so a pull request cut before a pack release is judged like any other, and cannot relax its own review.
+  const read = async (f) => b64(await api("GET", `${R}/contents/${f}?ref=${encodeURIComponent(pr.base.ref)}`));
   const pack = files?.pack ?? (await read("scripts/agent/pack.json")), std = files?.std ?? (await read("standards.json")) ?? {};
   if (!pack) return null;
   if (!pack.review_status && !force) return null; // gate's own steps still enforce this for the org

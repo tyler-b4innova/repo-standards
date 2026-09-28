@@ -104,8 +104,11 @@ put "{$base,threads:[],files:{'scripts/agent/pack.json':$PACKFILE}}"; v1=$(vr 7)
 OPEN=$OPEN put "{$base,threads:JSON.parse(process.env.OPEN),files:{'scripts/agent/pack.json':$PACKFILE}}"; v2=$(OPEN=$OPEN vr 7); s2=$(node -p 'JSON.stringify((require(process.argv[1]).statuses??[]).map(x=>x.state+":"+x.description))' "$T/state.json")
 put "{$base,threads:[]}"; v3=$(vr 7); s3=$(node -p 'JSON.stringify(require(process.argv[1]).statuses??[])' "$T/state.json")
 put "{$base,threads:[],statusForbidden:true,files:{'scripts/agent/pack.json':$PACKFILE}}"; v4=$(vr 7); y4=$?
+# a pull request cut before the release (its head's pack has no review_status) is judged by the base branch's pack
+OLDPACK="{content:Buffer.from(JSON.stringify(require('$R/scripts/agent/pack.json'))).toString('base64')}"
+put "{$base,threads:[],files:{'scripts/agent/pack.json@main':$PACKFILE,'scripts/agent/pack.json@feat':$OLDPACK}}"; v6=$(vr 7); s6=$(node -p 'JSON.stringify((require(process.argv[1]).statuses??[]).map(x=>x.context+"="+x.state))' "$T/state.json")
 put "{$base,threads:[],files:{'scripts/agent/pack.json':$PACKFILE}}"; v5=$(vr 7 --dry-run); s5=$(node -p 'JSON.stringify(require(process.argv[1]).statuses??[])' "$T/state.json")
 if [ $y1 -eq 0 ] && [ "$s1" = '["review=success@'"${HEAD1:0:7}"'"]' ] && has "failure:1 unresolved Codex thread" "$s2" && [ "$s3" = "[]" ] && has "nothing to post" "$v3" \
-  && [ $y4 -eq 1 ] && has "must be the org App's token" "$v4" && [ "$s5" = "[]" ] && has "dry run" "$v5"
-then ok review-status-posted; else fail review-status-posted "posted=$s1 | red=$s2 | off=$s3 | forbidden=$y4 | dry=$s5 :: $v1 | $v2 | $v3 | $v4 | $v5"; fi
+  && [ $y4 -eq 1 ] && has "must be the org App's token" "$v4" && [ "$s5" = "[]" ] && has "dry run" "$v5" && [ "$s6" = '["review=success"]' ]
+then ok review-status-posted; else fail review-status-posted "posted=$s1 | red=$s2 | off=$s3 | forbidden=$y4 | dry=$s5 | old-head=$s6 :: $v1 | $v2 | $v3 | $v4 | $v5 | $v6"; fi
 done_cases
