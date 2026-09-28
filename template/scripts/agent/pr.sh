@@ -78,7 +78,8 @@ status() {
   top=$(git rev-parse --show-toplevel)
   api GET "contents/scripts/agent/pack.json?ref=$(enc "$(js 'd.base.ref' <<<"$p")")"
   if [ "$ST" = 200 ]; then review=$(js 'String(!!JSON.parse(Buffer.from(d.content,"base64").toString()).review_status)' <<<"$R")
-  else review=$(node -p 'try { !!require(process.argv[1]).review_status } catch { false }' "$top/scripts/agent/pack.json"); fi
+  elif [ "$ST" = 404 ]; then review=$(node -p 'try { !!require(process.argv[1]).review_status } catch { false }' "$top/scripts/agent/pack.json")
+  else die "reading the base branch's pack.json -> HTTP $ST; cannot tell whether review is required"; fi
   if [ "$review" = true ]; then req GET "commits/$(js 'd.head.sha' <<<"$p")/status"; st=$R; fi
   R=$runs
   node -e '
