@@ -74,6 +74,9 @@ mut "S.checks={'$HEAD_SHA':$green};S.statuses={}"; expect "review missing" 1 "no
 mut "S.statuses={'$HEAD_SHA':[{context:'review',state:'failure',description:'1 unresolved Codex thread(s)'}]}"; expect "review red" 1 "review failure: 1 unresolved Codex thread(s)"
 mut "S.statuses={'$HEAD_SHA':[{context:'review',state:'success',description:'ok'}]}"; expect "review green" 0 DONE
 cp "$T/pack.bak" scripts/agent/pack.json
+# the base branch decides: a branch cut before the release (no review_status locally) still needs review
+mut "S.statuses={};S.basePack={review_status:true}"; expect "base requires review" 1 "no review status on the head SHA yet"
+mut "S.basePack=null"
 if [ -z "$why" ]; then ok pr-status-done; else fail pr-status-done "$why"; fi
 
 # evidence-images-pinned-resolving (posting side): two posts leave one marked comment whose image URLs carry the 40-hex SHA.

@@ -84,7 +84,7 @@ export async function reviewStatus({ api, owner, repo, pr: n, files, now = Date.
       const miss = [], listed = new Map(), decode = (x) => { try { return decodeURIComponent(x); } catch { return null; } };
       for (const u of urls) {
         const m = u.match(pin), path = m && decode(m[2]), dir = path?.split("/").slice(0, -1).join("/"), key = path && `${m[1]}:${dir}`;
-        if (path && !listed.has(key)) listed.set(key, new Set(((await api("GET", `${R}/contents/${dir}?ref=${m[1]}`)) ?? []).map((f) => f.path)));
+        if (path && !listed.has(key)) { const l = await api("GET", `${R}/contents/${dir}?ref=${m[1]}`); listed.set(key, new Set(Array.isArray(l) ? l.map((f) => f.path) : [])); } // a file, not a folder: nothing listed
         if (!path || !listed.get(key).has(path)) miss.push(u); // an undecodable path is unresolved, never an error
       }
       if (miss.length) { bad.push(`${who}: unresolved (need this repo, a 40-hex SHA, the file): ${miss.join(" ")}`); continue; }

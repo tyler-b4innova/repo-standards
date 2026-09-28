@@ -73,9 +73,12 @@ status() {
   local p runs st='{}' top review
   req GET "pulls/$1"; p=$R
   req GET "commits/$(js 'd.head.sha' <<<"$p")/check-runs?per_page=100"; runs=$R
-  # With the org App posting `review` (pack.json review_status), DONE also needs that status green on the head.
+  # With the org App posting `review` (the base branch's pack.json review_status), DONE also needs that status green
+  # on the head. The base decides: a branch cut before the release carries an older pack.
   top=$(git rev-parse --show-toplevel)
-  review=$(node -p 'try { !!require(process.argv[1]).review_status } catch { false }' "$top/scripts/agent/pack.json")
+  api GET "contents/scripts/agent/pack.json?ref=$(enc "$(js 'd.base.ref' <<<"$p")")"
+  if [ "$ST" = 200 ]; then review=$(js 'String(!!JSON.parse(Buffer.from(d.content,"base64").toString()).review_status)' <<<"$R")
+  else review=$(node -p 'try { !!require(process.argv[1]).review_status } catch { false }' "$top/scripts/agent/pack.json"); fi
   if [ "$review" = true ]; then req GET "commits/$(js 'd.head.sha' <<<"$p")/status"; st=$R; fi
   R=$runs
   node -e '
