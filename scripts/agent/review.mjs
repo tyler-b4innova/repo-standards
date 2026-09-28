@@ -196,6 +196,7 @@ export async function postReviews({ api, owner, repo, prs = [], all = false, dry
       const pr = await api("GET", `${R}/pulls/${l.number}`);
       if (ready(pr)) seen.add(pr.head.sha);
       const v = await reviewStatus({ api, owner, repo, pr: l.number, force, serverUrl });
+      if (v?.sha) seen.add(v.sha); // the verdict may have seen a newer head than the read above
       out.set(l.number, { pr, v, sig: shape(pr) + JSON.stringify([v?.sha ?? null, v?.base ?? null, v?.base_sha ?? null, v?.state ?? null, v?.description ?? null]) });
     }
     return out;

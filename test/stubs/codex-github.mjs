@@ -33,7 +33,7 @@ const server = createServer((req, res) => {
     if ((m = p.match(/^\/commits\/([0-9a-f]+)\/check-runs$/))) return send(200, { check_runs: st.checks ?? [] });
     if ((m = p.match(/^\/contents\/(.+)$/))) { const f = st.files?.[`${m[1]}@${url.searchParams.get("ref")}`] ?? st.files?.[m[1]]; return f ? send(200, f) : send(404, { message: "Not Found" }); }
     // retargetAfter: n reads of the PR see its base; later reads see it retargeted (a base change mid-run)
-    if (p === "/pulls/7" && st.retargetAfter !== undefined) { st.reads = (st.reads ?? 0) + 1; save(); return send(200, st.reads > st.retargetAfter ? (st.newHead ? { ...st.pr, head: { ...st.pr.head, sha: st.newHead } } : { ...st.pr, base: st.advance ? { ...st.pr.base, sha: "f".repeat(40) } : { ref: "elsewhere" } }) : st.pr); }
+    if (p === "/pulls/7" && st.retargetAfter !== undefined) { st.reads = (st.reads ?? 0) + 1; save(); if (st.failAt === st.reads) return send(502, { message: "Bad Gateway" }); return send(200, st.reads > st.retargetAfter ? (st.newHead ? { ...st.pr, head: { ...st.pr.head, sha: st.newHead } } : { ...st.pr, base: st.advance ? { ...st.pr.base, sha: "f".repeat(40) } : { ref: "elsewhere" } }) : st.pr); }
     if (p === "/pulls/7" && st.fail7) { st.fail7--; writeFileSync(stateFile, JSON.stringify(st)); return send(502, { message: "Bad Gateway" }); }
     if (p === "/pulls/7") return send(200, st.pr);
     // moveSibling: the second read of that PR sees it retargeted
