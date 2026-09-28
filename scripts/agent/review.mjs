@@ -2,7 +2,7 @@
 // code; this checks the Codex verdict and its threads, the evidence comment for UI changes, and a promotion's design
 // sign-off. It only reads, through the caller's GitHub API function, so the org launcher (every tick), an org's merge
 // helper and scripts/agent/verdict-recheck share one rule:
-//   reviewStatus({ api, owner, repo, pr }) -> null | { state: "success"|"failure"|"pending", description, sha, target_url, details }
+//   reviewStatus({ api, owner, repo, pr }) -> null | { state: "success"|"failure"|"pending", description, sha, base, target_url, details }
 // api(method, path, body?) resolves parsed JSON, null for a 404, and throws on any other failure. Paths are from the
 // API root ("/repos/o/r/pulls/7"); GraphQL is api("POST", "/graphql", { query, variables }).
 // null: not an engine-managed repository, a draft, or the base branch's pack leaves review to gate (review_status off).
@@ -25,7 +25,8 @@ export async function reviewStatus({ api, owner, repo, pr: n, files, now = Date.
   const pack = files?.pack ?? (await read("scripts/agent/pack.json")), std = files?.std ?? (await read("standards.json")) ?? {};
   if (!pack) return null;
   if (!pack.review_status && !force) return null; // gate's own steps still enforce this for the org
-  const verdict = (state, description, details = []) => ({ state, description: description.slice(0, 140), sha: head, target_url: pr.html_url, details });
+  // base: what was judged against; a poster re-reads the PR and posts only if head and base are both unchanged.
+  const verdict = (state, description, details = []) => ({ state, description: description.slice(0, 140), sha: head, base: pr.base?.ref ?? null, target_url: pr.html_url, details });
   if (pack.sync_app_login && pr.user?.login === pack.sync_app_login && /^standards\/v\d+\.\d+\.\d+$/.test(pr.head.ref))
     return verdict("success", "pack sync pull request: gate and the pack's own CI cover it");
 

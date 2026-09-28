@@ -29,6 +29,8 @@ const server = createServer((req, res) => {
     }
     if ((m = p.match(/^\/commits\/([0-9a-f]+)\/check-runs$/))) return send(200, { check_runs: st.checks ?? [] });
     if ((m = p.match(/^\/contents\/(.+)$/))) { const f = st.files?.[`${m[1]}@${url.searchParams.get("ref")}`] ?? st.files?.[m[1]]; return f ? send(200, f) : send(404, { message: "Not Found" }); }
+    // retargetAfter: n reads of the PR see its base; later reads see it retargeted (a base change mid-run)
+    if (p === "/pulls/7" && st.retargetAfter !== undefined) { st.reads = (st.reads ?? 0) + 1; save(); return send(200, st.reads > st.retargetAfter ? { ...st.pr, base: { ref: "elsewhere" } } : st.pr); }
     if (p === "/pulls/7") return send(200, st.pr);
     if ((m = p.match(/^\/pulls\/(\d+)$/)) && st.prs?.[m[1]]) return send(200, st.prs[m[1]]);
     if ((m = p.match(/^\/pulls\/(\d+)\/files$/))) return send(200, (st.prFiles ?? {})[m[1]] ?? []);

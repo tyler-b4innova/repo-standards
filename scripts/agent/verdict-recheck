@@ -52,7 +52,9 @@ for (const pr of nums) {
   console.log(`#${pr} ${r.sha.slice(0, 7)}: review=${r.state} (${r.description})${tag}`);
   if (o["dry-run"] || o.force) { console.log(`#${pr}: not posted (${o.force ? "--force only evaluates" : "dry run"})`); continue; }
   const now = await api("GET", `/repos/${owner}/${repo}/pulls/${pr}`);
-  if (now?.head?.sha !== r.sha) { console.log(`#${pr}: the head moved while evaluating; not posted`); continue; }
+  if (now?.head?.sha !== r.sha || (now?.base?.ref ?? null) !== first.base || (now?.state ?? "open") !== "open" || now?.draft) {
+    console.log(`#${pr}: the pull request changed while evaluating (head, base, state or draft); not posted, the next run judges it`); continue;
+  }
   const description = (from === pr ? r.description : `#${from}: ${r.description}`).slice(0, 140);
   try {
     await api("POST", `/repos/${owner}/${repo}/statuses/${r.sha}`, { state: r.state, context: "review", description, target_url: r.target_url });
