@@ -30,6 +30,7 @@ const server = createServer((req, res) => {
       if (st.statusForbidden) return send(403, { message: "Resource not accessible by integration" });
       st.statuses = [...(st.statuses ?? []), { sha: m[1], ...JSON.parse(raw) }]; save(); return send(201, {});
     }
+    if ((m = p.match(/^\/commits\/([0-9a-f]+)\/status$/))) return send(200, { statuses: (st.statuses ?? []).filter((s) => s.sha === m[1]).reverse() });
     if ((m = p.match(/^\/commits\/([0-9a-f]+)\/check-runs$/))) return send(200, { check_runs: st.checks ?? [] });
     if ((m = p.match(/^\/contents\/(.+)$/))) { const f = st.files?.[`${m[1]}@${url.searchParams.get("ref")}`] ?? st.files?.[m[1]]; return f ? send(200, f) : send(404, { message: "Not Found" }); }
     // retargetAfter: n reads of the PR see its base; later reads see it retargeted (a base change mid-run)

@@ -208,7 +208,7 @@ export async function postReviews({ api, owner, repo, prs = [], all = false, dry
   };
   // A failed listing does not stop named PRs: they are read directly (and pended on their head if that fails too).
   let listed = [];
-  try { listed = (await listOpen()).filter((p) => !p.draft); }
+  try { listed = await listOpen(); }
   catch (e) { failed++; log(`could not list open pull requests (${e.message})`); if (all) return { posted, failed }; }
   const targets = all ? listed.map((p) => p.number) : prs;
   for (const n of targets) {
@@ -216,8 +216,15 @@ export async function postReviews({ api, owner, repo, prs = [], all = false, dry
     seen = new Set(sha ? [sha] : []);
     try {
       const pr = await api("GET", `${R}/pulls/${n}`);
-      if (ready(pr)) seen.add(pr.head.sha);
-      if (!ready(pr)) { log(`#${n}: nothing to post (draft or closed)`); continue; }
+      if (pr?.head?.sha) seen.add(pr.head.sha);
+      // A draft is not judged. Invalidate a success on its commit so it cannot survive a draft-to-ready transition.
+      if (pr?.draft && (pr.state ?? "open") === "open") {
+        const latest = ((await api("GET", `${R}/commits/${pr.head.sha}/status`))?.statuses ?? []).find((x) => x.context === "review");
+        if (latest?.state === "success") await post(pr.head.sha, "pending", `#${n} is a draft; review runs when it is ready`, pr.html_url);
+        else log(`#${n}: a draft; nothing to post`);
+        continue;
+      }
+      if (!ready(pr)) { log(`#${n}: nothing to post (closed)`); continue; }
       sha = pr.head.sha;
       if (done.get(sha)?.has(n)) continue; // already judged with this head's other PRs
       done.set(sha, new Set([n])); // a PR that joins a head judged earlier in this run has it judged again, with them
@@ -225,8 +232,10 @@ export async function postReviews({ api, owner, repo, prs = [], all = false, dry
       const passes = [await pass(sha), await pass(sha), await pass(sha)], last = passes[2];
       for (const k of last.keys()) done.get(sha).add(k);
       const nums = new Set([n, ...passes.flatMap((x) => [...x.keys()])]);
-      const heads = new Set([sha, ...passes.flatMap((x) => [...x.values()].filter((y) => ready(y.pr)).map((y) => y.pr.head.sha))]);
+      const heads = new Set([...seen, sha, ...passes.flatMap((x) => [...x.values()].filter((y) => ready(y.pr)).map((y) => y.pr.head.sha))]);
       let moved = !last.has(n) ? n : [...nums].find((k) => passes.some((x) => x.has(k) !== last.has(k) || (x.has(k) && x.get(k).sig !== last.get(k).sig))) ?? 0;
+      // a read (or its verdict) on another head than the one being judged, even if the listing lags, is a move
+      moved ||= [...nums].find((k) => passes.some((x) => x.has(k) && (x.get(k).pr?.head?.sha !== sha || (x.get(k).v && x.get(k).v.sha !== sha)))) ?? 0;
       if (moved) {
         for (const k of nums) { const now = await api("GET", `${R}/pulls/${k}`); if (ready(now)) heads.add(now.head.sha); } // where each PR is now
         for (const h of heads) await post(h, "pending", `#${moved} changed while being judged; re-judging`, pr.html_url);
