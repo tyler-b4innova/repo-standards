@@ -26,7 +26,8 @@ export async function reviewStatus({ api, owner, repo, pr: n, files, now = Date.
   // A promotion (the default branch into another) is judged by the default branch's pack: that is where sync lands a
   // release, and the production branch only gets it through this very promotion.
   const info = (await api("GET", R)) ?? {};
-  const promotion = Boolean(info.default_branch) && pr.head?.ref === info.default_branch && pr.base?.ref !== info.default_branch;
+  // Only this repository's own default branch promotes: a fork's branch of the same name is an ordinary PR.
+  const promotion = Boolean(info.default_branch) && pr.head?.repo?.full_name === `${owner}/${repo}` && pr.head?.ref === info.default_branch && pr.base?.ref !== info.default_branch;
   const cfgRef = promotion ? pr.head.sha : pr.base?.sha ?? pr.base?.ref ?? "";
   const read = async (f) => b64(await api("GET", `${R}/contents/${f}?ref=${encodeURIComponent(cfgRef)}`));
   const pack = files?.pack ?? (await read("scripts/agent/pack.json")), std = files?.std ?? (await read("standards.json")) ?? {};
@@ -55,7 +56,7 @@ export async function reviewStatus({ api, owner, repo, pr: n, files, now = Date.
   // Any other PR changing UI paths needs a trusted evidence comment.
   async function design() {
     const flow = std.flow ?? info.custom_properties?.flow;
-    if (flow === "staged" && pr.head.ref === info.default_branch && pr.base.ref !== info.default_branch) {
+    if (flow === "staged" && promotion) {
       if (!changed.length || std.design_signoff === false || pack.design_signoff === false) return { state: "success", description: "promotion: no design sign-off needed" };
       const latest = new Map();
       for (const r of await all(`${R}/pulls/${n}/reviews`)) latest.set(r.user?.login, r);

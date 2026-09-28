@@ -76,7 +76,10 @@ status() {
   # With the org App posting `review` (the base branch's pack.json review_status), DONE also needs that status green
   # on the head. The base decides: a branch cut before the release carries an older pack.
   top=$(git rev-parse --show-toplevel)
-  api GET "contents/scripts/agent/pack.json?ref=$(enc "$(js 'd.base.ref' <<<"$p")")"
+  # A promotion (this repo's default branch into another) goes by its head's pack, as the review rule does.
+  api GET ""; local ref
+  ref=$(js 'a[0]&&d.head?.repo?.full_name===a[1]&&d.head.ref===a[0]&&d.base.ref!==a[0]?d.head.sha:d.base.ref' "$( [ "$ST" = 200 ] && js 'd.default_branch' <<<"$R")" "$REPO" <<<"$p")
+  api GET "contents/scripts/agent/pack.json?ref=$(enc "$ref")"
   if [ "$ST" = 200 ]; then review=$(js 'String(!!JSON.parse(Buffer.from(d.content,"base64").toString()).review_status)' <<<"$R")
   elif [ "$ST" = 404 ]; then review=$(node -p 'try { !!require(process.argv[1]).review_status } catch { false }' "$top/scripts/agent/pack.json")
   else die "reading the base branch's pack.json -> HTTP $ST; cannot tell whether review is required"; fi

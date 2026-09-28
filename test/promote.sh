@@ -9,7 +9,7 @@ R=$T/repo; git init -q -b staging "$R" && node bin/repo-standards.mjs apply --ta
 git -C "$R" add -A && git -C "$R" commit -qm init
 HEAD1=$(printf 'a%.0s' $(seq 40)) HEAD2=$(printf 'b%.0s' $(seq 40))
 state() { # state <files-json> <reviews-json> [head]
-  printf '{"pr":{"number":7,"head":{"ref":"staging","sha":"%s"},"base":{"ref":"main"},"user":{"login":"launcher[bot]","type":"Bot"}},"files":%s,"reviews":%s,"perms":{"alice":"write","reader":"read","review-bot":"write"}}' "${3:-$HEAD2}" "$1" "$2" > "$T/state.json"
+  printf '{"pr":{"number":7,"head":{"ref":"staging","sha":"%s","repo":{"full_name":"acme/demo"}},"base":{"ref":"main"},"user":{"login":"launcher[bot]","type":"Bot"}},"files":%s,"reviews":%s,"perms":{"alice":"write","reader":"read","review-bot":"write"}}' "${3:-$HEAD2}" "$1" "$2" > "$T/state.json"
 }
 state '[]' '[]'
 node test/stubs/promote-github.mjs "$T/port" "$T/state.json" & STUB=$!

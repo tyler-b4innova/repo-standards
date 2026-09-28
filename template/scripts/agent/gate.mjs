@@ -62,7 +62,7 @@ if (cmd === "plan") {
   let list = ["chromium"];
   if (pr) {
     const info = (await get("", { need: false })) ?? {}, flow = std.flow ?? info.custom_properties?.flow;
-    if (flow === "staged" && pr.head.ref === info.default_branch && pr.base.ref !== info.default_branch)
+    if (flow === "staged" && pr.head?.repo?.full_name === env.GITHUB_REPOSITORY && pr.head.ref === info.default_branch && pr.base.ref !== info.default_branch)
       list = [...new Set([...list, ...(e2eCfg.browsers ?? []), ...(pack.e2e_promotion_browsers ?? [])])];
   }
   console.log(`plan: ${mode} (${why})`);
@@ -175,7 +175,7 @@ if (cmd === "plan") {
   try {
     const pr = await api("GET", `/repos/${owner}/${name}/pulls/${prNumber}`), info = (await api("GET", `/repos/${owner}/${name}`)) ?? {};
     // a promotion is judged by the default branch's pack (review.mjs does the same)
-    const promotion = Boolean(info.default_branch) && pr?.head?.ref === info.default_branch && pr?.base?.ref !== info.default_branch;
+    const promotion = Boolean(info.default_branch) && pr?.head?.repo?.full_name === `${owner}/${name}` && pr?.head?.ref === info.default_branch && pr?.base?.ref !== info.default_branch;
     const at = (f) => api("GET", `/repos/${owner}/${name}/contents/${f}?ref=${encodeURIComponent(promotion ? pr.head.sha : pr?.base?.ref ?? "")}`);
     const b64 = (f) => (f?.content ? JSON.parse(Buffer.from(f.content, "base64").toString("utf8")) : null);
     base = { pack: b64(await at("scripts/agent/pack.json")), std: b64(await at("standards.json")) };
