@@ -17,7 +17,8 @@ else if (method === "POST" && /\/runs\/\d+\/rerun$/.test(path)) {
   if (st.run.status !== "completed") { process.stderr.write("gh: This workflow is already running (HTTP 403)\n"); process.exit(1); }
   st.run = { ...st.run, status: "queued", run_started_at: new Date().toISOString().replace(/\.\d+Z$/, "Z") }; st.reruns = (st.reruns ?? 0) + 1;
   writeFileSync(f, JSON.stringify(st)); out = {};
-} else if (/\/runs\/\d+$/.test(path)) out = st.run;
+} else if (/\/runs\/\d+\/jobs$/.test(path)) out = { jobs: [{ name: "gate", steps: [{ name: "evidence", status: st.evidenceStep ?? "pending" }] }] };
+else if (/\/runs\/\d+$/.test(path)) out = st.run;
 else { process.stderr.write(`fake gh: no route ${method} ${path}\n`); process.exit(1); }
 if (st.raceOnce && method === "GET" && /\/workflows\//.test(path) && st.run.status === "completed") { // another job re-runs between our read and POST
   st.run = { ...st.run, status: "in_progress" }; delete st.raceOnce; writeFileSync(f, JSON.stringify(st));

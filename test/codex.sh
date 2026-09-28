@@ -54,22 +54,27 @@ if [ -z "$r" ]; then ok codex-verdict-required; else fail codex-verdict-required
 # for one in flight; a lost race counts as done; a base change dispatches std-gate for the PR's fresh merge ref.
 WF="$R/.github/workflows/std-gate-rerun.yml" GWF="$R/.github/workflows/std-gate.yml"
 node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");require("fs").writeFileSync(process.argv[2],y.match(/- run: \|\n((?: {10}.*\n?)+)/)[1].replace(/^ {10}/gm,""))' "$WF" "$T/rerun.sh"
-rr() { # rr <event> <run-status> [race]: prints "<exit> <reruns> <sleeps> <dispatches>"
-  printf '{"sha":"%s","run":{"id":42,"status":"%s","run_started_at":"2026-01-01T00:00:00Z"}%s}\n' "$HEAD1" "$2" "${3:+,\"raceOnce\":true}" > "$T/gh.json"; : > "$T/gh.log"
-  EVENT=$1 HEAD_REF=feat PATH="$PWD/test/stubs/fake-bin:$PATH" FAKE_GH_STATE="$T/gh.json" FAKE_GH_LOG="$T/gh.log" GITHUB_REPOSITORY=acme/demo PR=7 bash "$T/rerun.sh" > "$T/rr.out" 2>&1; local x=$?
+rr() { # rr <event> <run-status> [race|read]: prints "<exit> <reruns> <sleeps> <dispatches>"
+  local extra=""; [ "${3:-}" = race ] && extra=',"raceOnce":true'; [ "${3:-}" = read ] && extra=',"evidenceStep":"completed"'
+  printf '{"sha":"%s","run":{"id":42,"status":"%s","run_started_at":"2026-01-01T00:00:00Z"}%s}\n' "$HEAD1" "$2" "$extra" > "$T/gh.json"; : > "$T/gh.log"
+  EVENT=$1 HEAD_REF=feat HEAD_REPO=${HEAD_REPO:-acme/demo} PATH="$PWD/test/stubs/fake-bin:$PATH" FAKE_GH_STATE="$T/gh.json" FAKE_GH_LOG="$T/gh.log" GITHUB_REPOSITORY=acme/demo PR=7 bash "$T/rerun.sh" > "$T/rr.out" 2>&1; local x=$?
   echo "$x $(node -e 'const s=require(process.argv[1]);console.log((s.reruns??0)+" "+(s.sleeps??0)+" "+(s.dispatches??0))' "$T/gh.json")"; }
 got="$(rr pull_request_review completed) | $(rr pull_request_review in_progress) | $(rr pull_request_review completed race) | $(rr pull_request completed)"
 disp=$(grep DISPATCH "$T/gh.log")
+late="$(rr pull_request_review in_progress read)" fork="$(HEAD_REPO=someone/demo rr pull_request completed)"; forkout=$(cat "$T/rr.out")
 triggers=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");console.log(y.slice(y.indexOf("on:"),y.indexOf("permissions:")).match(/^  [a-z_]+:/gm).map(s=>s.trim()).join(" "))' "$WF")
 gtrig=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");console.log(y.slice(y.indexOf("on:"),y.indexOf("permissions:")).replace(/\s+/g," "))' "$GWF")
 cond=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");const i=y.match(/if: >-\n((?: {6}.*\n)+)/)[1];console.log(/sender\.type != .Bot./.test(i)&&/review\.state == .approved./.test(i)&&/changes\.base/.test(i))' "$WF")
 # gate-rerun-never-cancelled: no concurrency group, so a burst of events leaves no cancelled check runs (clean PRs read UNSTABLE)
-if ! grep -qE '^(concurrency|  cancel-in-progress)' "$WF" && [ "$got" = "0 1 0 0 | 0 0 0 0 | 0 0 0 0 | 0 0 0 1" ] && grep -q "\-f pr=7" <<<"$disp" && grep -q -- "--ref feat" <<<"$disp"
-then ok gate-rerun-never-cancelled; else fail gate-rerun-never-cancelled "got=$got disp=$disp $(cat "$T/rr.out")"; fi
+# an approval that lands after the in-flight run read approvals waits for it and re-runs; a fork's base change asks for a push
+if ! grep -qE '^(concurrency|  cancel-in-progress)' "$WF" && [ "$got" = "0 1 0 0 | 0 0 0 0 | 0 0 0 0 | 0 0 0 1" ] && grep -q "\-f pr=7" <<<"$disp" && grep -q -- "--ref feat" <<<"$disp" \
+  && [ "$late" = "0 1 1 0" ] && [ "$fork" = "0 0 0 0" ] && has "push to re-gate" "$forkout"
+then ok gate-rerun-never-cancelled; else fail gate-rerun-never-cancelled "got=$got late=$late fork=$fork disp=$disp $(cat "$T/rr.out")"; fi
 # rerun-ignores-noise-senders: no comment triggers at all; reviews only from people, and only approvals or dismissals
 if [ "$triggers" = "pull_request_review: pull_request:" ] && [ "$cond" = true ]; then ok rerun-ignores-noise-senders; else fail rerun-ignores-noise-senders "triggers=$triggers cond=$cond"; fi
-# rerun-never-polls: an approval during a gate run exits at once; the job is capped at 2 minutes and has no sleep
-if [ "${got#*| }" != "" ] && [ "$(echo "$got" | cut -d'|' -f2 | xargs)" = "0 0 0 0" ] && grep -q "timeout-minutes: 2" "$WF" && ! grep -q sleep "$T/rerun.sh"
+# rerun-never-polls: an approval during a gate run that has not read approvals yet exits at once without sleeping;
+# only the late-approval case waits, bounded by the gate's own timeout
+if [ "$(echo "$got" | cut -d'|' -f2 | xargs)" = "0 0 0 0" ] && grep -q "timeout-minutes: 17" "$WF" && [ "$(grep -c sleep "$T/rerun.sh")" = 1 ]
 then ok rerun-never-polls; else fail rerun-never-polls "got=$got"; fi
 # gate-ignores-body-edits: std-gate has no edited trigger; only a base change (changes.base) re-gates, by dispatch
 if ! grep -q edited <<<"$gtrig" && grep -q "workflow_dispatch" <<<"$gtrig" && [ "$cond" = true ] && grep -q "refs/pull/{0}/merge" "$GWF"

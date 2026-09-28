@@ -148,6 +148,9 @@ if (cmd === "plan") {
   const cfgFile = [...(rootPw ? ls(".") : []), ...(dir && !rootPw ? ls(dir).map((f) => `${dir}/${f}`) : [])].find((f) => /(^|\/)playwright\.config\.[cm]?[jt]s$/.test(f));
   const cfg = cfgFile ? rd(cfgFile, "utf8") : "", named = (b) => new RegExp(`name:\\s*['"\`]${b}['"\`]`).test(cfg);
   const projects = /\bprojects\s*:/.test(cfg) ? browsers().filter(named).map((b) => `--project=${b}`) : [];
+  // Without --project Playwright runs every project, so a config whose projects are named otherwise is refused.
+  if (!e2eCmd && !script && cfg && /\bprojects\s*:/.test(cfg) && !projects.length)
+    fail(`${cfgFile} defines projects but none named ${browsers().join(" or ")}, so gate cannot pick the Chromium run`, 'name the Chromium project "chromium" (gate runs only that), or set standards.json e2e.command');
   const pwBin = has("node_modules/.bin/playwright") ? ["node_modules/.bin/playwright", []] : ["npx", ["--no-install", "playwright"]];
   const run = e2eCmd ? ["bash", ["-c", e2eCmd]] : script ? [pm, ["run", script]] : dir && pw ? [pwBin[0], [...pwBin[1], "test", dir, ...projects]]
     : rootPw ? [pwBin[0], [...pwBin[1], "test", ...projects]]

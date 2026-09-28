@@ -20,19 +20,22 @@ jobs:
        (github.event.review.state == 'approved' || github.event.action == 'dismissed')) ||
       (github.event_name == 'pull_request' && github.event.changes.base)
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
+    timeout-minutes: 17
     env:
       GH_TOKEN: ${{ github.token }}
       PR: ${{ github.event.pull_request.number }}
       HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
       EVENT: ${{ github.event_name }}
     steps:
-      # Never waits: a gate run in flight reads approvals itself; an approval that lands after its evidence step is
-      # picked up by the next re-check.
+      # A gate run in flight that has not reached its evidence step reads the approval itself, so this exits at once.
+      # Only an approval that lands after that step waits (unavoidably billed; approvals are rare) for the run to end.
       - run: |
           set -euo pipefail
           api="repos/$GITHUB_REPOSITORY/actions"
           if [ "$EVENT" = pull_request ]; then
+            # The dispatch runs on the head branch, so the check lands on the head SHA; a fork's branch is not here.
+            [ "$HEAD_REPO" = "$GITHUB_REPOSITORY" ] || { echo "base changed on a fork's pull request: push to re-gate it"; exit 0; }
             echo "base changed: re-gating #$PR on its new merge ref"
             gh workflow run std-gate.yml -R "$GITHUB_REPOSITORY" --ref "$HEAD_REF" -f pr="$PR"
             exit 0
@@ -41,7 +44,12 @@ jobs:
           run=$(gh api "$api/workflows/std-gate.yml/runs?head_sha=$sha&per_page=20" --jq "[.workflow_runs[] | select(.event == \"pull_request\" or .event == \"workflow_dispatch\")][0] // empty | \"\\(.id) \\(.status)\"")
           [ -n "$run" ] || { echo "no gate run for $sha yet"; exit 0; }
           read -r id status <<<"$run"
-          [ "$status" = completed ] || { echo "gate run $id is $status; it reads the approval itself"; exit 0; }
+          if [ "$status" != completed ]; then
+            ev=$(gh api "$api/runs/$id/jobs" --jq '[.jobs[] | select(.name == "gate") | .steps[] | select(.name == "evidence") | .status][0] // "pending"')
+            [ "$ev" = completed ] || { echo "gate run $id is $status and has not read approvals yet; it reads this one itself"; exit 0; }
+            echo "gate run $id already read approvals; waiting for it to finish, then re-running"
+            for i in $(seq 30); do sleep 30; [ "$(gh api "$api/runs/$id" --jq .status)" = completed ] && break; done
+          fi
           echo "re-running gate run $id for ${sha:0:7} (reuses its build)"
           gh api -X POST "$api/runs/$id/rerun" >/dev/null && exit 0
           [ "$(gh api "$api/runs/$id" --jq .status)" != completed ] || exit 1

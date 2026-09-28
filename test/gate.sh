@@ -69,11 +69,13 @@ echo '{"name":"app","private":true,"devDependencies":{"@playwright/test":"1.63.0
 echo 'export default { projects: [{ name: "chromium" }, { name: "firefox" }, { name: "webkit" }] };' > "$R/playwright.config.js"
 pwrun() { : > "$T/pw.log"; (cd "$R" && env "$@" node scripts/agent/gate.mjs e2e) >/dev/null 2>&1; cat "$T/pw.log"; }
 e1=$(pwrun GATE_X=1) e2=$(pwrun GATE_BROWSERS=chromium,firefox) e3=$(pwrun GATE_PREVIEW_URL=https://feat.preview.example.test)
+echo 'export default { projects: [{ name: "desktop-chrome" }, { name: "mobile-chrome" }] };' > "$R/playwright.config.js"
+e5=$(cd "$R" && node scripts/agent/gate.mjs e2e 2>&1); x5=$?
 echo 'export default { use: {} };' > "$R/playwright.config.js"; e4=$(pwrun GATE_X=1)
 IB=$T/install-bin; mkpath "$IB"; shim "$IB" npm 'exit 0'
 : > "$T/pw.log"; (cd "$R" && PATH="$IB" GATE_BROWSERS=chromium node scripts/agent/gate.mjs install) >/dev/null 2>&1; i1=$(cat "$T/pw.log")
 if has "playwright test --project=chromium base=none budget=300000" "$e1" && has "test --project=chromium --project=firefox" "$e2" && has "base=https://feat.preview.example.test" "$e3" \
-  && has "playwright test base=none" "$e4" && ! has "project" "$e4" && has "install --with-deps chromium" "$i1" && ! has "firefox" "$i1"
+  && has "playwright test base=none" "$e4" && ! has "project" "$e4" && [ $x5 -eq 1 ] && has "defines projects but none named chromium" "$e5" && has "install --with-deps chromium" "$i1" && ! has "firefox" "$i1"
 then ok e2e-chromium-default; else fail e2e-chromium-default "default=$e1 | two=$e2 | preview=$e3 | no-projects=$e4 | install=$i1"; fi
 jset "$R/standards.json" 'o.e2e={command:"sleep 5",budget:0.02}'
 t0=$(date +%s); bo=$(cd "$R" && node scripts/agent/gate.mjs e2e 2>&1); bx=$?; t1=$(date +%s)
