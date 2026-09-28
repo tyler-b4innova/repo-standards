@@ -173,7 +173,10 @@ if (cmd === "plan") {
   // copies only stand in where the base has none.
   let base = {};
   try {
-    const pr = await api("GET", `/repos/${owner}/${name}/pulls/${prNumber}`), at = (f) => api("GET", `/repos/${owner}/${name}/contents/${f}?ref=${encodeURIComponent(pr?.base?.ref ?? "")}`);
+    const pr = await api("GET", `/repos/${owner}/${name}/pulls/${prNumber}`), info = (await api("GET", `/repos/${owner}/${name}`)) ?? {};
+    // a promotion is judged by the default branch's pack (review.mjs does the same)
+    const promotion = Boolean(info.default_branch) && pr?.head?.ref === info.default_branch && pr?.base?.ref !== info.default_branch;
+    const at = (f) => api("GET", `/repos/${owner}/${name}/contents/${f}?ref=${encodeURIComponent(promotion ? pr.head.sha : pr?.base?.ref ?? "")}`);
     const b64 = (f) => (f?.content ? JSON.parse(Buffer.from(f.content, "base64").toString("utf8")) : null);
     base = { pack: b64(await at("scripts/agent/pack.json")), std: b64(await at("standards.json")) };
   } catch (e) { fail(`review: ${e.message}`, "grant the job actions, checks, pull-requests and issues read, then re-run"); }

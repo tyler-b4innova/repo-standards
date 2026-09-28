@@ -41,7 +41,7 @@ const server = createServer((req, res) => {
       if (st.moveSibling === Number(m[1])) { st.sreads = (st.sreads ?? 0) + 1; save(); if (st.sreads > 1) return send(200, { ...st.prs[m[1]], base: { ref: "elsewhere" } }); }
       return send(200, st.prs[m[1]]);
     }
-    if ((m = p.match(/^\/pulls\/(\d+)\/files$/))) return send(200, (st.prFiles ?? {})[m[1]] ?? []);
+    if ((m = p.match(/^\/pulls\/(\d+)\/files$/))) return st.filesFail ? send(502, { message: "Bad Gateway" }) : send(200, (st.prFiles ?? {})[m[1]] ?? []);
     if (p === "/pulls") return send(200, url.searchParams.get("state") === "open" ? st.open ?? (st.pr ? [st.pr] : []) : st.recent ?? []);
     if ((m = p.match(/^\/issues\/(\d+)\/comments$/))) return send(200, (st.comments ?? {})[m[1]] ?? []);
     if ((m = p.match(/^\/pulls\/\d+\/reviews$/))) return send(200, st.reviews ?? []);

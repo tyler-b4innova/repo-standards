@@ -23,7 +23,12 @@ export async function reviewStatus({ api, owner, repo, pr: n, files, now = Date.
   const head = pr.head.sha;
   // The rule and whether the org posts it come from the base branch (the org's current pack and the repository's
   // settings there), so a pull request cut before a pack release is judged like any other, and cannot relax its own review.
-  const read = async (f) => b64(await api("GET", `${R}/contents/${f}?ref=${encodeURIComponent(pr.base?.sha ?? pr.base?.ref ?? "")}`));
+  // A promotion (the default branch into another) is judged by the default branch's pack: that is where sync lands a
+  // release, and the production branch only gets it through this very promotion.
+  const info = (await api("GET", R)) ?? {};
+  const promotion = Boolean(info.default_branch) && pr.head?.ref === info.default_branch && pr.base?.ref !== info.default_branch;
+  const cfgRef = promotion ? pr.head.sha : pr.base?.sha ?? pr.base?.ref ?? "";
+  const read = async (f) => b64(await api("GET", `${R}/contents/${f}?ref=${encodeURIComponent(cfgRef)}`));
   const pack = files?.pack ?? (await read("scripts/agent/pack.json")), std = files?.std ?? (await read("standards.json")) ?? {};
   if (!pack) return null;
   if (!pack.review_status && !force) return null; // gate's own steps still enforce this for the org
@@ -31,7 +36,6 @@ export async function reviewStatus({ api, owner, repo, pr: n, files, now = Date.
   // if its head and base (ref and commit) are unchanged.
   const verdict = (state, description, details = []) => ({ state, description: description.slice(0, 140), sha: head, base: pr.base?.ref ?? null, base_sha: pr.base?.sha ?? null, target_url: pr.html_url, details });
 
-  const info = (await api("GET", R)) ?? {};
   const uiOpt = std.ui_paths, inc = (Array.isArray(uiOpt) ? uiOpt : uiOpt?.include ?? pack.ui_paths ?? []).map(glob);
   const ign = [...(pack.ui_ignore ?? []), ...(uiOpt?.ignore ?? [])].map(glob);
   const ui = (fs) => fs.filter((f) => inc.some((r) => r.test(f)) && !ign.some((r) => r.test(f)));
@@ -185,10 +189,13 @@ export async function postReviews({ api, owner, repo, prs = [], all = false, dry
   const ready = (p) => Boolean(p) && (p.state ?? "open") === "open" && !p.draft;
   const shape = (p) => JSON.stringify([p?.head?.sha ?? null, p?.base?.ref ?? null, p?.base?.sha ?? null, ready(p)]);
   // Every open ready PR on `sha`: the PR as read and its verdict (null where review does not apply).
+  let seen = new Set(); // every head observed for the current target, so an error can pend all of them
   const pass = async (sha) => {
     const out = new Map();
     for (const l of (await listOpen()).filter((p) => !p.draft && p.head?.sha === sha)) {
-      const pr = await api("GET", `${R}/pulls/${l.number}`), v = await reviewStatus({ api, owner, repo, pr: l.number, force, serverUrl });
+      const pr = await api("GET", `${R}/pulls/${l.number}`);
+      if (ready(pr)) seen.add(pr.head.sha);
+      const v = await reviewStatus({ api, owner, repo, pr: l.number, force, serverUrl });
       out.set(l.number, { pr, v, sig: shape(pr) + JSON.stringify([v?.sha ?? null, v?.base ?? null, v?.base_sha ?? null, v?.state ?? null, v?.description ?? null]) });
     }
     return out;
@@ -197,8 +204,10 @@ export async function postReviews({ api, owner, repo, prs = [], all = false, dry
   const targets = all ? listed.map((p) => p.number) : prs;
   for (const n of targets) {
     let sha = listed.find((p) => p.number === n)?.head?.sha; // known from the listing, so an error below can still pend it (--all or not)
+    seen = new Set(sha ? [sha] : []);
     try {
       const pr = await api("GET", `${R}/pulls/${n}`);
+      if (ready(pr)) seen.add(pr.head.sha);
       if (!ready(pr)) { log(`#${n}: nothing to post (draft or closed)`); continue; }
       sha = pr.head.sha;
       if (done.has(sha)) continue;
@@ -222,7 +231,7 @@ export async function postReviews({ api, owner, repo, prs = [], all = false, dry
     } catch (e) {
       failed++;
       log(`#${n}: review could not be evaluated (${e.message})`);
-      if (sha) await post(sha, "pending", `#${n}: review could not be evaluated; retrying`, "");
+      for (const h of seen) await post(h, "pending", `#${n}: review could not be evaluated; retrying`, "");
     }
   }
   return { posted, failed };
