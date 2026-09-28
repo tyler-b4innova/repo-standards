@@ -91,6 +91,10 @@ msg1=$(git --git-dir "$R/acme/alpha.git" log -1 --format=%B staging)
 patch1=$(between "$m1" "$e1" | grep '"method":"PATCH","path":"/repos/acme/alpha/git/refs/heads/staging"' || true)
 beta_pr1=$(q acme/beta "JSON.stringify($prs.map(p => [p.number, p.state, p.head, p.title, p.auto_merge]))")
 beta_body1=$(q acme/beta "$prs[0]?.body")
+# the fix path in the body works as written from an existing clone that has not fetched since sync pushed
+fixc=$(printf '%s' "$beta_body1" | grep -o 'git fetch origin [^`]*FETCH_HEAD')
+git clone -q "$R/acme/beta.git" "$T/beta-old" && git -C "$T/beta-old" update-ref -d refs/remotes/origin/standards/v0.1.0 # stale: fetched before sync pushed
+fixed=$(cd "$T/beta-old" && git fetch -q origin main && eval "$fixc" 2>&1 && git rev-parse HEAD) fixwant=$(git --git-dir "$R/acme/beta.git" rev-parse standards/v0.1.0)
 
 # Run 2: release 0.2.0; someone lands on alpha's staging while its gate runs, so sync re-applies once.
 m2=$(mark)
@@ -146,7 +150,7 @@ m4=$(mark)
 out4=$(sync --version 0.2.0 --repo acme/beta); rc4=$?
 w4=$(writes_since "$m4")
 if [ "$db" = 2 ] && [ "$b1" = "$b0" ] && [ "$beta_pr1" = '[[1,"open","standards/v0.1.0","chore: standards v0.1.0 (needs a person)",null]]' ] \
-  && [ -n "$(printf '%s' "$beta_body1" | grep -F "gate run: https://github.com/acme/beta/actions/runs/")" ] && [ -n "$(printf '%s' "$beta_body1" | grep 'gate red')" ] \
+  && [ -n "$(printf '%s' "$beta_body1" | grep -F "gate run: https://github.com/acme/beta/actions/runs/")" ] && [ -n "$(printf '%s' "$beta_body1" | grep 'gate red')" ] && [ -n "$fixc" ] && [ "$(printf '%s' "$fixed" | tail -1)" = "$fixwant" ] \
   && [ -z "$(grep enablePullRequestAutoMerge "$LOG")" ] && [ -n "$(printf '%s' "$beta_row1" | grep -F '| PR #1: gate red |')" ] \
   && [ "$(q acme/beta "JSON.stringify($prs.map(p => [p.number, p.state, p.head]))")" = '[[1,"closed","standards/v0.1.0"],[2,"closed","standards/v0.2.0"]]' ] \
   && [ -n "$(printf '%s' "$beta_row2" | grep -F '| PR #2: gate red |')" ] && [ "$(sha acme/beta main)" = "$b0" ] \
@@ -189,4 +193,19 @@ prs=$(q acme/filer 's.items.filter(i => i.pull).map(i => i.state + ":" + i.head)
 if [ $rc -eq 0 ] && [ "$prs" = "closed:chore/sentry-project-web open:chore/sentry-project-retry/web/2" ] && [ -n "$(printf '%s' "$r3" | grep 'mapping PR')" ] \
   && [ -z "$(writes_since "$g2" | grep DELETE)" ] && [ -n "$(printf '%s' "$r4" | grep 'mapping PR already open')" ]; then ok error-tracker-rerun-safe
 else fail error-tracker-rerun-safe "rc=$rc prs=$prs deletes=$(writes_since "$g2" | grep DELETE) $r3 | $r4"; fi
+
+# pack-landing-cheap-except-canary (sync side): each profile's canary lands first; a red canary stops the fleet
+node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.gate={canary:{client:"beta"}};require("fs").writeFileSync(f,JSON.stringify(o))' "$OV"
+k0=$(mark); cr1=$(sync --version 0.4.0); ck1=$?; wait_row=$(row acme/alpha)
+node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.gate={canary:{internal:"alpha"}};require("fs").writeFileSync(f,JSON.stringify(o))' "$OV"
+node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.gate={canary:{internal:"ghost"}};require("fs").writeFileSync(f,JSON.stringify(o))' "$OV"
+cr4=$(sync --version 0.5.0 --dry-run); ck4=$?
+node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.gate={canary:{internal:"alpha"}};require("fs").writeFileSync(f,JSON.stringify(o))' "$OV"
+cr3=$(sync --version 0.5.0 --dry-run); ck3=$?
+cr2=$(sync --version 0.5.0); ck2=$?
+first=$(printf '%s\n' "$cr2" | grep -E '^acme/[a-z]+: ' | head -1)
+if [ $ck1 -eq 1 ] && [ -n "$(printf "%s" "$cr1" | grep "canary acme/beta")" ] && [ -z "$(heads acme/alpha | grep v0.4.0)" ] && [ -z "$(printf '%s' "$cr1" | grep '^acme/alpha: ')" ] \
+  && [ -n "$(printf '%s' "$wait_row" | grep 'waiting: canary acme/beta')" ] && [ "${first%%:*}" = acme/alpha ] && [ -n "$(printf '%s\n' "$cr2" | grep '^acme/boot: ')" ] && [ $ck3 -eq 0 ] && [ -n "$(printf '%s\n' "$cr3" | grep '^\[dry-run\] acme/boot: ')" ] && [ $ck4 -eq 1 ] && [ -n "$(printf '%s' "$cr4" | grep "acme/ghost (not in this pack's fleet)")" ] && [ -z "$(printf '%s\n' "$cr4" | grep '^\[dry-run\] acme/boot: ')" ]
+then ok pack-landing-cheap-except-canary; else fail pack-landing-cheap-except-canary "red=$ck1 green=$ck2 dry=$ck3 ghost=$ck4 first=$first :: $cr1 :: $cr2 :: $cr3 :: $cr4"; fi
+overlay
 done_cases

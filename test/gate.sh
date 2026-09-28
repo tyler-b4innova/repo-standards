@@ -51,6 +51,49 @@ kept=$(node -e 'const s=require(process.argv[1]);console.log(s.e2e===false&&s.ve
 if [ $st -eq 0 ] && has '::warning::no e2e suite' "$out" && [ "$kept" = true ]; then ok e2e-opt-out-honoured
 else fail e2e-opt-out-honoured "exit=$st kept=$kept: $out"; fi
 
+# ---- setup installs the repo's own Playwright browser (npm 6's npx once ran /usr/bin/install instead; nothing was installed)
+R=$(mkrepo); P=$T/setup-bin; mkpath "$P"; shim "$P" curl 'exit 0'; shim "$P" npm 'echo "npm $*" >> "$SETUP_LOG"'
+shim "$P" npx 'echo "npx $*" >> "$SETUP_LOG"; exit 0' # an npx that installs nothing, as npm 6's did
+echo '{"name":"app","private":true,"devDependencies":{"@playwright/test":"1.63.0"}}' > "$R/package.json" && echo '{}' > "$R/package-lock.json"
+su() { : > "$T/setup.log"; (cd "$R" && SETUP_LOG="$T/setup.log" PATH="$P" bash scripts/agent/setup.sh) 2>&1; }
+o1=$(su); l1=$(cat "$T/setup.log")
+mkdir -p "$R/node_modules/.bin" && printf '#!/bin/sh\necho "playwright $*" >> "$SETUP_LOG"\n' > "$R/node_modules/.bin/playwright" && chmod +x "$R/node_modules/.bin/playwright"
+o2=$(su); l2=$(cat "$T/setup.log")
+if has "playwright is in package.json but not installed" "$o1" && ! has playwright "$l1" && has "npm ci" "$l2" && has "playwright install --with-deps chromium" "$l2" && ! has npx "$l2"
+then ok setup-installs-repo-playwright; else fail setup-installs-repo-playwright "missing: $o1 | $l1 || present: $o2 | $l2"; fi
+
+# ---- e2e runs Chromium only (unless this run's browsers say more), within its budget, against the preview when given
+R=$(mkrepo); mkdir -p "$R/node_modules/.bin"
+printf '#!/bin/sh\necho "playwright $* base=${PLAYWRIGHT_BASE_URL:-none} budget=$PW_GLOBAL_TIMEOUT" >> "%s/pw.log"\n' "$T" > "$R/node_modules/.bin/playwright"; chmod +x "$R/node_modules/.bin/playwright"
+echo '{"name":"app","private":true,"devDependencies":{"@playwright/test":"1.63.0"}}' > "$R/package.json"
+echo 'export default { projects: [{ name: "chromium" }, { name: "firefox" }, { name: "webkit" }] };' > "$R/playwright.config.js"
+pwrun() { : > "$T/pw.log"; (cd "$R" && env "$@" node scripts/agent/gate.mjs e2e) >/dev/null 2>&1; cat "$T/pw.log"; }
+e1=$(pwrun GATE_X=1) e2=$(pwrun GATE_BROWSERS=chromium,firefox) e3=$(pwrun GATE_PREVIEW_URL=https://feat.preview.example.test)
+echo 'export default { projects: [{ name: "desktop-chrome" }, { name: "mobile-chrome" }] };' > "$R/playwright.config.js"
+e5=$(cd "$R" && node scripts/agent/gate.mjs e2e 2>&1); x5=$?
+echo 'export default { projects: [{ name: "chromium" }, { name: "firefox" }] };' > "$R/playwright.config.js"
+jset "$R/package.json" 'o.scripts={"test:e2e":"playwright test"}'; e6=$(pwrun GATE_X=1); jset "$R/package.json" 'delete o.scripts'
+echo 'export default { use: {} };' > "$R/playwright.config.js"; e4=$(pwrun GATE_X=1)
+IB=$T/install-bin; mkpath "$IB"; shim "$IB" npm 'exit 0'
+: > "$T/pw.log"; (cd "$R" && PATH="$IB" GATE_BROWSERS=chromium node scripts/agent/gate.mjs install) >/dev/null 2>&1; i1=$(cat "$T/pw.log")
+if has "playwright test --project=chromium base=none budget=300000" "$e1" && has "test --project=chromium --project=firefox" "$e2" && has "base=https://feat.preview.example.test" "$e3" \
+  && has "playwright test base=none" "$e4" && ! has "project" "$e4" && [ $x5 -eq 1 ] && has "defines projects but none named chromium" "$e5" && has "playwright test --project=chromium" "$e6" && ! has firefox "$e6" && has "install --with-deps chromium" "$i1" && ! has "firefox" "$i1"
+then ok e2e-chromium-default; else fail e2e-chromium-default "default=$e1 | two=$e2 | preview=$e3 | no-projects=$e4 | script=$e6 | install=$i1"; fi
+jset "$R/standards.json" 'o.e2e={command:"sleep 5",budget:0.02}'
+t0=$(date +%s); bo=$(cd "$R" && node scripts/agent/gate.mjs e2e 2>&1); bx=$?; t1=$(date +%s)
+jset "$R/standards.json" 'o.e2e={command:"true",budget:0.02}'; (cd "$R" && node scripts/agent/gate.mjs e2e) >/dev/null 2>&1; bq=$?
+jset "$R/standards.json" 'o.e2e={command:"true",budget:0}'; bz=$(cd "$R" && node scripts/agent/gate.mjs e2e 2>&1); bzx=$?
+if [ $bx -eq 1 ] && has "e2e exceeded its 0.02-minute budget" "$bo" && [ $((t1 - t0)) -lt 5 ] && [ $bq -eq 0 ] && [ $bzx -eq 1 ] && has "e2e.budget is 0" "$bz"; then ok e2e-budget-enforced
+else fail e2e-budget-enforced "over=$bx in $((t1 - t0))s quick=$bq: $bo"; fi
+
+# pack-landing-cheap-except-canary (syntax): the cheap gate's syntax pass fails a broken script and, without PyYAML, skips workflows
+R=$(mkrepo); sy1=$(cd "$R" && node scripts/agent/gate.mjs syntax 2>&1); sx1=$?
+YB=$T/noyaml-bin; mkpath "$YB"; shim "$YB" python3 'exit 1'
+sy2=$(cd "$R" && PATH="$YB" node scripts/agent/gate.mjs syntax 2>&1); sx2=$?
+printf 'if then\n' > "$R/scripts/agent/broken.sh" && git -C "$R" add scripts/agent/broken.sh; sy3=$(cd "$R" && node scripts/agent/gate.mjs syntax 2>&1); sx3=$?
+if [ $sx1 -eq 0 ] && [ $sx2 -eq 0 ] && has "PyYAML is not on this runner" "$sy2" && [ $sx3 -eq 1 ] && has "scripts/agent/broken.sh" "$sy3"; then ok pack-landing-cheap-except-canary
+else fail pack-landing-cheap-except-canary "clean=$sx1 noyaml=$sx2 broken=$sx3: $sy1 | $sy2 | $sy3"; fi
+
 # ---- the rendered workflow
 R=$(mkrepo)
 shape=$(cd "$R" && node -e '

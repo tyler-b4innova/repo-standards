@@ -104,6 +104,86 @@ for c in 'l.lane=[]|launcher.lane is not a launcher setting' 'l.lanes[0].vendor=
 done
 if [ -z "$why" ]; then ok overlay-launcher-validated; else fail overlay-launcher-validated "$why"; fi
 
+# CI rules in --check: one gate per head, job timeouts, schedules at most daily, quarantine with an issue and an expiry
+wf() { mkdir -p "$1/.github/workflows" && printf '%s\n' "$3" > "$1/.github/workflows/$2"; }
+cr() { commit "$1" >/dev/null; check "$1"; }
+why=""
+R=$(mkrepo); wf "$R" validate.yml 'on:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - run: npm ci && npm test'; out=$(cr "$R") && why="$why; a PR test workflow passed"; has "validate.yml runs checks on pull_request" "$out" || why="$why; [$out]"
+R=$(mkrepo); wf "$R" gates.yml 'on:
+  pull_request:
+    paths: ["plugins/**"]
+  push:
+    branches: [main]
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check shared files
+        run: node scripts/sync-shared.mjs --check'; out=$(cr "$R") && why="$why; a check workflow on PR and push passed"
+R=$(mkrepo); wf "$R" poll.yml 'on:
+  schedule:
+    - cron: "*/10 * * * *"
+jobs:
+  poll:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - run: curl -s https://example.test'; out=$(cr "$R") && why="$why; a 10-minute schedule passed"; has "scheduled more often than daily" "$out" || why="$why; [$out]"
+DEPLOY='on:
+  push:
+    branches: [main]
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - run: npm ci && npm run build && npx wrangler deploy'
+R=$(mkrepo); wf "$R" deploy.yml "$DEPLOY"; out=$(cr "$R") && why="$why; an undeclared build-on-push passed"
+jset "$R/standards.json" 'o.deploy_workflow="deploy.yml"'; out=$(cr "$R") || why="$why; the declared deploy workflow failed: $out"
+wf "$R" nightly.yml 'on:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+jobs:
+  report:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: echo weekly'; out=$(cr "$R") || why="$why; a weekly schedule failed: $out"
+if [ -z "$why" ]; then ok no-duplicate-gate-workflows; else fail no-duplicate-gate-workflows "$why"; fi
+why=""
+R=$(mkrepo); wf "$R" manual.yml 'on: workflow_dispatch
+jobs:
+  once:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo hi
+  shared:
+    uses: ./.github/workflows/other.yml'; out=$(cr "$R") && why="$why; a job without timeout passed"
+has "manual.yml job once has no timeout-minutes" "$out" && ! has "job shared" "$out" || why="$why; [$out]"
+sed -i.bak 's/    runs-on: ubuntu-24.04/    runs-on: ubuntu-24.04\n    timeout-minutes: 5/' "$R/.github/workflows/manual.yml" && rm "$R/.github/workflows/manual.yml.bak"
+node -e 'const f=process.argv[1],y=require("fs").readFileSync(f,"utf8");require("fs").writeFileSync(f,y.replace("    runs-on: ubuntu-24.04\n","    runs-on: ubuntu-24.04\n    timeout-minutes: 5\n"))' "$R/.github/workflows/manual.yml"
+out=$(cr "$R") || why="$why; with a timeout it still failed: $out"
+if [ -z "$why" ]; then ok jobs-have-timeouts; else fail jobs-have-timeouts "$why"; fi
+why=""
+d() { N=$1 node -e 'console.log(new Date(Date.now()+Number(process.env.N)*864e5).toISOString().slice(0,10))'; }
+R=$(mkrepo); mkdir -p "$R/tests/e2e"
+q() { printf 'test("checkout %s", () => {}); // %s\n' "$1" "$2" > "$R/tests/e2e/q.test.mjs"; cr "$R"; }
+out=$(q a "@quarantine(#12, until $(d 7))") || why="$why; a linked 7-day quarantine failed: $out"
+out=$(q b "@quarantine(#12, until $(d -1))") && why="$why; an expired quarantine passed"; has "quarantine expired" "$out" || why="$why; [$out]"
+out=$(q c "@quarantine(until $(d 3))") && why="$why; an unlinked quarantine passed"
+out=$(q e "@quarantine(https://github.com/acme/app/issues/9, until $(d 30))") && why="$why; a 30-day quarantine passed"; has "more than 14 days out" "$out" || why="$why; [$out]"
+if [ -z "$why" ]; then ok quarantine-expires; else fail quarantine-expires "$why"; fi
+
 # the SessionStart hook: once, under startup|resume, next to the repo's own hooks
 why=""
 R=$(mkrepo)
