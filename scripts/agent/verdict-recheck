@@ -41,7 +41,8 @@ for (const pr of nums) {
   const judge = async (list) => {
     for (const s of list.filter((p) => !p.draft && p.head?.sha === first.sha && !judged.has(p.number))) {
       const other = await reviewStatus({ api, owner, repo, pr: s.number, force: o.force, serverUrl: env.GITHUB_SERVER_URL || "https://github.com" });
-      judged.set(s.number, other);
+      // A sibling judged null (review off on its base) is still re-read: a retarget could make it need review.
+      judged.set(s.number, other ?? { sha: s.head.sha, base: s.base?.ref ?? null, base_sha: s.base?.sha ?? null });
       if (other && rank[other.state] > rank[r.state]) { r = other; from = s.number; }
     }
   };
@@ -54,7 +55,6 @@ for (const pr of nums) {
   // Every judged PR on this head must be as it was judged (head, base ref and commit, open and ready).
   let moved = 0;
   for (const [n, j] of judged) {
-    if (!j) continue;
     const now = await api("GET", `/repos/${owner}/${repo}/pulls/${n}`);
     if (now?.head?.sha !== j.sha || (now?.base?.ref ?? null) !== j.base || (now?.base?.sha ?? null) !== j.base_sha || (now?.state ?? "open") !== "open" || now?.draft) moved = n;
   }
