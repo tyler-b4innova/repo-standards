@@ -190,7 +190,7 @@ export async function postReviews({ api, owner, repo, prs = [], all = false, dry
     const first = await reviewStatus({ api, owner, repo, pr, force, serverUrl });
     if (!first) {
       // Its head's other open PRs are judged in their own right (one may target a base where review is on).
-      for (const s of open) if (s.head?.sha === before?.head?.sha && !nums.includes(s.number)) nums.push(s.number);
+      for (const s of await listOpen()) if (!s.draft && s.head?.sha === before?.head?.sha && !nums.includes(s.number)) nums.push(s.number); // re-listed: a sibling opened meanwhile counts
       // Nothing to judge (draft, closed, not engine-managed, or review off on its base) - unless it moved meanwhile:
       // then a success already on the commit may not stand for its new base, so it goes pending until the next run.
       const now = await api("GET", `/repos/${owner}/${repo}/pulls/${pr}`);
