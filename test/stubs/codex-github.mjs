@@ -41,7 +41,7 @@ const server = createServer((req, res) => {
       return send(200, st.prs[m[1]]);
     }
     if ((m = p.match(/^\/pulls\/(\d+)\/files$/))) return send(200, (st.prFiles ?? {})[m[1]] ?? []);
-    if (p === "/pulls") return send(200, url.searchParams.get("state") === "open" ? st.open ?? [] : st.recent ?? []);
+    if (p === "/pulls") return send(200, url.searchParams.get("state") === "open" ? st.open ?? (st.pr ? [st.pr] : []) : st.recent ?? []);
     if ((m = p.match(/^\/issues\/(\d+)\/comments$/))) return send(200, (st.comments ?? {})[m[1]] ?? []);
     if ((m = p.match(/^\/pulls\/\d+\/reviews$/))) return send(200, st.reviews ?? []);
     if (p === "/actions/runs") return send(200, { workflow_runs: [{ created_at: st.pushed }] });
