@@ -70,9 +70,16 @@ for (const pr of nums) {
   // Every judged PR on this head must be as it was judged (head, base ref and commit, open and ready). If one moved,
   // the verdict is not posted, and pending replaces any earlier success on the commit until the next run judges it.
   let moved = 0;
-  for (const [n, j] of judged) if (!same(await api("GET", `/repos/${owner}/${repo}/pulls/${n}`), j)) moved = n;
+  const heads = new Set([r.sha]);
+  for (const [n, j] of judged) {
+    const now = await api("GET", `/repos/${owner}/${repo}/pulls/${n}`);
+    if (same(now, j)) continue;
+    moved = n;
+    // a PR that moved to another head: that head may carry an older success too
+    if (now?.head?.sha && (now.state ?? "open") === "open" && !now.draft) heads.add(now.head.sha);
+  }
   if (moved) {
-    if (await post(r.sha, "pending", `#${moved} changed while being judged; re-judging`, r.target_url)) console.log(`#${pr}: #${moved} changed while being judged; posted review=pending`);
+    for (const h of heads) if (await post(h, "pending", `#${moved} changed while being judged; re-judging`, r.target_url)) console.log(`#${pr}: #${moved} changed while being judged; posted review=pending on ${h.slice(0, 7)}`);
     continue;
   }
   if (await post(r.sha, r.state, from === pr ? r.description : `#${from}: ${r.description}`, r.target_url)) console.log(`#${pr}: posted review=${r.state}`);
