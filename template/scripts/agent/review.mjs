@@ -6,6 +6,7 @@
 // api(method, path, body?) resolves parsed JSON, null for a 404, and throws on any other failure. Paths are from the
 // API root ("/repos/o/r/pulls/7"); GraphQL is api("POST", "/graphql", { query, variables }).
 // null: not an engine-managed repository, a draft, or the base branch's pack leaves review to gate (review_status off).
+// postReviews (below) is the posting loop both the launcher and scripts/agent/verdict-recheck run.
 
 const b64 = (f) => (f?.content ? JSON.parse(Buffer.from(f.content, "base64").toString("utf8")) : null);
 const glob = (g) => new RegExp("^" + g.replace(/[.+^$()|[\]\\]/g, "\\$&").replace(/\{([^}]+)\}/g, (_, a) => `(${a.split(",").join("|")})`)
@@ -164,6 +165,74 @@ export async function reviewStatus({ api, owner, repo, pr: n, files, now = Date.
     if (mins < 20) return { state: "pending", description: `awaiting a Codex verdict for ${short(head)} (${mins} min)` };
     return { state: "failure", description: `no Codex verdict for ${short(head)} after ${mins} min; request a review` };
   }
+}
+
+// Judge and post `review` for pull requests (the launcher's tick, verdict-recheck): every open PR sharing a head is
+// judged and the worst verdict is posted once per head; a PR that moves while being judged (head, base, state, draft)
+// gets `pending` instead, on its old and new heads, so an earlier success never stands for an unjudged state.
+//   postReviews({ api, owner, repo, prs | all: true, dryRun, force, serverUrl, log }) -> { posted, failed }
+export async function postReviews({ api, owner, repo, prs = [], all = false, dryRun = false, force = false, serverUrl = "https://github.com", log = console.log }) {
+  const listOpen = async () => { const out = []; for (let p = 1; ; p++) { const b = (await api("GET", `/repos/${owner}/${repo}/pulls?state=open&per_page=100&page=${p}`)) ?? []; out.push(...b); if (b.length < 100) return out; } };
+  const open = (await listOpen()).filter((p) => !p.draft);
+  const nums = all ? open.map((p) => p.number) : prs;
+  // A commit status belongs to the commit, not the pull request: every open PR whose head is that commit is judged,
+  // and the worst result is posted, so one PR's success never satisfies a sibling's failed review.
+  const rank = { failure: 2, pending: 1, success: 0 }, done = new Set();
+  let failed = 0, posted = 0;
+  const post = async (sha, state, description, target_url) => {
+    try { await api("POST", `/repos/${owner}/${repo}/statuses/${sha}`, { state, context: "review", description: description.slice(0, 140), target_url }); posted++; return true; }
+    catch (e) { failed++; log(`could not post review on ${sha.slice(0, 7)} (${e.message}); GH_TOKEN must be the org App's token with statuses: write`); return false; }
+  };
+  const snap = (p) => ({ sha: p?.head?.sha, base: p?.base?.ref ?? null, base_sha: p?.base?.sha ?? null });
+  const same = (now, j) => now?.head?.sha === j.sha && (now?.base?.ref ?? null) === j.base && (now?.base?.sha ?? null) === j.base_sha && (now?.state ?? "open") === "open" && !now?.draft;
+  for (const pr of nums) {
+    const before = await api("GET", `/repos/${owner}/${repo}/pulls/${pr}`);
+    const first = await reviewStatus({ api, owner, repo, pr, force, serverUrl });
+    if (!first) {
+      // Nothing to judge (draft, closed, not engine-managed, or review off on its base) - unless it moved meanwhile:
+      // then a success already on the commit may not stand for its new base, so it goes pending until the next run.
+      const now = await api("GET", `/repos/${owner}/${repo}/pulls/${pr}`);
+      if (before?.head?.sha && now?.head?.sha === before.head.sha && !same(now, snap(before)) && (now?.state ?? "open") === "open" && !now?.draft && !dryRun && !force) {
+        if (await post(before.head.sha, "pending", `#${pr} changed while being judged; re-judging`, now.html_url)) log(`#${pr}: changed while being judged; posted review=pending`);
+      } else log(`#${pr}: nothing to post (draft, closed, not engine-managed, or the pack leaves review to gate)`);
+      continue;
+    }
+    if (done.has(first.sha)) continue;
+    done.add(first.sha);
+    let r = first, from = pr;
+    const judged = new Map([[pr, first]]);
+    const judge = async (list) => {
+      for (const s of list.filter((p) => !p.draft && p.head?.sha === first.sha && !judged.has(p.number))) {
+        const other = await reviewStatus({ api, owner, repo, pr: s.number, force, serverUrl });
+        // A sibling judged null (review off on its base) is still re-read: a retarget could make it need review.
+        judged.set(s.number, other ?? snap(s));
+        if (other && rank[other.state] > rank[r.state]) { r = other; from = s.number; }
+      }
+    };
+    await judge(open);
+    await judge(await listOpen()); // re-listed right before posting: a PR opened on this head meanwhile is judged too
+    const tag = from === pr ? "" : ` (from #${from}, which shares this head)`;
+    for (const d of r.details ?? []) log(`#${from} ${r.sha.slice(0, 7)}: ${d}`);
+    log(`#${pr} ${r.sha.slice(0, 7)}: review=${r.state} (${r.description})${tag}`);
+    if (dryRun || force) { log(`#${pr}: not posted (${force ? "--force only evaluates" : "dry run"})`); continue; }
+    // Every judged PR on this head must be as it was judged (head, base ref and commit, open and ready). If one moved,
+    // the verdict is not posted, and pending replaces any earlier success on the commit until the next run judges it.
+    let moved = 0;
+    const heads = new Set([r.sha]);
+    for (const [n, j] of judged) {
+      const now = await api("GET", `/repos/${owner}/${repo}/pulls/${n}`);
+      if (same(now, j)) continue;
+      moved = n;
+      // a PR that moved to another head: that head may carry an older success too
+      if (now?.head?.sha && (now.state ?? "open") === "open" && !now.draft) heads.add(now.head.sha);
+    }
+    if (moved) {
+      for (const h of heads) if (await post(h, "pending", `#${moved} changed while being judged; re-judging`, r.target_url)) log(`#${pr}: #${moved} changed while being judged; posted review=pending on ${h.slice(0, 7)}`);
+      continue;
+    }
+    if (await post(r.sha, r.state, from === pr ? r.description : `#${from}: ${r.description}`, r.target_url)) log(`#${pr}: posted review=${r.state}`);
+  }
+  return { posted, failed };
 }
 
 // A GitHub REST caller for scripts: token from the environment, 404 as null, any other failure thrown.

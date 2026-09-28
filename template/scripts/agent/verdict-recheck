@@ -10,7 +10,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { restApi, reviewStatus } from "./review.mjs";
+import { postReviews, restApi } from "./review.mjs";
 
 const { values: o, positionals } = parseArgs({ allowPositionals: true, options: { all: { type: "boolean" }, "dry-run": { type: "boolean" }, force: { type: "boolean" }, help: { type: "boolean" } } });
 if (o.help || (!o.all && !positionals.every((p) => /^\d+$/.test(p))) || (!o.all && !positionals.length)) {
@@ -24,64 +24,5 @@ if (!full) { console.error("verdict-recheck: no GITHUB_REPOSITORY and no origin 
 let token = env.GH_TOKEN || env.GITHUB_TOKEN;
 try { token ||= sh("gh", ["auth", "token"]); } catch {}
 const [owner, repo] = full.split("/"), api = restApi({ token });
-const listOpen = async () => { const out = []; for (let p = 1; ; p++) { const b = (await api("GET", `/repos/${owner}/${repo}/pulls?state=open&per_page=100&page=${p}`)) ?? []; out.push(...b); if (b.length < 100) return out; } };
-const open = (await listOpen()).filter((p) => !p.draft);
-const nums = o.all ? open.map((p) => p.number) : positionals.map(Number);
-// A commit status belongs to the commit, not the pull request: every open PR whose head is that commit is judged,
-// and the worst result is posted, so one PR's success never satisfies a sibling's failed review.
-const rank = { failure: 2, pending: 1, success: 0 }, done = new Set();
-let failed = 0;
-const post = async (sha, state, description, target_url) => {
-  try { await api("POST", `/repos/${owner}/${repo}/statuses/${sha}`, { state, context: "review", description: description.slice(0, 140), target_url }); return true; }
-  catch (e) { failed++; console.error(`could not post review on ${sha.slice(0, 7)} (${e.message}); GH_TOKEN must be the org App's token with statuses: write`); return false; }
-};
-const snap = (p) => ({ sha: p?.head?.sha, base: p?.base?.ref ?? null, base_sha: p?.base?.sha ?? null });
-const same = (now, j) => now?.head?.sha === j.sha && (now?.base?.ref ?? null) === j.base && (now?.base?.sha ?? null) === j.base_sha && (now?.state ?? "open") === "open" && !now?.draft;
-for (const pr of nums) {
-  const before = await api("GET", `/repos/${owner}/${repo}/pulls/${pr}`);
-  const first = await reviewStatus({ api, owner, repo, pr, force: o.force, serverUrl: env.GITHUB_SERVER_URL || "https://github.com" });
-  if (!first) {
-    // Nothing to judge (draft, closed, not engine-managed, or review off on its base) - unless it moved meanwhile:
-    // then a success already on the commit may not stand for its new base, so it goes pending until the next run.
-    const now = await api("GET", `/repos/${owner}/${repo}/pulls/${pr}`);
-    if (before?.head?.sha && now?.head?.sha === before.head.sha && !same(now, snap(before)) && (now?.state ?? "open") === "open" && !now?.draft && !o["dry-run"] && !o.force) {
-      if (await post(before.head.sha, "pending", `#${pr} changed while being judged; re-judging`, now.html_url)) console.log(`#${pr}: changed while being judged; posted review=pending`);
-    } else console.log(`#${pr}: nothing to post (draft, closed, not engine-managed, or the pack leaves review to gate)`);
-    continue;
-  }
-  if (done.has(first.sha)) continue;
-  done.add(first.sha);
-  let r = first, from = pr;
-  const judged = new Map([[pr, first]]);
-  const judge = async (list) => {
-    for (const s of list.filter((p) => !p.draft && p.head?.sha === first.sha && !judged.has(p.number))) {
-      const other = await reviewStatus({ api, owner, repo, pr: s.number, force: o.force, serverUrl: env.GITHUB_SERVER_URL || "https://github.com" });
-      // A sibling judged null (review off on its base) is still re-read: a retarget could make it need review.
-      judged.set(s.number, other ?? snap(s));
-      if (other && rank[other.state] > rank[r.state]) { r = other; from = s.number; }
-    }
-  };
-  await judge(open);
-  await judge(await listOpen()); // re-listed right before posting: a PR opened on this head meanwhile is judged too
-  const tag = from === pr ? "" : ` (from #${from}, which shares this head)`;
-  for (const d of r.details ?? []) console.log(`#${from} ${r.sha.slice(0, 7)}: ${d}`);
-  console.log(`#${pr} ${r.sha.slice(0, 7)}: review=${r.state} (${r.description})${tag}`);
-  if (o["dry-run"] || o.force) { console.log(`#${pr}: not posted (${o.force ? "--force only evaluates" : "dry run"})`); continue; }
-  // Every judged PR on this head must be as it was judged (head, base ref and commit, open and ready). If one moved,
-  // the verdict is not posted, and pending replaces any earlier success on the commit until the next run judges it.
-  let moved = 0;
-  const heads = new Set([r.sha]);
-  for (const [n, j] of judged) {
-    const now = await api("GET", `/repos/${owner}/${repo}/pulls/${n}`);
-    if (same(now, j)) continue;
-    moved = n;
-    // a PR that moved to another head: that head may carry an older success too
-    if (now?.head?.sha && (now.state ?? "open") === "open" && !now.draft) heads.add(now.head.sha);
-  }
-  if (moved) {
-    for (const h of heads) if (await post(h, "pending", `#${moved} changed while being judged; re-judging`, r.target_url)) console.log(`#${pr}: #${moved} changed while being judged; posted review=pending on ${h.slice(0, 7)}`);
-    continue;
-  }
-  if (await post(r.sha, r.state, from === pr ? r.description : `#${from}: ${r.description}`, r.target_url)) console.log(`#${pr}: posted review=${r.state}`);
-}
-process.exit(failed ? 1 : 0);
+const r = await postReviews({ api, owner, repo, prs: positionals.map(Number), all: o.all, dryRun: o["dry-run"], force: o.force, serverUrl: env.GITHUB_SERVER_URL || "https://github.com" });
+process.exit(r.failed ? 1 : 0);
