@@ -16,6 +16,9 @@ const server = createServer((req, res) => {
     // A private repository: the job token reads only what the workflow's permissions block grants.
     const scope = p.startsWith("/actions/") ? "actions" : /^\/commits\/[^/]+\/check-runs$/.test(p) ? "checks" : p.startsWith("/pulls") || p === "/graphql" ? "pull-requests" : p.startsWith("/issues") ? "issues" : null;
     if (st.perms && scope && !st.perms.includes(scope)) return send(403, { message: "Resource not accessible by integration" });
+    // graphqlFail: the thread query errors; threadsLater: threads after the first query (opened mid-run)
+    if (p === "/graphql" && st.graphqlFail) return send(502, { message: "Bad Gateway" });
+    if (p === "/graphql" && st.threadsLater) { st.gq = (st.gq ?? 0) + 1; writeFileSync(stateFile, JSON.stringify(st)); return send(200, { data: { repository: { pullRequest: { reviewThreads: { nodes: st.gq > 1 ? st.threadsLater : st.threads ?? [] } } } } }); }
     if (p === "/graphql") return send(200, { data: { repository: { pullRequest: { reviewThreads: { nodes: st.threads ?? [] } } } } });
     const save = () => writeFileSync(stateFile, JSON.stringify(st));
     if (p === "") return send(200, st.info ?? { default_branch: "main" });

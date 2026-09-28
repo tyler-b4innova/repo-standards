@@ -185,8 +185,23 @@ export async function postReviews({ api, owner, repo, prs = [], all = false, dry
   };
   const snap = (p) => ({ sha: p?.head?.sha, base: p?.base?.ref ?? null, base_sha: p?.base?.sha ?? null });
   const same = (now, j) => now?.head?.sha === j.sha && (now?.base?.ref ?? null) === j.base && (now?.base?.sha ?? null) === j.base_sha && (now?.state ?? "open") === "open" && !now?.draft;
-  for (const pr of nums) {
+  // One PR's failure never stops the rest: an evaluation that errors posts pending on the head it was reading (an
+  // earlier success must not outlive what could not be judged). Callers run one pass at a time (the launcher's tick).
+  const each = async (pr) => {
+    let before;
+    try { await one(pr, (b) => (before = b)); }
+    catch (e) {
+      failed++;
+      log(`#${pr}: review could not be evaluated (${e.message})`);
+      if (before?.head?.sha && !dryRun && !force) await post(before.head.sha, "pending", `#${pr}: review could not be evaluated; retrying`, before.html_url);
+    }
+  };
+  for (const pr of nums) await each(pr);
+  return { posted, failed };
+
+  async function one(pr, seen) {
     const before = await api("GET", `/repos/${owner}/${repo}/pulls/${pr}`);
+    seen(before);
     const first = await reviewStatus({ api, owner, repo, pr, force, serverUrl });
     if (!first) {
       // Its head's other open PRs are judged in their own right (one may target a base where review is on).
@@ -198,9 +213,9 @@ export async function postReviews({ api, owner, repo, prs = [], all = false, dry
         for (const h of new Set([before.head.sha, now.head.sha]))
           if (await post(h, "pending", `#${pr} changed while being judged; re-judging`, now.html_url)) log(`#${pr}: changed while being judged; posted review=pending on ${h.slice(0, 7)}`);
       } else log(`#${pr}: nothing to post (draft, closed, not engine-managed, or the pack leaves review to gate)`);
-      continue;
+      return;
     }
-    if (done.has(first.sha)) continue;
+    if (done.has(first.sha)) return;
     done.add(first.sha);
     let r = first, from = pr;
     const judged = new Map([[pr, first]]);
@@ -217,7 +232,7 @@ export async function postReviews({ api, owner, repo, prs = [], all = false, dry
     const tag = from === pr ? "" : ` (from #${from}, which shares this head)`;
     for (const d of r.details ?? []) log(`#${from} ${r.sha.slice(0, 7)}: ${d}`);
     log(`#${pr} ${r.sha.slice(0, 7)}: review=${r.state} (${r.description})${tag}`);
-    if (dryRun || force) { log(`#${pr}: not posted (${force ? "--force only evaluates" : "dry run"})`); continue; }
+    if (dryRun || force) { log(`#${pr}: not posted (${force ? "--force only evaluates" : "dry run"})`); return; }
     // Every judged PR on this head must be as it was judged (head, base ref and commit, open and ready). If one moved,
     // the verdict is not posted, and pending replaces any earlier success on the commit until the next run judges it.
     let moved = 0;
@@ -231,11 +246,15 @@ export async function postReviews({ api, owner, repo, prs = [], all = false, dry
     }
     if (moved) {
       for (const h of heads) if (await post(h, "pending", `#${moved} changed while being judged; re-judging`, r.target_url)) log(`#${pr}: #${moved} changed while being judged; posted review=pending on ${h.slice(0, 7)}`);
-      continue;
+      return;
+    }
+    // A success is judged once more right before it is posted: evidence deleted or a thread opened meanwhile wins.
+    if (r.state === "success") {
+      const again = await reviewStatus({ api, owner, repo, pr: from, force, serverUrl });
+      if (!again || again.sha !== r.sha || again.state !== "success") { r = again && again.sha === r.sha ? again : { ...r, state: "pending", description: `#${from} changed while being judged; re-judging` }; }
     }
     if (await post(r.sha, r.state, from === pr ? r.description : `#${from}: ${r.description}`, r.target_url)) log(`#${pr}: posted review=${r.state}`);
   }
-  return { posted, failed };
 }
 
 // A GitHub REST caller for scripts: token from the environment, 404 as null, any other failure thrown.
