@@ -117,10 +117,13 @@ put "{$base,threads:[],files:{'scripts/agent/pack.json@main':$PACKFILE,'scripts/
 put "{$base,threads:[],files:{'scripts/agent/pack.json':$PACKFILE}}"
 node -e 'const f=process.argv[1],s=JSON.parse(require("fs").readFileSync(f,"utf8"));s.retargetAfter=1;require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json"
 v8=$(vr 7); s8=$(node -p 'JSON.stringify(require(process.argv[1]).statuses??[])' "$T/state.json")
+put "{$base,threads:[],files:{'scripts/agent/pack.json':$PACKFILE}}"
+node -e 'const f=process.argv[1],s=JSON.parse(require("fs").readFileSync(f,"utf8"));s.pr.base.sha="e".repeat(40);s.retargetAfter=1;s.advance=true;require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json"
+v9=$(vr 7); s9=$(node -p 'JSON.stringify(require(process.argv[1]).statuses??[])' "$T/state.json")
 # two open PRs on one head share its commit status: the worse verdict (the sibling's missing evidence) is posted
 put "{$base,threads:[],files:{'scripts/agent/pack.json':$PACKFILE},open:[{number:7,head:{sha:'$HEAD1'}},{number:8,head:{sha:'$HEAD1'}}],prs:{8:{number:8,state:'open',draft:false,html_url:'u8',user:{login:'alice'},head:{sha:'$HEAD1',ref:'feat'},base:{ref:'other'}}},prFiles:{8:[{filename:'src/app.css'}]}}"; v7=$(vr 7); s7=$(node -p 'JSON.stringify((require(process.argv[1]).statuses??[]).map(x=>x.state+":"+x.description))' "$T/state.json")
 put "{$base,threads:[],files:{'scripts/agent/pack.json':$PACKFILE}}"; v5=$(vr 7 --dry-run); s5=$(node -p 'JSON.stringify(require(process.argv[1]).statuses??[])' "$T/state.json")
 if [ $y1 -eq 0 ] && [ "$s1" = '["review=success@'"${HEAD1:0:7}"'"]' ] && has "failure:1 unresolved Codex thread" "$s2" && [ "$s3" = "[]" ] && has "nothing to post" "$v3" \
-  && [ $y4 -eq 1 ] && has "must be the org App's token" "$v4" && [ "$s5" = "[]" ] && has "dry run" "$v5" && [ "$s6" = '["review=success"]' ] && has "failure:#8: UI paths changed" "$s7" && [ "$s8" = "[]" ] && has "changed while evaluating" "$v8"
-then ok review-status-posted; else fail review-status-posted "posted=$s1 | red=$s2 | off=$s3 | forbidden=$y4 | dry=$s5 | old-head=$s6 | shared=$s7 | retarget=$s8 :: $v1 | $v2 | $v3 | $v4 | $v5 | $v6"; fi
+  && [ $y4 -eq 1 ] && has "must be the org App's token" "$v4" && [ "$s5" = "[]" ] && has "dry run" "$v5" && [ "$s6" = '["review=success"]' ] && has "failure:#8: UI paths changed" "$s7" && [ "$s8" = "[]" ] && has "changed while evaluating" "$v8" && [ "$s9" = "[]" ]
+then ok review-status-posted; else fail review-status-posted "posted=$s1 | red=$s2 | off=$s3 | forbidden=$y4 | dry=$s5 | old-head=$s6 | shared=$s7 | retarget=$s8 | base-moved=$s9 :: $v1 | $v2 | $v3 | $v4 | $v5 | $v6"; fi
 done_cases
