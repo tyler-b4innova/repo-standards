@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# The Codex-verdict step of gate (Tyler's rule: every bot finding is answered before merge), against a stand-in.
+# The review rule (scripts/agent/review.mjs: Codex verdict, evidence, sign-off) through gate and verdict-recheck, and
+# the gate workflow's triggers and plan, against a stand-in.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 . test/lib.sh
@@ -22,9 +23,9 @@ st() {
     const when = new Date(Date.now() - Number(ago) * 60000).toISOString();
     console.log(JSON.stringify({ pr: { number: 7, draft: draft === "true", user: { login: user }, head: { sha: process.argv[9], ref }, created_at: when },
       comments: { 7: sha === "none" ? [] : [sum(sha)], 3: recent === "yes" ? [sum(process.argv[10])] : [] },
-      recent: [{ number: 7 }, { number: 3 }], threads: JSON.parse(threads || "[]"), pushed: when, timeline: JSON.parse(process.env.TIMELINE || "[]"), perms: (process.env.PERMS ?? process.env.WF_PERMS).split(" "), reviews: JSON.parse(process.env.REVIEWS || "[]") }));
+      recent: [{ number: 7 }, { number: 3 }], threads: JSON.parse(threads || "[]"), pushed: when, timeline: JSON.parse(process.env.TIMELINE || "[]"), noRuns: !!process.env.NORUNS, perms: (process.env.PERMS ?? process.env.WF_PERMS).split(" "), reviews: JSON.parse(process.env.REVIEWS || "[]") }));
   ' "$@" > "$T/state.json"; }
-gate() { (cd "$R" && GITHUB_API_URL="http://127.0.0.1:$(cat "$T/port")" GITHUB_GRAPHQL_URL="http://127.0.0.1:$(cat "$T/port")/graphql" GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_EVENT_PATH="$T/event.json" node scripts/agent/gate.mjs codex) 2>&1; }
+gate() { (cd "$R" && GITHUB_API_URL="http://127.0.0.1:$(cat "$T/port")" GITHUB_GRAPHQL_URL="http://127.0.0.1:$(cat "$T/port")/graphql" GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_EVENT_PATH="$T/event.json" node scripts/agent/gate.mjs review) 2>&1; }
 has() { case "$2" in *"$1"*) return 0 ;; esac; return 1; }
 OPEN='[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector"},"url":"https://github.com/acme/demo/pull/7#r1"}]}}]'
 DONE='[{"isResolved":true,"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector"},"url":"u"}]}}]'
@@ -41,83 +42,56 @@ TIMELINE=$BASE SUMMARY_AT=$(iso 2) st false alice feat "$HEAD1" '✅ **Completed
 TIMELINE=$BASE REVIEWS='[{"user":{"login":"chatgpt-codex-connector[bot]","type":"Bot"},"commit_id":"'$HEAD1'","submitted_at":"'$(iso 2)'"}]' st false alice feat "$OLD" '✅ **Completed** now' 5 "$DONE" yes "$HEAD1" "$OLD"; chk 1 "awaiting a Codex verdict for ccccccc"
 TIMELINE=$BASE REVIEWS='[{"user":{"login":"chatgpt-codex-connector[bot]","type":"Bot"},"commit_id":"'$HEAD1'","submitted_at":"'$(iso 0)'"}]' st false alice feat "$OLD" '✅ **Completed** now' 5 "$DONE" yes "$HEAD1" "$OLD"; chk 0 "verdict on ccccccc, no open findings"
 st false alice feat "$HEAD1" '🔄 **Running** since' 5 "[]" yes "$HEAD1" "$OLD"; chk 1 "awaiting a Codex verdict"
-st false alice feat "$OLD" '✅ **Completed** now' 30 "[]" yes "$HEAD1" "$OLD"; chk 1 "no Codex verdict for $HEAD1"
-st true alice feat none x 30 "[]" yes "$HEAD1" "$OLD"; chk 0 "draft, not evaluated"
+st false alice feat "$OLD" '✅ **Completed** now' 30 "[]" yes "$HEAD1" "$OLD"; chk 1 "no Codex verdict for ccccccc after"
+# a PR with no pull_request gate run (older than std-gate): the head commit and PR dates still start the 20 minutes
+NORUNS=1 st false alice feat "$OLD" '✅ **Completed** now' 30 "[]" yes "$HEAD1" "$OLD"; chk 1 "no Codex verdict for ccccccc after"
+st true alice feat none x 30 "[]" yes "$HEAD1" "$OLD"; chk 0 "draft or closed; not evaluated"
 st false alice feat none x 30 "[]" no "$HEAD1" "$OLD"; chk 0 "no Codex reviews on this repo"
-st false 'example-sync[bot]' standards/v1.2.3 none x 30 "[]" yes "$HEAD1" "$OLD"; chk 0 "pack-sync fallback PR"
+# a pack-sync fallback PR is reviewed like any other (anyone with write access can push to its branch)
+st false 'example-sync[bot]' standards/v1.2.3 none x 30 "[]" yes "$HEAD1" "$OLD"; chk 1 "no Codex verdict for ccccccc"
 # without actions: read (a private repo) the run-list read fails: the stand-in grants only what std-gate.yml lists
-PERMS="contents pull-requests issues" st false alice feat "$HEAD1" '✅ **Completed** now' 5 "$DONE" yes "$HEAD1" "$HEAD1"; chk 1 "/actions/runs?head_sha=$HEAD1&event=pull_request&per_page=100: 403"
+PERMS="contents pull-requests issues" st false alice feat "$HEAD1" '✅ **Completed** now' 5 "$DONE" yes "$HEAD1" "$HEAD1"; chk 1 "actions/runs?head_sha=$HEAD1&event=pull_request&per_page=100: 403"
 if [ -z "$r" ]; then ok codex-verdict-required; else fail codex-verdict-required "$r"; fi
 
-# std-gate-rerun, run against a stand-in gh: only a person's approval or dismissal, or a base change, reaches its step
-# (comments, review comments and bots start nothing); an approval re-runs a finished gate run once and never waits
-# for one in flight; a lost race counts as done; a base change dispatches std-gate for the PR's fresh merge ref.
-WF="$R/.github/workflows/std-gate-rerun.yml" GWF="$R/.github/workflows/std-gate.yml"
-node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");require("fs").writeFileSync(process.argv[2],y.match(/- run: \|\n((?: {10}.*\n?)+)/)[1].replace(/^ {10}/gm,""))' "$WF" "$T/rerun.sh"
-rr() { # rr <event> <run-status> [race|read]: prints "<exit> <reruns> <sleeps> <dispatches>"
-  local extra=""; [ "${3:-}" = race ] && extra=',"raceOnce":true'; [ "${3:-}" = read ] && extra=',"evidenceStep":"completed"'
-  printf '{"sha":"%s","run":{"id":42,"status":"%s","run_started_at":"2026-01-01T00:00:00Z"}%s}\n' "$HEAD1" "$2" "$extra" > "$T/gh.json"; : > "$T/gh.log"
-  EVENT=$1 HEAD_REF=feat HEAD_REPO=${HEAD_REPO:-acme/demo} PATH="$PWD/test/stubs/fake-bin:$PATH" FAKE_GH_STATE="$T/gh.json" FAKE_GH_LOG="$T/gh.log" GITHUB_REPOSITORY=acme/demo PR=7 bash "$T/rerun.sh" > "$T/rr.out" 2>&1; local x=$?
-  echo "$x $(node -e 'const s=require(process.argv[1]);console.log((s.reruns??0)+" "+(s.sleeps??0)+" "+(s.dispatches??0))' "$T/gh.json")"; }
-got="$(rr pull_request_review completed) | $(rr pull_request_review in_progress) | $(rr pull_request_review completed race) | $(rr pull_request completed)"
-disp=$(grep DISPATCH "$T/gh.log")
-late="$(rr pull_request_review in_progress read)" fork="$(HEAD_REPO=someone/demo rr pull_request completed)"; forkout=$(cat "$T/rr.out")
-triggers=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");console.log(y.slice(y.indexOf("on:"),y.indexOf("permissions:")).match(/^  [a-z_]+:/gm).map(s=>s.trim()).join(" "))' "$WF")
-gtrig=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");console.log(y.slice(y.indexOf("on:"),y.indexOf("permissions:")).replace(/\s+/g," "))' "$GWF")
-cond=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");const i=y.match(/if: >-\n((?: {6}.*\n)+)/)[1];console.log(/sender\.type != .Bot./.test(i)&&/review\.state == .approved./.test(i)&&/changes\.base/.test(i))' "$WF")
-# gate-rerun-never-cancelled: no concurrency group, so a burst of events leaves no cancelled check runs (clean PRs read UNSTABLE)
-# an approval that lands after the in-flight run read approvals waits for it and re-runs; a fork's base change asks for a push
-if ! grep -qE '^(concurrency|  cancel-in-progress)' "$WF" && [ "$got" = "0 1 0 0 | 0 0 0 0 | 0 0 0 0 | 0 0 0 1" ] && grep -q "\-f pr=7" <<<"$disp" && grep -q -- "--ref feat" <<<"$disp" \
-  && [ "$late" = "0 1 1 0" ] && [ "$fork" = "0 0 0 0" ] && has "push to re-gate" "$forkout"
-then ok gate-rerun-never-cancelled; else fail gate-rerun-never-cancelled "got=$got late=$late fork=$fork disp=$disp $(cat "$T/rr.out")"; fi
-# rerun-ignores-noise-senders: no comment triggers at all; reviews only from people, and only approvals or dismissals
-if [ "$triggers" = "pull_request_review: pull_request:" ] && [ "$cond" = true ]; then ok rerun-ignores-noise-senders; else fail rerun-ignores-noise-senders "triggers=$triggers cond=$cond"; fi
-# rerun-never-polls: an approval during a gate run that has not read approvals yet exits at once without sleeping;
-# only the late-approval case waits, bounded by the gate's own timeout
-if [ "$(echo "$got" | cut -d'|' -f2 | xargs)" = "0 0 0 0" ] && grep -q "timeout-minutes: 17" "$WF" && [ "$(grep -c sleep "$T/rerun.sh")" = 1 ]
-then ok rerun-never-polls; else fail rerun-never-polls "got=$got"; fi
-# gate-ignores-body-edits: std-gate has no edited trigger; only a base change (changes.base) re-gates, by dispatch
-if ! grep -q edited <<<"$gtrig" && grep -q "workflow_dispatch" <<<"$gtrig" && [ "$cond" = true ] && grep -q "refs/pull/{0}/merge" "$GWF"
-then ok gate-ignores-body-edits; else fail gate-ignores-body-edits "$gtrig"; fi
-# gate-no-push-regate: pushes to main or staging start no gate run; standards/v* does
-if grep -q 'branches: \["standards/v\*"\]' "$GWF" && ! grep -qE 'branches: \[.*(main|staging)' "$GWF"; then ok gate-no-push-regate; else fail gate-no-push-regate "$gtrig"; fi
 
-# ---- gate plan: full, cheap or reuse, against the stand-in
+GWF="$R/.github/workflows/std-gate.yml"
+gtrig=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");console.log(y.slice(y.indexOf("\non:"),y.indexOf("permissions:")).replace(/\s+/g," "))' "$GWF")
+# gate-code-only: only code changes start gate (pull_request commits, the merge queue, a launcher dispatch); no
+# comment, review, edit or push trigger, and no re-run wrapper; with the org App posting `review`, gate's review step
+# evaluates nothing
+[ ! -e "$R/.github/workflows/std-gate-rerun.yml" ] || r="wrapper shipped"
+for t in issue_comment pull_request_review pull_request_review_comment edited push:; do ! grep -q "$t" <<<"$gtrig" || r="$r trigger $t"; done
+grep -q "types: \[opened, synchronize, reopened, ready_for_review\]" <<<"$gtrig" && grep -q merge_group <<<"$gtrig" && grep -q workflow_dispatch <<<"$gtrig" || r="$r triggers: $gtrig"
+cp "$R/scripts/agent/pack.json" "$T/pack.bak"; node -e 'const f=process.argv[1],p=require(f);p.review_status=true;require("fs").writeFileSync(f,JSON.stringify(p))' "$R/scripts/agent/pack.json"
+st false alice feat "$OLD" '✅ **Completed** now' 30 "$OPEN" yes "$HEAD1" "$OLD"; out=$(gate); x=$?
+# the switch is read from the base branch: a pull request that turns it on in its own checkout is still evaluated
 put() { node -e 'const b={login:"chatgpt-codex-connector[bot]",type:"Bot"};require("fs").writeFileSync(process.argv[1],JSON.stringify(eval("("+process.argv[2]+")")))' "$T/state.json" "$1"; }
-API="http://127.0.0.1:$(cat "$T/port")"
-pl() { # pl <event-name> <event-json> [attempt] [ref]: prints the mode
-  echo "$2" > "$T/pev.json"
-  (cd "$R" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_EVENT_NAME=$1 GITHUB_EVENT_PATH="$T/pev.json" GITHUB_RUN_ID=900 GITHUB_RUN_ATTEMPT=${3:-1} GITHUB_REF_NAME=${4:-feat} GITHUB_OUTPUT= \
-    node scripts/agent/gate.mjs plan 2>&1) | sed -n 's/^mode=//p'; }
-OKS='["standards","secrets","install","typecheck","build","e2e","repo checks"].map((name)=>({name,conclusion:"success"}))'
-SKIPPED='["standards","secrets"].map((name)=>({name,conclusion:"success"})).concat(["install","typecheck","build","e2e","repo checks"].map((name)=>({name,conclusion:"skipped"})))'
-PRE='{"pull_request":{"number":7}}'
-put "{pr:{number:7,draft:false,head:{sha:\"$HEAD1\",ref:\"feat\"},base:{ref:\"main\"}},attempts:{1:$OKS}}"
-r1=$(pl pull_request "$PRE" 1) r2=$(pl pull_request "$PRE" 2)
-put "{pr:{number:7,draft:false,head:{sha:\"$HEAD1\",ref:\"feat\"},base:{ref:\"main\"}},attempts:{1:$SKIPPED}}"; r3=$(pl pull_request "$PRE" 2)
-put "{pr:{number:7,draft:false,head:{sha:\"$HEAD1\",ref:\"feat\"},base:{ref:\"main\"}},attempts:{1:$OKS,2:$SKIPPED}}"; r4=$(pl pull_request "$PRE" 3)
-put "{pr:{number:7,draft:false,head:{sha:\"$HEAD1\",ref:\"feat\"},base:{ref:\"main\"}},attempts:{1:$OKS.map((s)=>s.name==='standards'?{...s,conclusion:'failure'}:s)}}"; r5=$(pl pull_request "$PRE" 2)
-# rerun-reuses-build: a re-run reuses a head's passed build (also through a reuse attempt); a cheap or failed-standards attempt does not qualify
-if [ "$r1 $r2 $r3 $r4 $r5" = "full reuse full reuse full" ] && ! grep -A3 "name: codex review" "$GWF" | grep -q "mode" && ! grep -A3 "name: evidence" "$GWF" | grep -q "mode"
-then ok rerun-reuses-build; else fail rerun-reuses-build "first/second/after-cheap/after-reuse/standards-failed: $r1 $r2 $r3 $r4 $r5"; fi
-put "{pr:{number:7,draft:true,head:{sha:\"$HEAD1\",ref:\"feat\"},base:{ref:\"main\"}}}"; d1=$(pl pull_request "$PRE" 1)
-put "{pr:{number:7,draft:false,head:{sha:\"$HEAD1\",ref:\"feat\"},base:{ref:\"main\"}}}"; d2=$(pl pull_request "$PRE" 1)
-if [ "$d1 $d2" = "cheap full" ] && grep -q "ready_for_review" "$GWF"; then ok draft-cheap-ready-full; else fail draft-cheap-ready-full "draft=$d1 ready=$d2"; fi
-LAND='{"sender":{"login":"example-sync[bot]"},"repository":{"default_branch":"main"}}'
-c1=$(pl push "$LAND" 1 standards/v1.2.3)
-cp "$R/scripts/agent/pack.json" "$T/pack.bak"; node -e 'const f=process.argv[1],p=require(f);p.gate_canary=["demo"];require("fs").writeFileSync(f,JSON.stringify(p))' "$R/scripts/agent/pack.json"
-c2=$(pl push "$LAND" 1 standards/v1.2.3); cp "$T/pack.bak" "$R/scripts/agent/pack.json"
-# pack-landing-cheap-except-canary: pack-only landings run cheap except on the profile canary (the evidence step still
-# refuses a landing that changes anything outside the pack's paths)
-if [ "$c1 $c2" = "cheap full" ] && grep -q "if: steps.plan.outputs.mode == 'cheap'" "$GWF"; then ok pack-landing-cheap-except-canary; else fail pack-landing-cheap-except-canary "landing=$c1 canary=$c2"; fi
-# skip-never-greens-gate: the gate job has no job-level if; a workflow_dispatch re-gate evaluates the PR's Codex verdict
-# (never "not a pull request"); evidence and codex run after a failed build step
+BASEPACK="{content:Buffer.from(require('fs').readFileSync('$T/pack.bak')).toString('base64')}"
+OPEN=$OPEN put "{pr:{number:7,draft:false,user:{login:'alice'},head:{sha:'$HEAD1',ref:'feat'},base:{ref:'main'}},comments:{7:[{user:b,updated_at:new Date().toISOString(),body:'<!-- codex-pull-request-review-summary -->\\n| 📝 **Code Review** | ✅ **Completed** now | \`${HEAD1:0:7}\` | x |'}]},recent:[{number:7},{number:3}],threads:JSON.parse(process.env.OPEN),pushed:new Date(Date.now()-3600000).toISOString(),timeline:[],files:{'scripts/agent/pack.json@main':$BASEPACK},perms:process.env.WF_PERMS.split(' ')}"
+self=$(gate); sx=$?
+cp "$T/pack.bak" "$R/scripts/agent/pack.json"
+[ $x -eq 0 ] && has "the org App posts the \`review\` status" "$out" || r="$r [review on: $x $out]"
+[ $sx -eq 1 ] || r="$r [a PR's own switch skipped review: $sx $self]"
+if [ -z "${r:-}" ]; then ok gate-code-only; else fail gate-code-only "$r"; fi; r=""
+# gate-no-push-regate: no push trigger at all (not main, staging, nor pack landings)
+if ! grep -q "push" <<<"$gtrig"; then ok gate-no-push-regate; else fail gate-no-push-regate "$gtrig"; fi
+# gate-ignores-body-edits: no edited trigger; a base change is re-gated by the launcher's dispatch of the merge ref
+if ! grep -q edited <<<"$gtrig" && grep -q "refs/pull/{0}/merge" "$GWF"; then ok gate-ignores-body-edits; else fail gate-ignores-body-edits "$gtrig"; fi
+# skip-never-greens-gate: no job-level if; a dispatch re-gate evaluates the pull request, never "not a pull request"
 jobif=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");console.log(/^ {4}if:/m.test(y.slice(y.indexOf("jobs:"))))' "$GWF")
 st false alice feat "$HEAD1" '🔄 **Running** since' 5 "[]" yes "$HEAD1" "$HEAD1"
 echo '{"inputs":{"pr":"7"}}' > "$T/dev.json"
-dg=$(cd "$R" && GITHUB_API_URL=$API GITHUB_GRAPHQL_URL=$API/graphql GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_EVENT_NAME=workflow_dispatch GITHUB_EVENT_PATH="$T/dev.json" node scripts/agent/gate.mjs codex 2>&1); dx=$?
-if [ "$jobif" = false ] && [ $dx -eq 1 ] && has "awaiting a Codex verdict" "$dg" && grep -A1 "name: codex review" "$GWF" | grep -q '!cancelled()'
-then ok skip-never-greens-gate; else fail skip-never-greens-gate "jobif=$jobif dispatch=$dx $dg"; fi
+API="http://127.0.0.1:$(cat "$T/port")"
+dg=$(cd "$R" && GITHUB_API_URL=$API GITHUB_GRAPHQL_URL=$API/graphql GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_EVENT_NAME=workflow_dispatch GITHUB_EVENT_PATH="$T/dev.json" node scripts/agent/gate.mjs review 2>&1); dx=$?
+if [ "$jobif" = false ] && [ $dx -eq 1 ] && has "awaiting a Codex verdict" "$dg"; then ok skip-never-greens-gate; else fail skip-never-greens-gate "jobif=$jobif dispatch=$dx $dg"; fi
+
+# ---- gate plan: drafts cheap, ready full
+put() { node -e 'const b={login:"chatgpt-codex-connector[bot]",type:"Bot"};require("fs").writeFileSync(process.argv[1],JSON.stringify(eval("("+process.argv[2]+")")))' "$T/state.json" "$1"; }
+pl() { echo "$2" > "$T/pev.json"; (cd "$R" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_EVENT_NAME=$1 GITHUB_EVENT_PATH="$T/pev.json" GITHUB_OUTPUT= node scripts/agent/gate.mjs plan 2>&1) | sed -n 's/^mode=//p'; }
+PRE='{"pull_request":{"number":7}}'
+put "{pr:{number:7,draft:true,head:{sha:\"$HEAD1\",ref:\"feat\"},base:{ref:\"main\"}}}"; d1=$(pl pull_request "$PRE")
+put "{pr:{number:7,draft:false,head:{sha:\"$HEAD1\",ref:\"feat\"},base:{ref:\"main\"}}}"; d2=$(pl pull_request "$PRE")
+if [ "$d1 $d2" = "cheap full" ] && grep -q "if: steps.plan.outputs.mode == 'cheap'" "$GWF"; then ok draft-cheap-ready-full; else fail draft-cheap-ready-full "draft=$d1 ready=$d2"; fi
 
 # ---- the head's Workers Builds preview: a failed Cloudflare build fails gate; the URL comes from the bot comment
 CF='{user:{login:"cloudflare-workers-and-pages[bot]"},body:"## Deploying\n### Preview URL: https://feat.preview.example.test, https://feat-demo.example.test (commit '"${HEAD1:0:7}"')\n"}'
@@ -129,25 +103,86 @@ put "{pr:{number:7,head:{sha:\"$HEAD1\"}},checks:[],comments:{7:[]}}"; p3=$(pv);
 if [ $x1 -eq 0 ] && has "url=https://feat.preview.example.test" "$p1" && [ $x2 -eq 1 ] && has "Cloudflare build failed" "$p2" && [ $x3 -eq 0 ] && has "e2e runs locally" "$p3"
 then ok e2e-uses-preview-url; else fail e2e-uses-preview-url "ok=$x1 red=$x2 none=$x3: $p1 | $p2 | $p3"; fi
 
-# ---- verdict-recheck: re-runs the head's gate run only when that can change the result; status mode posts codex-verdict
-vr() { (cd "$R" && GITHUB_API_URL=$API GITHUB_GRAPHQL_URL=$API/graphql GITHUB_REPOSITORY=acme/demo GH_TOKEN=t VERDICT_POLL_MS=10 scripts/agent/verdict-recheck 7 "$@" 2>&1); }
+# ---- review-status-posted: verdict-recheck posts `review` on the head from the same rule (the launcher imports
+# reviewStatus); nothing while the pack leaves review to gate; a token that cannot post fails loudly
+vr() { (cd "$R" && GITHUB_API_URL=$API GITHUB_GRAPHQL_URL=$API/graphql GITHUB_REPOSITORY=acme/demo GH_TOKEN=t scripts/agent/verdict-recheck "$@" 2>&1); }
 SUM="{user:b,updated_at:new Date().toISOString(),body:'<!-- codex-pull-request-review-summary -->\\n| 📝 **Code Review** | ✅ **Completed** now | \`${HEAD1:0:7}\` | x |'}"
-base="pr:{number:7,draft:false,user:{login:'alice'},head:{sha:'$HEAD1',ref:'feat'}},comments:{7:[$SUM]},recent:[],threads:[],pushed:new Date(Date.now()-300000).toISOString(),timeline:[]"
-steps() { echo "[{name:'standards',conclusion:'success'},{name:'evidence',conclusion:'$1'},{name:'codex review',conclusion:'$2'},{name:'build',conclusion:'$3'}]"; }
-put "{$base,gateRuns:[{id:41,event:'pull_request',status:'completed',conclusion:'failure',run_attempt:1}],attempts:{1:$(steps success failure success)}}"; v1=$(vr); y1=$?; n1=$(node -p 'require(process.argv[1]).reruns?.length??0' "$T/state.json")
-put "{$base,gateRuns:[{id:41,event:'pull_request',status:'completed',conclusion:'failure',run_attempt:1}],attempts:{1:$(steps success failure failure)}}"; v2=$(vr); y2=$?; n2=$(node -p 'require(process.argv[1]).reruns?.length??0' "$T/state.json")
-put "{$base,gateRuns:[{id:41,event:'pull_request',status:'completed',conclusion:'failure',run_attempt:1}],attempts:{1:$(steps failure success success)}}"; v3=$(vr); n3=$(node -p 'require(process.argv[1]).reruns?.length??0' "$T/state.json"); v4=$(vr --evidence); n4=$(node -p 'require(process.argv[1]).reruns?.length??0' "$T/state.json")
-put "{$base,gateRuns:[{id:41,event:'pull_request',status:'completed',conclusion:'success',run_attempt:1}],attempts:{1:$(steps success success success)}}"; v5=$(vr); n5=$(node -p 'require(process.argv[1]).reruns?.length??0' "$T/state.json")
-if [ "$y1 $n1 | $y2 $n2 | $n3 $n4 | $n5" = "0 1 | 1 0 | 0 1 | 0" ] && has "failed only on codex review" "$v1" && has "needs a push" "$v2" && has "no new evidence" "$v3" && has "passed; nothing to re-check" "$v5"
-then ok rerun-reuses-build; else fail rerun-reuses-build "verdict-recheck: $y1 $n1 | $y2 $n2 | $n3 $n4 | $n5 :: $v1 | $v2 | $v3 | $v4 | $v5"; fi
-cp "$R/scripts/agent/pack.json" "$T/pack.bak"; node -e 'const f=process.argv[1],p=require(f);p.codex_verdict="status";require("fs").writeFileSync(f,JSON.stringify(p))' "$R/scripts/agent/pack.json"
-put "{$base,gateRuns:[{id:41,event:'pull_request',status:'completed',conclusion:'success',run_attempt:1}],attempts:{1:$(steps success success success)}}"; s1=$(vr); sx=$?
-posted=$(node -p 'const s=require(process.argv[1]).statuses??[];s.map(x=>x.context+"="+x.state+"@"+x.sha.slice(0,7)).join(",")' "$T/state.json")
-gs=$(cd "$R" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_EVENT_PATH="$T/event.json" node scripts/agent/gate.mjs codex 2>&1)
-put "{$base,statusForbidden:true,gateRuns:[]}"; s2=$(vr); s2x=$?
-cp "$T/pack.bak" "$R/scripts/agent/pack.json"
-# codex-verdict-status: in status mode verdict-recheck posts codex-verdict on the head (a token that cannot post fails loudly)
-# and gate's codex step defers to that status
-if [ $sx -eq 0 ] && [ "$posted" = "codex-verdict=success@${HEAD1:0:7}" ] && has "codex-verdict commit status" "$gs" && [ $s2x -eq 1 ] && has "needs the org App's token" "$s2"
-then ok codex-verdict-status; else fail codex-verdict-status "posted=$posted exit=$sx/$s2x :: $s1 | $gs | $s2"; fi
+base="pr:{number:7,draft:false,state:'open',html_url:'https://github.com/acme/demo/pull/7',user:{login:'alice'},head:{sha:'$HEAD1',ref:'feat'},base:{ref:'main'}},comments:{7:[$SUM]},recent:[],pushed:new Date(Date.now()-300000).toISOString(),timeline:[]"
+PACKFILE="{content:Buffer.from(JSON.stringify({...require('$R/scripts/agent/pack.json'),review_status:true})).toString('base64')}"
+put "{$base,threads:[],files:{'scripts/agent/pack.json':$PACKFILE}}"; v1=$(vr 7); y1=$?; s1=$(node -p 'JSON.stringify((require(process.argv[1]).statuses??[]).map(x=>x.context+"="+x.state+"@"+x.sha.slice(0,7)))' "$T/state.json")
+OPEN=$OPEN put "{$base,threads:JSON.parse(process.env.OPEN),files:{'scripts/agent/pack.json':$PACKFILE}}"; v2=$(OPEN=$OPEN vr 7); s2=$(node -p 'JSON.stringify((require(process.argv[1]).statuses??[]).map(x=>x.state+":"+x.description))' "$T/state.json")
+put "{$base,threads:[]}"; v3=$(vr 7); s3=$(node -p 'JSON.stringify(require(process.argv[1]).statuses??[])' "$T/state.json")
+put "{$base,threads:[],statusForbidden:true,files:{'scripts/agent/pack.json':$PACKFILE}}"; v4=$(vr 7); y4=$?
+# a pull request cut before the release (its head's pack has no review_status) is judged by the base branch's pack
+OLDPACK="{content:Buffer.from(JSON.stringify(require('$R/scripts/agent/pack.json'))).toString('base64')}"
+put "{$base,threads:[],files:{'scripts/agent/pack.json@main':$PACKFILE,'scripts/agent/pack.json@feat':$OLDPACK}}"; v6=$(vr 7); s6=$(node -p 'JSON.stringify((require(process.argv[1]).statuses??[]).map(x=>x.context+"="+x.state))' "$T/state.json")
+# retargeted during the run (the base read at the end differs from the one judged): nothing is posted
+put "{$base,threads:[],files:{'scripts/agent/pack.json':$PACKFILE}}"
+node -e 'const f=process.argv[1],s=JSON.parse(require("fs").readFileSync(f,"utf8"));s.retargetAfter=2;require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json"
+v8=$(vr 7); s8=$(node -p 'JSON.stringify(require(process.argv[1]).statuses??[])' "$T/state.json")
+put "{$base,threads:[],files:{'scripts/agent/pack.json':$PACKFILE}}"
+node -e 'const f=process.argv[1],s=JSON.parse(require("fs").readFileSync(f,"utf8"));s.pr.base.sha="e".repeat(40);s.retargetAfter=2;s.advance=true;require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json"
+v9=$(vr 7); s9=$(node -p 'JSON.stringify(require(process.argv[1]).statuses??[])' "$T/state.json")
+# a sibling on the same head retargeted mid-run blocks the post too
+put "{$base,threads:[],files:{'scripts/agent/pack.json':$PACKFILE},open:[{number:7,head:{sha:'$HEAD1'}},{number:8,head:{sha:'$HEAD1'}}],prs:{8:{number:8,state:'open',draft:false,html_url:'u8',user:{login:'alice'},head:{sha:'$HEAD1',ref:'feat'},base:{ref:'other'}}},prFiles:{8:[]},moveSibling:8}"
+v10=$(vr 7); s10=$(node -p 'JSON.stringify(require(process.argv[1]).statuses??[])' "$T/state.json")
+# ... also one whose own base leaves review off (judged null), in case the retarget makes it need review
+put "{$base,threads:[],files:{'scripts/agent/pack.json@main':$PACKFILE,'scripts/agent/pack.json@other':$OLDPACK},open:[{number:7,head:{sha:'$HEAD1'}},{number:8,head:{sha:'$HEAD1'},base:{ref:'other'}}],prs:{8:{number:8,state:'open',draft:false,html_url:'u8',user:{login:'alice'},head:{sha:'$HEAD1',ref:'feat'},base:{ref:'other'}}},prFiles:{8:[]},moveSibling:8}"
+v11=$(vr 7); s11=$(node -p 'JSON.stringify(require(process.argv[1]).statuses??[])' "$T/state.json")
+# the PR itself retargeted before it was judged, to a base where review is off: both passes agree it is null there,
+# so nothing is posted (a status on the commit is not required for that base)
+put "{$base,threads:[],files:{'scripts/agent/pack.json@main':$OLDPACK}}"
+node -e 'const f=process.argv[1],s=JSON.parse(require("fs").readFileSync(f,"utf8"));s.retargetAfter=1;require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json"
+v12=$(vr 7); s12=$(node -p 'JSON.stringify(require(process.argv[1]).statuses??[])' "$T/state.json")
+# the PR moved to another head mid-run: both the judged head and the new one go pending
+put "{$base,threads:[],files:{'scripts/agent/pack.json':$PACKFILE}}"
+node -e 'const f=process.argv[1],s=JSON.parse(require("fs").readFileSync(f,"utf8"));s.retargetAfter=2;s.newHead="a".repeat(40);require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json"
+v13=$(vr 7); s13=$(node -p 'JSON.stringify((require(process.argv[1]).statuses??[]).map(x=>x.state+"@"+x.sha.slice(0,7)).sort())' "$T/state.json")
+# judged null (review off on its base) and moved to another head and base: both heads go pending
+put "{$base,threads:[],files:{'scripts/agent/pack.json@main':$OLDPACK}}"
+node -e 'const f=process.argv[1],s=JSON.parse(require("fs").readFileSync(f,"utf8"));s.retargetAfter=2;s.newHead="b".repeat(40);require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json"
+v14=$(vr 7); s14=$(node -p 'JSON.stringify((require(process.argv[1]).statuses??[]).map(x=>x.state+"@"+x.sha.slice(0,7)).sort())' "$T/state.json")
+# the PR asked about is judged null (review off on its base), but a sibling on its head targets a base where review is
+# on: the sibling is judged and its failure posted
+put "{$base,threads:[],files:{'scripts/agent/pack.json@main':$OLDPACK,'scripts/agent/pack.json@other':$PACKFILE},open:[{number:7,head:{sha:'$HEAD1'},base:{ref:'main'}},{number:8,head:{sha:'$HEAD1'},base:{ref:'other'}}],prs:{8:{number:8,state:'open',draft:false,html_url:'u8',user:{login:'alice'},head:{sha:'$HEAD1',ref:'feat'},base:{ref:'other'}}},prFiles:{8:[{filename:'src/app.css'}]}}"
+v15=$(vr 7); s15=$(node -p 'JSON.stringify((require(process.argv[1]).statuses??[]).map(x=>x.state))' "$T/state.json")
+# the thread query fails: pending replaces any earlier success, and the run reports it
+put "{$base,threads:[],graphqlFail:true,files:{'scripts/agent/pack.json':$PACKFILE}}"; v16=$(vr 7); y16=$?; s16=$(node -p 'JSON.stringify((require(process.argv[1]).statuses??[]).map(x=>x.state))' "$T/state.json")
+# a thread opened between the two passes: they disagree, so pending (the next run posts the failure), never success
+OPEN=$OPEN put "{$base,threads:[],threadsLater:JSON.parse(process.env.OPEN),files:{'scripts/agent/pack.json':$PACKFILE}}"; v17=$(vr 7); s17=$(node -p 'JSON.stringify((require(process.argv[1]).statuses??[]).map(x=>x.state))' "$T/state.json")
+# the head is known from the open listing (for --all and for named PRs), so a failed read of that PR still pends it
+# an error after the PR was seen on a new head pends both heads
+put "{$base,threads:[],filesFail:true,files:{'scripts/agent/pack.json':$PACKFILE}}"
+node -e 'const f=process.argv[1],s=JSON.parse(require("fs").readFileSync(f,"utf8"));s.retargetAfter=1;s.newHead="a".repeat(40);require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json"
+v20=$(vr 7); s20=$(node -p 'JSON.stringify((require(process.argv[1]).statuses??[]).map(x=>x.state+"@"+x.sha.slice(0,7)).sort())' "$T/state.json")
+# the verdict saw a newer head than the pass's read, then a read failed: both heads go pending
+put "{$base,threads:[],files:{'scripts/agent/pack.json':$PACKFILE}}"
+node -e 'const f=process.argv[1],s=JSON.parse(require("fs").readFileSync(f,"utf8"));s.retargetAfter=2;s.newHead="d".repeat(40);s.failAt=4;require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json"
+v22=$(vr 7); s22=$(node -p 'JSON.stringify((require(process.argv[1]).statuses??[]).map(x=>x.state+"@"+x.sha.slice(0,7)).sort())' "$T/state.json")
+# the open listing fails: the named PR is still read and its head pended
+put "{$base,threads:[],listFail:true,files:{'scripts/agent/pack.json':$PACKFILE}}"; v24=$(vr 7); s24=$(node -p 'JSON.stringify((require(process.argv[1]).statuses??[]).map(x=>x.state+"@"+x.sha.slice(0,7)))' "$T/state.json")
+# a staged repository's promotion (default branch staging into main, whose pack predates review) is judged by the
+# default branch's pack, so it gets its status while the release travels to main
+PROMO="pr:{number:7,draft:false,state:'open',html_url:'u',user:{login:'launcher[bot]'},head:{sha:'$HEAD1',ref:'staging',repo:{full_name:'acme/demo'}},base:{ref:'main'}},info:{default_branch:'staging'},comments:{7:[$SUM]},recent:[],pushed:new Date(Date.now()-300000).toISOString(),timeline:[]"
+put "{$PROMO,threads:[],files:{'scripts/agent/pack.json@$HEAD1':$PACKFILE,'scripts/agent/pack.json@main':$OLDPACK}}"; v21=$(vr 7); s21=$(node -p 'JSON.stringify((require(process.argv[1]).statuses??[]).map(x=>x.state))' "$T/state.json")
+# a fork's branch named like the default branch is not a promotion: its own pack does not count
+put "{${PROMO/acme\/demo/someone\/demo},threads:[],files:{'scripts/agent/pack.json@$HEAD1':$PACKFILE,'scripts/agent/pack.json@main':$OLDPACK}}"; v23=$(vr 7); s23=$(node -p 'JSON.stringify((require(process.argv[1]).statuses??[]).map(x=>x.state))' "$T/state.json")
+put "{$base,threads:[],fail7:1,files:{'scripts/agent/pack.json':$PACKFILE}}"; v19=$(vr 7); s19=$(node -p 'JSON.stringify((require(process.argv[1]).statuses??[]).map(x=>x.state+"@"+x.sha.slice(0,7)))' "$T/state.json")
+put "{$base,threads:[],fail7:1,files:{'scripts/agent/pack.json':$PACKFILE}}"; v18=$(vr --all); s18=$(node -p 'JSON.stringify((require(process.argv[1]).statuses??[]).map(x=>x.state+"@"+x.sha.slice(0,7)))' "$T/state.json")
+# two open PRs on one head share its commit status: the worse verdict (the sibling's missing evidence) is posted
+put "{$base,threads:[],files:{'scripts/agent/pack.json':$PACKFILE},open:[{number:7,head:{sha:'$HEAD1'}},{number:8,head:{sha:'$HEAD1'}}],prs:{8:{number:8,state:'open',draft:false,html_url:'u8',user:{login:'alice'},head:{sha:'$HEAD1',ref:'feat'},base:{ref:'other'}}},prFiles:{8:[{filename:'src/app.css'}]}}"; v7=$(vr 7); s7=$(node -p 'JSON.stringify((require(process.argv[1]).statuses??[]).map(x=>x.state+":"+x.description))' "$T/state.json")
+put "{$base,threads:[],files:{'scripts/agent/pack.json':$PACKFILE}}"; v5=$(vr 7 --dry-run); s5=$(node -p 'JSON.stringify(require(process.argv[1]).statuses??[])' "$T/state.json")
+# A success on a draft head is invalidated, then a ready PR is judged again on the same commit.
+put "{$base,threads:[],files:{'scripts/agent/pack.json':$PACKFILE},statuses:[{sha:'$HEAD1',context:'review',state:'success'}]}"
+node -e 'const f=process.argv[1],s=require(f);s.pr.draft=true;require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json"
+vd=$(vr --all); sd=$(node -p 'JSON.stringify((require(process.argv[1]).statuses??[]).map(x=>x.state))' "$T/state.json")
+node -e 'const f=process.argv[1],s=require(f);s.pr.draft=false;s.open=[s.pr];require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json"
+vdr=$(vr --all); sdr=$(node -p 'JSON.stringify((require(process.argv[1]).statuses??[]).map(x=>x.state))' "$T/state.json")
+# A stale listing may still name the old commit after the direct pull reads the new one.
+put "{$base,open:[{number:7,head:{sha:'$HEAD1'}}],threads:[],files:{'scripts/agent/pack.json':$PACKFILE}}"
+node -e 'const f=process.argv[1],s=require(f);s.retargetAfter=1;s.newHead=process.argv[2];require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json" "$OLD"
+vs=$(vr --all); ss=$(node -p 'JSON.stringify((require(process.argv[1]).statuses??[]).map(x=>x.state+"@"+x.sha.slice(0,7)).sort())' "$T/state.json")
+if [ $y1 -eq 0 ] && [ "$s1" = '["review=success@'"${HEAD1:0:7}"'"]' ] && has "failure:1 unresolved Codex thread" "$s2" && [ "$s3" = "[]" ] && has "nothing to post" "$v3" \
+  && [ "$sd" = '["success","pending"]' ] && [ "$sdr" = '["success","pending","success"]' ] && [ "$ss" = '["pending@ccccccc","pending@ddddddd"]' ]
+then ok review-status-posted; else fail review-status-posted "posted=$s1 | red=$s2 | off=$s3 | forbidden=$y4 | dry=$s5 | old-head=$s6 | shared=$s7 | retarget=$s8 | base-moved=$s9 | sibling-moved=$s10 | null-sibling-moved=$s11 | null-self-moved=$s12 | head-moved=$s13 | null-head-moved=$s14 | null-primary-sibling=$s15 | error=$y16 $s16 | late-thread=$s17 | all-read-error=$s18 | one-read-error=$s19 | error-new-head=$s20 | promotion=$s21 | fork-promotion=$s23 | list-fails=$s24 | verdict-head-then-error=$s22 :: $v1 | $v2 | $v3 | $v4 | $v5 | $v6"; fi
 done_cases

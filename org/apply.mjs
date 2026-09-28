@@ -23,7 +23,12 @@ export function render(overlay) {
   const oa = overlay.org_admin ?? {};
   if (!Number.isInteger(oa.app?.id) || oa.app.id <= 0 || !oa.app?.slug) throw new Error("overlay org_admin.app.id (a positive number, not the example's 0) and org_admin.app.slug are required");
   if (oa.gate_integration_id !== undefined && !(Number.isInteger(oa.gate_integration_id) && oa.gate_integration_id > 0)) throw new Error("overlay org_admin.gate_integration_id must be a positive number when set");
-  for (const k of ["require_extra_approval_for_unattributed_changes", "push_app_bypass", "codex_verdict_status"])
+  if (oa.codex_verdict_status !== undefined) throw new Error("overlay org_admin.codex_verdict_status was replaced by org_admin.review_status (the App-posted `review` status); rename it (and codex.verdict to review.status) before running org-apply");
+  // The ruleset requirement and the pack's own switch move together: required but not posted blocks every merge;
+  // posted but not required lets gate skip the conversation with nothing enforcing it.
+  if ((oa.review_status === true) !== (overlay.review?.status === true))
+    throw new Error(`org_admin.review_status (${oa.review_status === true}) and review.status (${overlay.review?.status === true}) must match (one overlay release changes both). Turning on: org-apply first (merges wait for \`review\` until the pack lands), then sync and start the poster. Turning off: sync first (gate checks the conversation again), then org-apply`);
+  for (const k of ["require_extra_approval_for_unattributed_changes", "push_app_bypass", "review_status"])
     if (oa[k] !== undefined && typeof oa[k] !== "boolean") throw new Error(`overlay org_admin.${k} must be true or false when set`);
   const vars = {
     review_thread_resolution: oa.review_thread_resolution === true,
@@ -36,10 +41,11 @@ export function render(overlay) {
     push_ignored_paths: oa.push_ignored_paths ?? [],
     max_file_size_mb: oa.max_file_size_mb ?? 50,
   };
-  // codex_verdict_status: the org App posts `codex-verdict` (scripts/agent/verdict-recheck), required beside `gate`
-  // and pinned to the App so no person's token can satisfy it. Turn it on only once the App has statuses: write.
-  if (oa.codex_verdict_status === true)
-    for (const k of ["extra_checks.default", "extra_checks.staged_main", "extra_checks.staging"]) vars[k] = [...vars[k], { context: "codex-verdict", integration_id: oa.app.id }];
+  // review_status: the org App posts `review` (the pull request's conversation: scripts/agent/review.mjs), required
+  // beside `gate` and pinned to the App so no person's token can satisfy it. Turn it on only once the App has
+  // statuses: write and the org's launcher (or merge helper) posts it.
+  if (oa.review_status === true)
+    for (const k of ["extra_checks.default", "extra_checks.staged_main", "extra_checks.staging"]) vars[k] = [...vars[k], { context: "review", integration_id: oa.app.id }];
   const fill = (v) => {
     if (typeof v === "string" && v.startsWith("$")) {
       if (!(v.slice(1) in vars)) throw new Error(`org/rulesets.json: unknown placeholder ${v}`);

@@ -49,12 +49,12 @@ out=$(node --input-type=module -e '
   import { readFileSync } from "node:fs";
   const o = JSON.parse(readFileSync(process.argv[1], "utf8"));
   const a = render(o);
-  o.org_admin.review_thread_resolution = true; o.org_admin.strict_status_checks = true; o.org_admin.extra_checks = { default: [{ context: "lint" }], staged_main: [{ context: "promote-main" }], staging: [{ context: "preview" }] }; o.org_admin.push_ignored_paths = [".env.example"]; o.org_admin.max_file_size_mb = 20; o.org_admin.push_app_bypass = true; o.org_admin.require_extra_approval_for_unattributed_changes = true; o.org_admin.codex_verdict_status = true;
+  o.org_admin.review_thread_resolution = true; o.org_admin.strict_status_checks = true; o.org_admin.extra_checks = { default: [{ context: "lint" }], staged_main: [{ context: "promote-main" }], staging: [{ context: "preview" }] }; o.org_admin.push_ignored_paths = [".env.example"]; o.org_admin.max_file_size_mb = 20; o.org_admin.push_app_bypass = true; o.org_admin.require_extra_approval_for_unattributed_changes = true; o.org_admin.review_status = true; o.review = { status: true };
   const b = render(o);
   const rs = (x, n) => x.rulesets.find((r) => r.name.includes(n)).rules;
   const refuse = (oa) => { try { render({ org_admin: oa }); return false; } catch { return true; } };
   const refused = refuse({}) && refuse({ app: { id: 0, slug: "x" } }) && refuse({ app: { id: 1, slug: "x" }, gate_integration_id: "15" })
-    && refuse({ app: { id: 1, slug: "x" }, push_app_bypass: "yes" }) && refuse({ app: { id: 1, slug: "x" }, require_extra_approval_for_unattributed_changes: 1 });
+    && refuse({ app: { id: 1, slug: "x" }, push_app_bypass: "yes" }) && refuse({ app: { id: 1, slug: "x" }, codex_verdict_status: true }) && refuse({ app: { id: 1, slug: "x" }, review_status: true }) && refuse({ app: { id: 1, slug: "x" }, require_extra_approval_for_unattributed_changes: 1 });
   const unpinned = render({ org_admin: { app: { id: 1, slug: "x" } } }).rulesets.find((r) => r.name.includes("default branch")).rules.required_status_checks.required_status_checks;
   console.log(JSON.stringify({
     bypass: [...new Set(a.rulesets.map((r) => `${r.target}:${JSON.stringify(r.bypass_actors)}`))].sort(),
@@ -68,10 +68,10 @@ out=$(node --input-type=module -e '
     ignored: [rs(a, "push").file_path_restriction.ignored_file_paths ?? null, rs(b, "push").file_path_restriction.ignored_file_paths],
     pinned: rs(a, "default branch").required_status_checks.required_status_checks, unpinned,
     pushOptIn: b.rulesets.find((r) => r.target === "push").bypass_actors,
-    verdict: [a, b].map((x) => x.rulesets.filter((r) => r.rules.required_status_checks?.required_status_checks.some((c) => c.context === "codex-verdict" && c.integration_id === 4242)).length),
+    verdict: [a, b].map((x) => x.rulesets.filter((r) => r.rules.required_status_checks?.required_status_checks.some((c) => c.context === "review" && c.integration_id === 4242)).length),
     unattributed: [a, b].map((x) => [...new Set(x.rulesets.flatMap((r) => r.rules.pull_request ? [r.rules.pull_request.require_extra_approval_for_unattributed_changes] : []))]),
     placeholders: JSON.stringify(a).includes("\"$"), refused }));' "$T/org.json" 2>&1)
-want='{"bypass":["branch:[{\"actor_id\":4242,\"actor_type\":\"Integration\",\"bypass_mode\":\"always\"},{\"actor_id\":null,\"actor_type\":\"OrganizationAdmin\",\"bypass_mode\":\"pull_request\"}]","push:[]"],"threadOff":false,"threadOn":true,"stagingThreadOn":true,"direct":["squash"],"staged":["merge"],"vault":true,"size":[50,20],"strict":[[false],[true]],"checks":["codex-verdict+gate+lint","codex-verdict+gate+promote-main","codex-verdict+gate+preview"],"ignored":[null,[".env.example"]],"pinned":[{"context":"gate","integration_id":42}],"unpinned":[{"context":"gate"}],"pushOptIn":[{"actor_id":4242,"actor_type":"Integration","bypass_mode":"always"}],"verdict":[0,3],"unattributed":[[false],[true]],"placeholders":false,"refused":true}'
+want='{"bypass":["branch:[{\"actor_id\":4242,\"actor_type\":\"Integration\",\"bypass_mode\":\"always\"},{\"actor_id\":null,\"actor_type\":\"OrganizationAdmin\",\"bypass_mode\":\"pull_request\"}]","push:[]"],"threadOff":false,"threadOn":true,"stagingThreadOn":true,"direct":["squash"],"staged":["merge"],"vault":true,"size":[50,20],"strict":[[false],[true]],"checks":["gate+lint+review","gate+promote-main+review","gate+preview+review"],"ignored":[null,[".env.example"]],"pinned":[{"context":"gate","integration_id":42}],"unpinned":[{"context":"gate"}],"pushOptIn":[{"actor_id":4242,"actor_type":"Integration","bypass_mode":"always"}],"verdict":[0,3],"unattributed":[[false],[true]],"placeholders":false,"refused":true}'
 [ "$out" = "$want" ] && ok org-rulesets-render || fail org-rulesets-render "$out"
 
 # engine-org-dry-run-diff: a dry run names each change (field diffs for a matched ruleset, its old name, creates,

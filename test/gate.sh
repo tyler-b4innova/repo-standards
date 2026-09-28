@@ -86,13 +86,13 @@ jset "$R/standards.json" 'o.e2e={command:"true",budget:0}'; bz=$(cd "$R" && node
 if [ $bx -eq 1 ] && has "e2e exceeded its 0.02-minute budget" "$bo" && [ $((t1 - t0)) -lt 5 ] && [ $bq -eq 0 ] && [ $bzx -eq 1 ] && has "e2e.budget is 0" "$bz"; then ok e2e-budget-enforced
 else fail e2e-budget-enforced "over=$bx in $((t1 - t0))s quick=$bq: $bo"; fi
 
-# pack-landing-cheap-except-canary (syntax): the cheap gate's syntax pass fails a broken script and, without PyYAML, skips workflows
+# draft-cheap-ready-full (syntax): the cheap gate's syntax pass fails a broken script and, without PyYAML, skips workflows
 R=$(mkrepo); sy1=$(cd "$R" && node scripts/agent/gate.mjs syntax 2>&1); sx1=$?
 YB=$T/noyaml-bin; mkpath "$YB"; shim "$YB" python3 'exit 1'
 sy2=$(cd "$R" && PATH="$YB" node scripts/agent/gate.mjs syntax 2>&1); sx2=$?
 printf 'if then\n' > "$R/scripts/agent/broken.sh" && git -C "$R" add scripts/agent/broken.sh; sy3=$(cd "$R" && node scripts/agent/gate.mjs syntax 2>&1); sx3=$?
-if [ $sx1 -eq 0 ] && [ $sx2 -eq 0 ] && has "PyYAML is not on this runner" "$sy2" && [ $sx3 -eq 1 ] && has "scripts/agent/broken.sh" "$sy3"; then ok pack-landing-cheap-except-canary
-else fail pack-landing-cheap-except-canary "clean=$sx1 noyaml=$sx2 broken=$sx3: $sy1 | $sy2 | $sy3"; fi
+if [ $sx1 -eq 0 ] && [ $sx2 -eq 0 ] && has "PyYAML is not on this runner" "$sy2" && [ $sx3 -eq 1 ] && has "scripts/agent/broken.sh" "$sy3"; then ok draft-cheap-ready-full
+else fail draft-cheap-ready-full "clean=$sx1 noyaml=$sx2 broken=$sx3: $sy1 | $sy2 | $sy3"; fi
 
 # ---- the rendered workflow
 R=$(mkrepo)
@@ -106,7 +106,7 @@ for (const f of fs.readdirSync(dir)) {
   if (f==="std-gate.yml") {
     if (jobs.join()!=="gate") out.push("jobs: "+jobs.join());
     const runs=L.slice(j+1).join("\n");
-    for (const s of ["scripts/agent/setup.sh --check","gate.mjs evidence","gate.mjs secrets","gate.mjs install","gate.mjs run typecheck","gate.mjs run build","gate.mjs e2e","scripts/agent/gate.local.sh"])
+    for (const s of ["scripts/agent/setup.sh --check","gate.mjs review","gate.mjs secrets","gate.mjs install","gate.mjs run typecheck","gate.mjs run build","gate.mjs e2e","scripts/agent/gate.local.sh"])
       if (!runs.includes(s)) out.push("missing step: "+s);
     for (const m of runs.matchAll(/gate\.mjs (\w+)/g)) if (require("child_process").spawnSync("node",["scripts/agent/gate.mjs",m[1],"--help"]).status!==0) out.push("unknown subcommand "+m[1]);
   }
@@ -115,11 +115,11 @@ if (gates!==1) out.push(gates+" jobs named gate");
 console.log(out.join("; ")||"ok")')
 if [ "$shape" = ok ]; then ok gate-fails-without-e2e; else fail gate-fails-without-e2e "$shape"; fi
 
-# ---- evidence (gate side), against the REST stub
+# ---- evidence: .evidence/ never tracked (the standards check); the comment rule through gate's review step
 R=$(mkrepo)
-out1=$(G "$R" evidence); s1=$?
+out1=$(cd "$R" && scripts/agent/setup.sh --check 2>&1); s1=$?
 mkdir -p "$R/.evidence" && printf 'png' > "$R/.evidence/after-home-400.png" && commit "$R"
-out2=$(G "$R" evidence); s2=$?
+out2=$(cd "$R" && scripts/agent/setup.sh --check 2>&1); s2=$?
 if [ $s1 -eq 0 ] && [ $s2 -eq 1 ] && has ".evidence/ is tracked (.evidence/after-home-400.png)" "$out2"; then ok no-evidence-on-main
 else fail no-evidence-on-main "untracked=$s1 tracked=$s2: $out2"; fi
 
@@ -135,8 +135,10 @@ fx() { node -e 'const S=process.env.SHA,U="https://github.com/acme/demo/blob/"+S
 c=(id,login,body,app)=>({id,html_url:"https://github.com/acme/demo/pull/9#issuecomment-"+id,user:{login},performed_via_github_app:app?{slug:"evidence-app"}:null,body});
 require("fs").writeFileSync(process.env.FX,JSON.stringify({repo:"acme/demo",files:{},comments:{},contents:["before","after"].flatMap((b)=>[S+":.evidence/"+b+"-home-400.png",S+":.evidence/"+b+"-home-1280.png"]),...eval("("+process.argv[1]+")")}))' "$1"; }
 # ev <repo> <pr>: the evidence step on a pull_request event
-ev() { printf '{"pull_request":{"number":%s,"user":{"login":"alice"},"head":{"sha":"%s","ref":"feat"},"base":{"ref":"main"}}}\n' "$2" "$(git -C "$1" rev-parse HEAD)" > "$T/event.json"
-  (cd "$1" && GITHUB_EVENT_PATH="$T/event.json" GITHUB_API_URL="http://127.0.0.1:$PORT" GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=stub-token node scripts/agent/gate.mjs evidence) 2>&1; }
+# ev <repo> <pr>: gate's review step (review.mjs) on a pull_request event; the stand-in answers commits and compares from <repo>
+ev() { printf '{"pull_request":{"number":%s}}\n' "$2" > "$T/event.json"
+  node -e 'const f=process.env.FX,x=JSON.parse(require("fs").readFileSync(f,"utf8"));x.head=process.argv[1];x.gitDir=process.argv[2];require("fs").writeFileSync(f,JSON.stringify(x))' "$(git -C "$1" rev-parse HEAD)" "$1"
+  (cd "$1" && GITHUB_EVENT_PATH="$T/event.json" GITHUB_EVENT_NAME=pull_request GITHUB_API_URL="http://127.0.0.1:$PORT" GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=stub-token node scripts/agent/gate.mjs review) 2>&1; }
 GOOD='["before","after"].flatMap((b)=>[img(U+b+"-home-400.png?raw=true"),img(U+b+"-home-1280.png?raw=true")]).join("\n")'
 
 R=$(mkev)
@@ -181,8 +183,13 @@ B1="https://github.com/acme/demo/blob/main/.evidence/after-home-400.png" B2="htt
 fx "{files:{6:[\"src/app.css\"]},comments:{6:[c(31,\"alice\",img(\"$B1\")),c(32,\"alice\",img(\"$B2\")),c(33,\"alice\",$GOOD+img(\"$B3\"))]}}"
 : > "$LOG"; out1=$(ev "$R" 6); s1=$?; log=$(cat "$LOG")
 fx '{files:{6:["src/app.css"]},comments:{6:[c(34,"alice",'"$GOOD"')]}}'; out2=$(ev "$R" 6); s2=$?
+# an undecodable path is rejected evidence, never an error that leaves an old verdict standing
+fx '{files:{6:["src/app.css"]},comments:{6:[c(35,"alice",'"$GOOD"'+img(U+"after-%ZZ-400.png"))]}}'; out3=$(ev "$R" 6); s3=$?
+# a path under something that is a file, not a folder, is rejected too (the listing is a file object)
+fx '{files:{6:["src/app.css"]},contents:["before","after"].flatMap((b)=>[process.env.SHA+":.evidence/"+b+"-home-400.png",process.env.SHA+":.evidence/"+b+"-home-1280.png"]).concat([process.env.SHA+":.evidence/foo"]),comments:{6:[c(36,"alice",'"$GOOD"'+img(U+"foo/bar.png"))]}}'; out4=$(ev "$R" 6); s4=$?
 if [ $s1 -eq 1 ] && has "$B1" "$out1" && has "$B2" "$out1" && has "$B3" "$out1" && ! has "after-home-1280" "$out1" &&
-  has "\"method\":\"HEAD\",\"path\":\"/repos/acme/demo/contents/.evidence/missing.png\",\"query\":\"?ref=$SHA\"" "$log" && [ $s2 -eq 0 ]; then ok evidence-images-pinned-resolving
+  has "\"method\":\"GET\",\"path\":\"/repos/acme/demo/contents/.evidence\",\"query\":\"?ref=$SHA\"" "$log" && ! has "contents/.evidence/after-home-400.png" "$log" && [ $s2 -eq 0 ] \
+  && [ $s3 -eq 1 ] && has "unresolved" "$out3" && ! has "URIError" "$out3" && [ $s4 -eq 1 ] && has "unresolved" "$out4" && ! has "TypeError" "$out4"; then ok evidence-images-pinned-resolving
 else fail evidence-images-pinned-resolving "bad-images=$s1 good=$s2: $out1"; fi
 
 # Stale or incomplete evidence: a later UI commit, a commit outside the PR, or no 1280px capture.
@@ -201,20 +208,6 @@ if [ $x1 -eq 1 ] && has "UI changed after the evidence" "$st1" && [ $x2 -eq 1 ] 
   [ $x5 -eq 1 ] && has "missing before 400px, before 1280px, after 400px, after 1280px" "$st5"; then ok evidence-images-pinned-resolving
 else fail evidence-images-pinned-resolving "stale=$x1 outside=$x2 no1280=$x3 merged=$x4 two-files=$x5: $st1 | $st2 | $st3 | $st4 | $st5"; fi
 
-# A push to standards/vX.Y.Z (sync's landing branch) passes the evidence step only when it changes pack-managed paths.
-R=$(mkrepo); gc -C "$R" update-ref refs/remotes/origin/main HEAD
-gc -C "$R" checkout -qb standards/v9.9.9
-node "$ENGINE/bin/repo-standards.mjs" apply --target "$R" --overlay "$ENGINE/examples/overlay.json" --version 9.9.9 >/dev/null && commit "$R" pack
-printf '{"repository":{"default_branch":"main"},"sender":{"login":"example-sync[bot]","type":"Bot"}}' > "$T/push.json"
-printf '{"repository":{"default_branch":"main"},"sender":{"login":"other-app[bot]","type":"Bot"}}' > "$T/push-user.json"
-pe() { (cd "$R" && GITHUB_EVENT_NAME=push GITHUB_REF_NAME=standards/v9.9.9 GITHUB_EVENT_PATH="$T/${1:-push}.json" node scripts/agent/gate.mjs evidence) 2>&1; }
-rm "$R/.github/ISSUE_TEMPLATE/agent-task.md" && commit "$R" "drop a managed path"
-p1=$(pe); ps1=$?
-p3=$(pe push-user); ps3=$?
-mkdir -p "$R/src" && echo "<b/>" > "$R/src/App.svelte" && printf '0000  src/App.svelte\n' >> "$R/standards.lock" && commit "$R" sneak
-p2=$(pe); ps2=$?
-if [ $ps1 -eq 0 ] && has "pack-only update" "$p1" && [ $ps3 -eq 1 ] && has "not the sync App" "$p3" && [ $ps2 -eq 1 ] && has "src/App.svelte" "$p2"; then ok sync-lands-direct-when-green
-else fail sync-lands-direct-when-green "pack-only=$ps1 user=$ps3 other=$ps2: $p1 $p3 $p2"; fi
 # A PR changing only documents accepts before-N/after-N page images; a web change does not.
 R=$(mkev); PAGES='img(U+"before-1.png")+img(U+"after-1.png")+img(U+"after-2.png")'
 PC='contents:["before-1","after-1","after-2"].map((n)=>process.env.SHA+":.evidence/"+n+".png")'
@@ -233,17 +226,18 @@ fx "{files:{8:[\"docs/report.docx\",\"app.css\"]},contents:$VP.map((n)=>process.
 if [ $y1 -eq 0 ] && has "evidence: accepted" "$d1" && [ $y5 -eq 1 ] && has "missing before pages" "$d5" && [ $y6 -eq 1 ] && has "missing before pages" "$d6" && [ $y7 -eq 0 ] && has "evidence: accepted" "$d7" && [ $y8 -eq 1 ] && has "missing before pages" "$d8" && [ $y2 -eq 1 ] && has "missing before 400px" "$d2" && [ $y3 -eq 1 ] && has "missing before pages" "$d3" && [ $y4 -eq 1 ] && has "missing a page with both before and after" "$d4"; then ok evidence-document-pages
 else fail evidence-document-pages "docs=$y1 mixed=$y2 no-before=$y3 unpaired=$y4 web-on-docs=$y5 mixed-web-only=$y6 mixed-both=$y7 viewport-as-pages=$y8 ($d8): $d1 | $d2 | $d3 | $d4 | $d5 | $d6 | $d7"; fi
 
-# A landing branch scans only what the default branch lacks, so old leaks on main do not block it (linux x64 only:
-# the scanner is the pinned gitleaks build).
+# secrets-scan-changes-only: a dispatch re-gate (the fresh merge ref) scans only the pull request's own commits, so an
+# old leak already on the base does not fail it (linux x64 only: the scanner is the pinned gitleaks build)
 if [ "$(uname -s)-$(uname -m)" = Linux-x86_64 ]; then
-  O=$T/leak.git; git init -q --bare -b main "$O"; W=$(mkrepo); git -C "$W" remote add origin "$O"
-  echo "token = ghp_$(printf 'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0hJ3lN6')" > "$W/old.txt" && commit "$W" "old leak" && gc -C "$W" push -q origin main
-  gc -C "$W" checkout -qb standards/v9.9.9; echo ok > "$W/clean.txt" && commit "$W" clean && gc -C "$W" push -q origin standards/v9.9.9
-  pe() { printf '{"ref":"refs/heads/standards/v9.9.9","before":"%s","after":"%s","repository":{"default_branch":"main"}}\n' "$(printf '0%.0s' $(seq 40))" "$(git -C "$W" rev-parse HEAD)" > "$T/push.json"
-    (cd "$W" && GITHUB_EVENT_PATH="$T/push.json" node scripts/agent/gate.mjs secrets) 2>&1; }
-  o1=$(pe); x1=$?
-  echo "token = ghp_$(printf 'Zy8xW7vU6tS5rQ4pO3nM2lK1jI0hG9fE8dC7')" > "$W/new.txt" && commit "$W" "new leak"; o2=$(pe); x2=$?
-  if [ $x1 -eq 0 ] && has "origin/main.." "$o1" && [ $x2 -eq 1 ]; then ok sync-lands-direct-when-green
-  else fail sync-lands-direct-when-green "landing-branch scan: clean=$x1 leak=$x2: $o1 | $o2"; fi
-fi
+  W=$(mkrepo)
+  echo "token = ghp_$(printf 'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0hJ3lN6')" > "$W/old.txt" && commit "$W" "old leak"
+  gc -C "$W" checkout -qb feat; echo ok > "$W/clean.txt" && commit "$W" clean
+  mr() { gc -C "$W" checkout -q main && gc -C "$W" checkout -q --detach && gc -C "$W" merge -q --no-ff --no-edit feat; }
+  echo '{"inputs":{"pr":"1"}}' > "$T/dispatch.json"
+  se() { (cd "$W" && GITHUB_EVENT_NAME=workflow_dispatch GITHUB_EVENT_PATH="$T/dispatch.json" node scripts/agent/gate.mjs secrets) 2>&1; }
+  mr; o1=$(se); x1=$?
+  gc -C "$W" checkout -q feat; echo "token = ghp_$(printf 'Zy8xW7vU6tS5rQ4pO3nM2lK1jI0hG9fE8dC7')" > "$W/new.txt" && commit "$W" "new leak"; mr; o2=$(se); x2=$?
+  if [ $x1 -eq 0 ] && has "HEAD^1..HEAD^2" "$o1" && [ $x2 -eq 1 ]; then ok secrets-scan-changes-only
+  else fail secrets-scan-changes-only "clean=$x1 leak=$x2: $o1 | $o2"; fi
+else echo "skip secrets-scan-changes-only (the pinned gitleaks build runs on linux x64; gate's CI runs it)"; fi
 done_cases

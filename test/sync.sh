@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Sync cases. Offline: local bare repositories are the remotes (non-fast-forward pushes refused), a stub GitHub
-# runs each repository's gate (started by the push, re-run on retry; fast-forward-only ref updates) and logs every request.
+# Sync cases. Offline: local bare repositories are the remotes (non-fast-forward pushes refused), and a stub GitHub
+# logs every request. A pack landing runs no gate: sync checks the tree offline and fast-forwards the default branch.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 . test/lib.sh
@@ -64,7 +64,7 @@ overlay() { # overlay [block line]: the test org's overlay, pinned to this engin
 }
 overlay
 API=http://127.0.0.1:$GP
-sync() { env -u GITHUB_GRAPHQL_URL GH_TOKEN=test-token GITHUB_API_URL=$API SYNC_GIT_BASE=file://$R SYNC_POLL_MS=20 node bin/repo-standards.mjs sync --overlay "$OV" "$@" 2>&1; }
+sync() { env -u GITHUB_GRAPHQL_URL GH_TOKEN=test-token GITHUB_API_URL=$API SYNC_GIT_BASE=file://$R node bin/repo-standards.mjs sync --overlay "$OV" $([ "$(node -p 'require("./package.json").breaking===true')" = true ] && ! printf '%s\n' "$@" | grep -qx -- --dry-run && echo --proven) "$@" 2>&1; }
 mark() { wc -l <"$LOG" | tr -d ' '; }
 between() { sed -n "$(($1 + 1)),$2p" "$LOG"; } # log lines after mark $1 up to mark $2
 writes_since() { tail -n +"$(($1 + 1))" "$LOG" | grep -v '"method":"GET"' || true; }
@@ -80,7 +80,10 @@ row() { q acme/standards 's.items.find(i => !i.pull && i.title === "Standards co
 prs='s.items.filter(i => i.pull)'
 RELEASE="https://github.com/tyler-b4innova/repo-standards/releases/tag/v$ENGINE"
 
-# Run 1: release 0.1.0 across the fleet. alpha (default branch staging) is green; beta's gate is red; boot's is red once.
+# beta tracks a root .mcp.json, so its applied tree fails the offline check
+BW=$T/beta-work; git clone -q "$R/acme/beta.git" "$BW" && echo '{}' > "$BW/.mcp.json" && G -C "$BW" add -A && G -C "$BW" commit -qm mcp && git -C "$BW" push -q origin HEAD:main
+
+# Run 1: release 0.1.0 across the fleet. alpha (default branch staging) and boot land; beta fails its offline check.
 a0=$(sha acme/alpha staging) am=$(sha acme/alpha main) b0=$(sha acme/beta main) o0=$(sha acme/boot main)
 m1=$(mark)
 out1=$(sync --version 0.1.0); rc1=$?
@@ -88,7 +91,6 @@ e1=$(mark)
 a1=$(sha acme/alpha staging) b1=$(sha acme/beta main) o1=$(sha acme/boot main)
 alpha_row1=$(row acme/alpha) beta_row1=$(row acme/beta) boot_row1=$(row acme/boot)
 msg1=$(git --git-dir "$R/acme/alpha.git" log -1 --format=%B staging)
-patch1=$(between "$m1" "$e1" | grep '"method":"PATCH","path":"/repos/acme/alpha/git/refs/heads/staging"' || true)
 beta_pr1=$(q acme/beta "JSON.stringify($prs.map(p => [p.number, p.state, p.head, p.title, p.auto_merge]))")
 beta_body1=$(q acme/beta "$prs[0]?.body")
 # the fix path in the body works as written from an existing clone that has not fetched since sync pushed
@@ -96,7 +98,7 @@ fixc=$(printf '%s' "$beta_body1" | grep -o 'git fetch origin [^`]*FETCH_HEAD')
 git clone -q "$R/acme/beta.git" "$T/beta-old" && git -C "$T/beta-old" update-ref -d refs/remotes/origin/standards/v0.1.0 # stale: fetched before sync pushed
 fixed=$(cd "$T/beta-old" && git fetch -q origin main && eval "$fixc" 2>&1 && git rev-parse HEAD) fixwant=$(git --git-dir "$R/acme/beta.git" rev-parse standards/v0.1.0)
 
-# Run 2: release 0.2.0; someone lands on alpha's staging while its gate runs, so sync re-applies once.
+# Run 2: release 0.2.0; someone lands on alpha's staging between sync's clone and its push, so sync re-applies once.
 m2=$(mark)
 out2=$(sync --version 0.2.0); rc2=$?
 e2=$(mark)
@@ -117,46 +119,63 @@ if [ $rc2 -eq 0 ] && [ "$lock" = "# example v0.2.0 internal engine $ENGINE" ] &&
   ok sync-applies-release
 else fail sync-applies-release "rc=$rc2 lock=$lock engine-mismatch: $bad_engine no-version: $no_ver dry: $dry writes: $dry_writes"; fi
 
-# sync-lands-direct-when-green: run 1 lands on alpha's default branch (staging), main untouched; run 2 finds staging
-# moved after its first green gate, re-applies once on the new head, runs gate again and lands. boot's first gate is
-# red and its second green: it lands after one retry, reading the new run and not the old one.
-d1=$(dispatches "$(between "$m1" "$e1")" acme/alpha) d2=$(dispatches "$(between "$m2" "$e2")" acme/alpha) do=$(dispatches "$(between "$m1" "$e1")" acme/boot)
-if [ $rc1 -eq 0 ] && [ "$d1" = 1 ] && [ "$a1" != "$a0" ] && [ "$(anc acme/alpha "$a0" "$a1")" = yes ] && [ "$(sha acme/alpha main)" = "$am" ] \
-  && [ -n "$(printf '%s' "$patch1" | grep "\"sha\":\"$a1\",\"force\":false")" ] \
+# sync-lands-without-gate: run 1 fast-forwards alpha's default branch (staging; main untouched) and boot's main with a
+# commit whose only parent is the previous head, starts and waits for no gate run, and creates no branch or PR; run 2
+# finds staging moved after its clone, re-applies once on the new head and lands.
+gates=$(between "$m1" "$e2" | grep -c -E '"path":"[^"]*(gate-start|/actions/runs)' || true) # request paths only (a compliance body links the run)
+if [ $rc1 -eq 0 ] && [ "$gates" = 0 ] && [ "$(git --git-dir "$R/acme/alpha.git" rev-parse "$a1^")" = "$a0" ] && [ "$(sha acme/alpha main)" = "$am" ] \
   && [ "$(printf '%s\n' "$msg1" | head -1)" = "chore: standards v0.1.0" ] && [ -n "$(printf '%s' "$msg1" | grep -F "$RELEASE")" ] \
-  && [ -n "$(printf '%s' "$alpha_row1" | grep -F "| landed $(printf '%.7s' "$a1") (gate https://github.com/acme/alpha/actions/runs/")" ] \
-  && [ "$d2" = 2 ] && [ -n "$moved" ] && [ "$(anc acme/alpha "$moved" "$a2")" = yes ] && [ "$(anc acme/alpha "$a1" "$a2")" = yes ] \
-  && [ -n "$(printf '%s' "$alpha_row2" | grep -F "| landed $(printf '%.7s' "$a2") (gate ")" ] \
-  && [ -z "$(heads acme/alpha | grep standards/)" ] && [ "$(q acme/alpha "$prs.length")" = 0 ] && [ -n "$(heads acme/boot | grep main)" ] \
-  && [ -z "$(heads acme/boot | grep standards/)" ] && [ "$do" = 2 ] && [ "$(anc acme/boot "$o0" "$o1")" = yes ] && [ "$o1" != "$o0" ] \
-  && [ -n "$(printf '%s' "$boot_row1" | grep -F "| landed $(printf '%.7s' "$o1") (gate ")" ] && [ "$(q acme/boot "$prs.length")" = 0 ] \
-  && [ -n "$(printf '%s\n' "$out1" | grep -E "^acme/alpha: landed $(printf '%.7s' "$a1") ")" ] && [ -n "$(printf '%s\n' "$out1" | grep -E '^acme/boot: landed ')" ]; then
-  ok sync-lands-direct-when-green
-else fail sync-lands-direct-when-green "rc=$rc1 dispatches=$d1/$d2 a0=$a0 a1=$a1 a2=$a2 moved=$moved heads=$(heads acme/alpha) patch=$patch1 msg=$msg1 rows: $alpha_row1 / $alpha_row2 / boot $do $boot_row1 out: $out1 $out2"; fi
+  && [ -n "$(printf '%s' "$alpha_row1" | grep -F "| landed $(printf '%.7s' "$a1") |")" ] && [ -z "$(heads acme/alpha | grep standards/)" ] && [ "$(q acme/alpha "$prs.length")" = 0 ] \
+  && [ "$(git --git-dir "$R/acme/boot.git" rev-parse "$o1^")" = "$o0" ] && [ -n "$(printf '%s' "$boot_row1" | grep -F "| landed $(printf '%.7s' "$o1") |")" ] \
+  && [ -n "$moved" ] && [ "$(anc acme/alpha "$moved" "$a2")" = yes ] && [ "$(anc acme/alpha "$a1" "$a2")" = yes ] && [ -n "$(printf '%s' "$alpha_row2" | grep -F "| landed $(printf '%.7s' "$a2") |")" ] \
+  && [ -n "$(printf '%s\n' "$out1" | grep -E "^acme/alpha: landed $(printf '%.7s' "$a1")")" ] && [ -n "$(printf '%s\n' "$out2" | grep 're-applying v0.2.0')" ]; then
+  ok sync-lands-without-gate
+else fail sync-lands-without-gate "rc=$rc1 gates=$gates a0=$a0 a1=$a1 a2=$a2 moved=$moved rows: $alpha_row1 / $alpha_row2 / boot $boot_row1 out: $out1 $out2"; fi
 
-# A staged repository whose default branch is main never takes a direct landing, even with gate green.
-g_main=$(git --git-dir "$R/acme/gamma.git" rev-parse main)
+# A staged repository whose default branch is main never takes a direct landing.
 g_row=$(q acme/standards 's.items.find(i => !i.pull && i.title === "Standards compliance")?.body' | grep '^| acme/gamma ')
 g_prs=$(q acme/gamma 's.items.filter(i => i.pull).length')
-if [ -n "$(printf '%s' "$g_row" | grep 'staged repo defaults to main')" ] && [ "$g_prs" -ge 1 ] && [ "$(git --git-dir "$R/acme/gamma.git" rev-list --count main)" = 1 ]; then ok sync-lands-direct-when-green
-else fail sync-lands-direct-when-green "staged repo on main: row=$g_row prs=$g_prs main=$g_main"; fi
+if [ -n "$(printf '%s' "$g_row" | grep 'staged repo defaults to main')" ] && [ "$g_prs" -ge 1 ] && [ "$(git --git-dir "$R/acme/gamma.git" rev-list --count main)" = 1 ]; then ok sync-lands-without-gate
+else fail sync-lands-without-gate "staged repo on main: row=$g_row prs=$g_prs"; fi
 
-# sync-opens-pr-when-red: beta's gate fails twice (the second after one re-apply), so one PR for a person, no
-# auto-merge; the next release supersedes it; a PR a person closed is not reopened for the same content.
-db=$(dispatches "$(between "$m1" "$e1")" acme/beta)
+# sync-opens-pr-when-red: beta's applied tree fails the offline check, so one PR for a person naming the failure, no
+# auto-merge, beta's main untouched; the next release supersedes it; a PR a person closed is not reopened.
 n2=$(q acme/beta "$prs.find(p => p.head === 'standards/v0.2.0')?.number")
 curl -s -X PATCH -d '{"state":"closed"}' "$API/repos/acme/beta/pulls/$n2" >/dev/null
 m4=$(mark)
 out4=$(sync --version 0.2.0 --repo acme/beta); rc4=$?
 w4=$(writes_since "$m4")
-if [ "$db" = 2 ] && [ "$b1" = "$b0" ] && [ "$beta_pr1" = '[[1,"open","standards/v0.1.0","chore: standards v0.1.0 (needs a person)",null]]' ] \
-  && [ -n "$(printf '%s' "$beta_body1" | grep -F "gate run: https://github.com/acme/beta/actions/runs/")" ] && [ -n "$(printf '%s' "$beta_body1" | grep 'gate red')" ] && [ -n "$fixc" ] && [ "$(printf '%s' "$fixed" | tail -1)" = "$fixwant" ] \
-  && [ -z "$(grep enablePullRequestAutoMerge "$LOG")" ] && [ -n "$(printf '%s' "$beta_row1" | grep -F '| PR #1: gate red |')" ] \
+if [ "$b1" = "$b0" ] && [ "$beta_pr1" = '[[1,"open","standards/v0.1.0","chore: standards v0.1.0 (needs a person)",null]]' ] \
+  && [ -n "$(printf '%s' "$beta_body1" | grep 'offline check failed')" ] && [ -n "$(printf '%s' "$beta_body1" | grep -F '.mcp.json is committed')" ] && [ -n "$fixc" ] && [ "$(printf '%s' "$fixed" | tail -1)" = "$fixwant" ] \
+  && [ -z "$(grep enablePullRequestAutoMerge "$LOG")" ] && [ -n "$(printf '%s' "$beta_row1" | grep -F '| PR #1: offline check failed |')" ] \
   && [ "$(q acme/beta "JSON.stringify($prs.map(p => [p.number, p.state, p.head]))")" = '[[1,"closed","standards/v0.1.0"],[2,"closed","standards/v0.2.0"]]' ] \
-  && [ -n "$(printf '%s' "$beta_row2" | grep -F '| PR #2: gate red |')" ] && [ "$(sha acme/beta main)" = "$b0" ] \
-  && [ $rc4 -eq 0 ] && [ "$(dispatches "$w4" acme/beta)" = 0 ] && [ "$(count "$w4" '/pulls"')" = 0 ] && [ -n "$(row acme/beta | grep 'closed by a person in #2; not reopened')" ]; then
+  && [ -n "$(printf '%s' "$beta_row2" | grep -F '| PR #2: offline check failed |')" ] && [ "$(sha acme/beta main)" = "$b0" ] \
+  && [ $rc4 -eq 0 ] && [ "$(count "$w4" '/pulls"')" = 0 ] && [ -n "$(row acme/beta | grep 'closed by a person in #2; not reopened')" ]; then
   ok sync-opens-pr-when-red
-else fail sync-opens-pr-when-red "dispatches=$db b0=$b0 b1=$b1 prs1=$beta_pr1 body1=$beta_body1 row1=$beta_row1 row2=$beta_row2 prs=$(q acme/beta "JSON.stringify($prs.map(p => [p.number, p.state, p.head]))") out4=$out4 w4=$w4"; fi
+else fail sync-opens-pr-when-red "b0=$b0 b1=$b1 prs1=$beta_pr1 body1=$beta_body1 row1=$beta_row1 row2=$beta_row2 prs=$(q acme/beta "JSON.stringify($prs.map(p => [p.number, p.state, p.head]))") out4=$out4 w4=$w4"; fi
+
+# A push the default branch refuses for any other reason (here a server hook) also ends in one PR for a person.
+seed acme/locked "$(std example internal)"
+printf '#!/bin/sh\nwhile read old new ref; do [ "$ref" = refs/heads/main ] && { echo "denied: main is locked" >&2; exit 1; }; done\nexit 0\n' > "$R/acme/locked.git/hooks/pre-receive" && chmod +x "$R/acme/locked.git/hooks/pre-receive"
+lk=$(sync --version 0.2.0 --repo acme/locked); lr=$(row acme/locked)
+if [ -n "$(printf '%s' "$lr" | grep -F 'PR #1: push to main failed')" ] && [ "$(q acme/locked "$prs.length")" = 1 ] && [ -n "$(q acme/locked "$prs[0]?.body" | grep 'denied: main is locked')" ]; then ok sync-opens-pr-when-red
+else fail sync-opens-pr-when-red "locked: row=$lr out=$lk"; fi
+
+# breaking-release-proves-first: an engine release marked breaking refuses the fleet; it lands on one repository
+# (--repo), and on the fleet only with --proven. (A copy of this engine with "breaking": true.)
+EB=$T/engine-breaking; mkdir -p "$EB" && cp -R bin lib template modules org defaults.json package.json "$EB/"
+node -e 'const f=process.argv[1],p=JSON.parse(require("fs").readFileSync(f,"utf8"));p.breaking=true;p.version="9.9.9";require("fs").writeFileSync(f,JSON.stringify(p))' "$EB/package.json"
+node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.engine="9.9.9";require("fs").writeFileSync(f+".9",JSON.stringify(o))' "$OV"
+bsync() { env -u GITHUB_GRAPHQL_URL GH_TOKEN=test-token GITHUB_API_URL=$API SYNC_GIT_BASE=file://$R node "$EB/bin/repo-standards.mjs" sync --overlay "$OV.9" --version 0.9.0 "$@" 2>&1; }
+k0=$(mark); br1=$(bsync); bx1=$?; kw=$(writes_since "$k0")
+br2=$(bsync --repo acme/boot); bx2=$?
+k2=$(mark); br4=$(bsync); bx4=$?; kw4=$(writes_since "$k2") # landing on one repo is not proof
+br3=$(bsync --proven); bx3=$?
+br5=$(bsync); bx5=$? # the scheduled sync after the proof rolls without the flag
+if [ $bx1 -eq 0 ] && [ -n "$(printf '%s' "$br1" | grep 'is marked breaking and not proven')" ] && [ -z "$kw" ] && [ $bx2 -eq 0 ] && [ -n "$(printf '%s' "$br2" | grep '^acme/boot: landed')" ] \
+  && [ $bx4 -eq 0 ] && [ -z "$kw4" ] && [ $bx3 -eq 0 ] && [ -n "$(printf '%s' "$br3" | grep '^acme/alpha: landed')" ] && [ -n "$(q acme/standards 's.items.find(i => !i.pull && i.title === "Standards compliance")?.body' | grep 'std:proven engine=9.9.9')" ] \
+  && [ $bx5 -eq 0 ] && [ -n "$(printf '%s' "$br5" | grep '^acme/alpha: current')" ]
+then ok breaking-release-proves-first; else fail breaking-release-proves-first "unproven=$bx1 one=$bx2 again=$bx4 proven=$bx3 after=$bx5 writes=$kw/$kw4 :: $br1 :: $br2 :: $br4 :: $br3 :: $br5"; fi
 
 # error-tracker-setup: dry run writes nothing; real run creates, attaches, files and writes the DSN; rerun is all done.
 W=$T/web
@@ -194,18 +213,4 @@ if [ $rc -eq 0 ] && [ "$prs" = "closed:chore/sentry-project-web open:chore/sentr
   && [ -z "$(writes_since "$g2" | grep DELETE)" ] && [ -n "$(printf '%s' "$r4" | grep 'mapping PR already open')" ]; then ok error-tracker-rerun-safe
 else fail error-tracker-rerun-safe "rc=$rc prs=$prs deletes=$(writes_since "$g2" | grep DELETE) $r3 | $r4"; fi
 
-# pack-landing-cheap-except-canary (sync side): each profile's canary lands first; a red canary stops the fleet
-node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.gate={canary:{client:"beta"}};require("fs").writeFileSync(f,JSON.stringify(o))' "$OV"
-k0=$(mark); cr1=$(sync --version 0.4.0); ck1=$?; wait_row=$(row acme/alpha)
-node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.gate={canary:{internal:"alpha"}};require("fs").writeFileSync(f,JSON.stringify(o))' "$OV"
-node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.gate={canary:{internal:"ghost"}};require("fs").writeFileSync(f,JSON.stringify(o))' "$OV"
-cr4=$(sync --version 0.5.0 --dry-run); ck4=$?
-node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.gate={canary:{internal:"alpha"}};require("fs").writeFileSync(f,JSON.stringify(o))' "$OV"
-cr3=$(sync --version 0.5.0 --dry-run); ck3=$?
-cr2=$(sync --version 0.5.0); ck2=$?
-first=$(printf '%s\n' "$cr2" | grep -E '^acme/[a-z]+: ' | head -1)
-if [ $ck1 -eq 1 ] && [ -n "$(printf "%s" "$cr1" | grep "canary acme/beta")" ] && [ -z "$(heads acme/alpha | grep v0.4.0)" ] && [ -z "$(printf '%s' "$cr1" | grep '^acme/alpha: ')" ] \
-  && [ -n "$(printf '%s' "$wait_row" | grep 'waiting: canary acme/beta')" ] && [ "${first%%:*}" = acme/alpha ] && [ -n "$(printf '%s\n' "$cr2" | grep '^acme/boot: ')" ] && [ $ck3 -eq 0 ] && [ -n "$(printf '%s\n' "$cr3" | grep '^\[dry-run\] acme/boot: ')" ] && [ $ck4 -eq 1 ] && [ -n "$(printf '%s' "$cr4" | grep "acme/ghost (not in this pack's fleet)")" ] && [ -z "$(printf '%s\n' "$cr4" | grep '^\[dry-run\] acme/boot: ')" ]
-then ok pack-landing-cheap-except-canary; else fail pack-landing-cheap-except-canary "red=$ck1 green=$ck2 dry=$ck3 ghost=$ck4 first=$first :: $cr1 :: $cr2 :: $cr3 :: $cr4"; fi
-overlay
 done_cases
