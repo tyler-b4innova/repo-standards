@@ -169,11 +169,13 @@ node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8
 bsync() { env -u GITHUB_GRAPHQL_URL GH_TOKEN=test-token GITHUB_API_URL=$API SYNC_GIT_BASE=file://$R node "$EB/bin/repo-standards.mjs" sync --overlay "$OV.9" --version 0.9.0 "$@" 2>&1; }
 k0=$(mark); br1=$(bsync); bx1=$?; kw=$(writes_since "$k0")
 br2=$(bsync --repo acme/boot); bx2=$?
-br3=$(bsync); bx3=$?
-# once a repository carries it, a plain fleet sync (the scheduled one, no --proven) follows
-if [ $bx1 -eq 1 ] && [ -n "$(printf '%s' "$br1" | grep 'is marked breaking')" ] && [ -z "$kw" ] && [ $bx2 -eq 0 ] && [ -n "$(printf '%s' "$br2" | grep '^acme/boot: landed')" ] \
-  && [ $bx3 -eq 0 ] && [ -n "$(printf '%s' "$br3" | grep 'proven on acme/boot')" ] && [ -n "$(printf '%s' "$br3" | grep '^acme/alpha: landed')" ]
-then ok breaking-release-proves-first; else fail breaking-release-proves-first "refused=$bx1 one=$bx2 fleet=$bx3 writes=$kw :: $br1 :: $br2 :: $br3"; fi
+k2=$(mark); br4=$(bsync); bx4=$?; kw4=$(writes_since "$k2") # landing on one repo is not proof
+br3=$(bsync --proven); bx3=$?
+br5=$(bsync); bx5=$? # the scheduled sync after the proof rolls without the flag
+if [ $bx1 -eq 0 ] && [ -n "$(printf '%s' "$br1" | grep 'is marked breaking and not proven')" ] && [ -z "$kw" ] && [ $bx2 -eq 0 ] && [ -n "$(printf '%s' "$br2" | grep '^acme/boot: landed')" ] \
+  && [ $bx4 -eq 0 ] && [ -z "$kw4" ] && [ $bx3 -eq 0 ] && [ -n "$(printf '%s' "$br3" | grep '^acme/alpha: landed')" ] && [ -n "$(q acme/standards 's.items.find(i => !i.pull && i.title === "Standards compliance")?.body' | grep 'std:proven engine=9.9.9')" ] \
+  && [ $bx5 -eq 0 ] && [ -n "$(printf '%s' "$br5" | grep '^acme/alpha: current')" ]
+then ok breaking-release-proves-first; else fail breaking-release-proves-first "unproven=$bx1 one=$bx2 again=$bx4 proven=$bx3 after=$bx5 writes=$kw/$kw4 :: $br1 :: $br2 :: $br4 :: $br3 :: $br5"; fi
 
 # error-tracker-setup: dry run writes nothing; real run creates, attaches, files and writes the DSN; rerun is all done.
 W=$T/web

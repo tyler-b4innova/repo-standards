@@ -33,7 +33,10 @@ export async function reviewStatus({ api, owner, repo, pr: n, files, now = Date.
   const uiOpt = std.ui_paths, inc = (Array.isArray(uiOpt) ? uiOpt : uiOpt?.include ?? pack.ui_paths ?? []).map(glob);
   const ign = [...(pack.ui_ignore ?? []), ...(uiOpt?.ignore ?? [])].map(glob);
   const ui = (fs) => fs.filter((f) => inc.some((r) => r.test(f)) && !ign.some((r) => r.test(f)));
-  const changed = ui((await all(`${R}/pulls/${n}/files`)).map((f) => f.filename));
+  const listedFiles = await all(`${R}/pulls/${n}/files`), changed = ui(listedFiles.map((f) => f.filename));
+  // GitHub lists at most 3,000 files; a larger diff cannot be judged, so it fails closed.
+  if (pr.changed_files > listedFiles.length)
+    return verdict("failure", `GitHub lists ${listedFiles.length} of ${pr.changed_files} changed files, so UI changes cannot be judged; split the PR`);
   const parts = [await design(), await codex()].filter(Boolean);
   const failed = parts.find((p) => p.state === "failure"), pending = parts.find((p) => p.state === "pending");
   const details = parts.flatMap((p) => p.details ?? [p.description]);
