@@ -61,8 +61,14 @@ for t in issue_comment pull_request_review pull_request_review_comment edited pu
 grep -q "types: \[opened, synchronize, reopened, ready_for_review\]" <<<"$gtrig" && grep -q merge_group <<<"$gtrig" && grep -q workflow_dispatch <<<"$gtrig" || r="$r triggers: $gtrig"
 cp "$R/scripts/agent/pack.json" "$T/pack.bak"; node -e 'const f=process.argv[1],p=require(f);p.review_status=true;require("fs").writeFileSync(f,JSON.stringify(p))' "$R/scripts/agent/pack.json"
 st false alice feat "$OLD" '✅ **Completed** now' 30 "$OPEN" yes "$HEAD1" "$OLD"; out=$(gate); x=$?
+# the switch is read from the base branch: a pull request that turns it on in its own checkout is still evaluated
+put() { node -e 'const b={login:"chatgpt-codex-connector[bot]",type:"Bot"};require("fs").writeFileSync(process.argv[1],JSON.stringify(eval("("+process.argv[2]+")")))' "$T/state.json" "$1"; }
+BASEPACK="{content:Buffer.from(require('fs').readFileSync('$T/pack.bak')).toString('base64')}"
+OPEN=$OPEN put "{pr:{number:7,draft:false,user:{login:'alice'},head:{sha:'$HEAD1',ref:'feat'},base:{ref:'main'}},comments:{7:[{user:b,updated_at:new Date().toISOString(),body:'<!-- codex-pull-request-review-summary -->\\n| 📝 **Code Review** | ✅ **Completed** now | \`${HEAD1:0:7}\` | x |'}]},recent:[{number:7},{number:3}],threads:JSON.parse(process.env.OPEN),pushed:new Date(Date.now()-3600000).toISOString(),timeline:[],files:{'scripts/agent/pack.json@main':$BASEPACK},perms:process.env.WF_PERMS.split(' ')}"
+self=$(gate); sx=$?
 cp "$T/pack.bak" "$R/scripts/agent/pack.json"
 [ $x -eq 0 ] && has "the org App posts the \`review\` status" "$out" || r="$r [review on: $x $out]"
+[ $sx -eq 1 ] || r="$r [a PR's own switch skipped review: $sx $self]"
 if [ -z "${r:-}" ]; then ok gate-code-only; else fail gate-code-only "$r"; fi; r=""
 # gate-no-push-regate: no push trigger at all (not main, staging, nor pack landings)
 if ! grep -q "push" <<<"$gtrig"; then ok gate-no-push-regate; else fail gate-no-push-regate "$gtrig"; fi

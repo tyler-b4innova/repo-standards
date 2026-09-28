@@ -102,6 +102,10 @@ for c in 'l.lane=[]|launcher.lane is not a launcher setting' 'l.lanes[0].vendor=
   'l.dispatch[0].every="hourly"|every must look like' 'l.lanes[1].accounts=["gh"+"p_"+"a".repeat(36)]|looks like a credential' 'l.lanes[1].accounts=[" gh"+"p_"+"b".repeat(36)]|looks like a credential' 'l.lanes.push({name:"claude",vendor:"codex"})|duplicate lane claude'; do
   out=$(lbad "${c%%|*}"); has "${c#*|}" "$out" && ! has ACCEPTED "$out" && ! has WROTE "$out" || why="$why; [${c%%|*}] $out"
 done
+# review.status needs org_admin.review_status (and the reverse): the pack stops checking only where the ruleset requires review
+node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.review={status:true};require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$T/half.json"
+d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; out=$(OVERLAY="$T/half.json" apply "$d" 2>&1) && why="$why; review.status without org_admin.review_status accepted"
+has "review.status and org_admin.review_status must match" "$out" || why="$why; [$out]"
 # a 0.3 overlay's codex.verdict is refused with the migration, not silently ignored
 node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.codex={verdict:"status"};require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$T/legacy.json"
 d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; out=$(OVERLAY="$T/legacy.json" apply "$d" 2>&1) && why="$why; legacy codex.verdict accepted"

@@ -183,8 +183,11 @@ B1="https://github.com/acme/demo/blob/main/.evidence/after-home-400.png" B2="htt
 fx "{files:{6:[\"src/app.css\"]},comments:{6:[c(31,\"alice\",img(\"$B1\")),c(32,\"alice\",img(\"$B2\")),c(33,\"alice\",$GOOD+img(\"$B3\"))]}}"
 : > "$LOG"; out1=$(ev "$R" 6); s1=$?; log=$(cat "$LOG")
 fx '{files:{6:["src/app.css"]},comments:{6:[c(34,"alice",'"$GOOD"')]}}'; out2=$(ev "$R" 6); s2=$?
+# an undecodable path is rejected evidence, never an error that leaves an old verdict standing
+fx '{files:{6:["src/app.css"]},comments:{6:[c(35,"alice",'"$GOOD"'+img(U+"after-%ZZ-400.png"))]}}'; out3=$(ev "$R" 6); s3=$?
 if [ $s1 -eq 1 ] && has "$B1" "$out1" && has "$B2" "$out1" && has "$B3" "$out1" && ! has "after-home-1280" "$out1" &&
-  has "\"method\":\"GET\",\"path\":\"/repos/acme/demo/contents/.evidence\",\"query\":\"?ref=$SHA\"" "$log" && ! has "contents/.evidence/after-home-400.png" "$log" && [ $s2 -eq 0 ]; then ok evidence-images-pinned-resolving
+  has "\"method\":\"GET\",\"path\":\"/repos/acme/demo/contents/.evidence\",\"query\":\"?ref=$SHA\"" "$log" && ! has "contents/.evidence/after-home-400.png" "$log" && [ $s2 -eq 0 ] \
+  && [ $s3 -eq 1 ] && has "unresolved" "$out3" && ! has "URIError" "$out3"; then ok evidence-images-pinned-resolving
 else fail evidence-images-pinned-resolving "bad-images=$s1 good=$s2: $out1"; fi
 
 # Stale or incomplete evidence: a later UI commit, a commit outside the PR, or no 1280px capture.

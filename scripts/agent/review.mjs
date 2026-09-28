@@ -78,14 +78,14 @@ export async function reviewStatus({ api, owner, repo, pr: n, files, now = Date.
       if (!trust(c)) { bad.push(`${who}: not a trusted author (${trusted.join(", ")}; PR author @${pr.user.login})`); continue; }
       // Existence by directory listing (one read per commit and folder): the file endpoint returns the image
       // itself and refuses files over 1 MB, which full-page captures often are.
-      const miss = [], listed = new Map();
+      const miss = [], listed = new Map(), decode = (x) => { try { return decodeURIComponent(x); } catch { return null; } };
       for (const u of urls) {
-        const m = u.match(pin), dir = m?.[2].split("/").slice(0, -1).join("/"), key = m && `${m[1]}:${dir}`;
-        if (m && !listed.has(key)) listed.set(key, new Set(((await api("GET", `${R}/contents/${dir}?ref=${m[1]}`)) ?? []).map((f) => f.path)));
-        if (!m || !listed.get(key).has(decodeURIComponent(m[2]))) miss.push(u);
+        const m = u.match(pin), path = m && decode(m[2]), dir = path?.split("/").slice(0, -1).join("/"), key = path && `${m[1]}:${dir}`;
+        if (path && !listed.has(key)) listed.set(key, new Set(((await api("GET", `${R}/contents/${dir}?ref=${m[1]}`)) ?? []).map((f) => f.path)));
+        if (!path || !listed.get(key).has(path)) miss.push(u); // an undecodable path is unresolved, never an error
       }
       if (miss.length) { bad.push(`${who}: unresolved (need this repo, a 40-hex SHA, the file): ${miss.join(" ")}`); continue; }
-      const shas = [...new Set(urls.map((u) => u.match(pin)[1]))], names = urls.map((u) => decodeURIComponent(u.match(pin)[2]));
+      const shas = [...new Set(urls.map((u) => u.match(pin)[1]))], names = urls.map((u) => decode(u.match(pin)[2]));
       // Distinct images: a file counts for one state only. A file named like a viewport capture is never a page.
       const img = (nm, st) => new RegExp(`(^|[/_-])${st}[_-]`, "i").test(nm) && !new RegExp(`(^|[/_-])${st === "before" ? "after" : "before"}[_-]`, "i").test(nm);
       const shot = (st, w) => names.some((nm) => img(nm, st) && new RegExp(`(^|[^0-9])${w}\\.(png|jpe?g|webp|gif)$`, "i").test(nm));

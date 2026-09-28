@@ -165,13 +165,22 @@ if (cmd === "plan") {
   // The pull request's conversation (Codex verdict and threads, evidence, a promotion's design sign-off) is the org
   // App's `review` status once the org turns it on (pack.json review_status); until then gate evaluates the same rule.
   if (!prNumber) { console.log("review: not a pull request"); process.exit(0); }
-  if (pack.review_status) { console.log("review: the org App posts the `review` status (scripts/agent/review.mjs); gate checks the code only"); process.exit(0); }
   const { reviewStatus, restApi } = await import(new URL("./review.mjs", import.meta.url));
   let token = env.GH_TOKEN || env.GITHUB_TOKEN;
   try { token ||= ex("gh", ["auth", "token"], { encoding: "utf8", stdio: "pipe" }).trim(); } catch {}
-  const [owner, name] = (env.GITHUB_REPOSITORY ?? "").split("/");
+  const [owner, name] = (env.GITHUB_REPOSITORY ?? "").split("/"), api = restApi({ token });
+  // The switch and the rule come from the base branch (a pull request cannot turn its own review off); the checkout's
+  // copies only stand in where the base has none.
+  let base = {};
+  try {
+    const pr = await api("GET", `/repos/${owner}/${name}/pulls/${prNumber}`), at = (f) => api("GET", `/repos/${owner}/${name}/contents/${f}?ref=${encodeURIComponent(pr?.base?.ref ?? "")}`);
+    const b64 = (f) => (f?.content ? JSON.parse(Buffer.from(f.content, "base64").toString("utf8")) : null);
+    base = { pack: b64(await at("scripts/agent/pack.json")), std: b64(await at("standards.json")) };
+  } catch (e) { fail(`review: ${e.message}`, "grant the job actions, checks, pull-requests and issues read, then re-run"); }
+  const files = { pack: base.pack ?? pack, std: base.std ?? std };
+  if (files.pack.review_status) { console.log("review: the org App posts the `review` status (scripts/agent/review.mjs); gate checks the code only"); process.exit(0); }
   let r;
-  try { r = await reviewStatus({ api: restApi({ token }), owner, repo: name, pr: prNumber, files: { pack, std }, force: true, serverUrl: env.GITHUB_SERVER_URL || "https://github.com" }); }
+  try { r = await reviewStatus({ api, owner, repo: name, pr: prNumber, files, force: true, serverUrl: env.GITHUB_SERVER_URL || "https://github.com" }); }
   catch (e) { fail(`review: ${e.message}`, "grant the job actions, checks, pull-requests and issues read, then re-run"); }
   if (!r) { console.log("review: draft or closed; not evaluated"); process.exit(0); }
   for (const d of r.details ?? []) console.log(`review: ${d}`);
