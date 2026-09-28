@@ -81,13 +81,14 @@ if (cmd === "plan") {
   output("browsers", list.join(","));
 } else if (cmd === "syntax") {
   // The cheap gate's stand-in for building: managed scripts and workflows must at least parse.
-  const bad = [];
+  const bad = [], yaml = spawnSync("python3", ["-c", "import yaml"]).status === 0;
+  if (!yaml) console.log("notice: python3 with PyYAML is not on this runner; workflows are not parsed here");
   for (const f of git("ls-files", "scripts/agent", ".github/workflows").split("\n").filter(Boolean)) {
     const text = rd(f, "utf8"), first = text.split("\n")[0];
     const r = /\.(sh)$/.test(f) || /^#!.*\bbash\b/.test(first) ? spawnSync("bash", ["-n", f], { encoding: "utf8" })
       : /\.(mjs|js)$/.test(f) || /^#!.*\bnode\b/.test(first) ? spawnSync("node", ["--check", ...(/\.(mjs|js)$/.test(f) ? [f] : ["--input-type=module"])], { encoding: "utf8", input: /\.(mjs|js)$/.test(f) ? undefined : text.replace(/^#!.*\n/, "") })
-      : /\.ya?ml$/.test(f) ? spawnSync("python3", ["-c", "import sys,yaml; yaml.safe_load(open(sys.argv[1]))", f], { encoding: "utf8" }) : null;
-    if (r && r.status && !(r.error && /\.ya?ml$/.test(f))) bad.push(`${f}: ${(r.stderr || r.stdout || "").trim().split("\n").slice(-1)[0]}`);
+      : /\.ya?ml$/.test(f) && yaml ? spawnSync("python3", ["-c", "import sys,yaml; yaml.safe_load(open(sys.argv[1]))", f], { encoding: "utf8" }) : null;
+    if (r && r.status) bad.push(`${f}: ${(r.stderr || r.stdout || "").trim().split("\n").slice(-1)[0]}`);
   }
   if (bad.length) fail(`syntax errors:\n  ${bad.join("\n  ")}`, "fix them; managed files come from the pack (setup.sh --check names the restore)");
   console.log("syntax: scripts and workflows parse");
@@ -99,7 +100,7 @@ if (cmd === "plan") {
   const name = pack.preview?.check_name ?? "Workers Builds", author = pack.preview?.comment_author ?? "cloudflare-workers-and-pages[bot]";
   const wait = Number(env.GATE_PREVIEW_WAIT_S ?? 180) * 1000, start = Date.now();
   for (;;) {
-    const runs = ((await get(`/commits/${head}/check-runs?per_page=100`, { need: false }))?.check_runs ?? []).filter((c) => c.name?.startsWith(name));
+    const runs = ((await get(`/commits/${head}/check-runs?per_page=100`))?.check_runs ?? []).filter((c) => c.name?.startsWith(name));
     const red = runs.find((c) => c.status === "completed" && !["success", "neutral", "skipped"].includes(c.conclusion));
     if (red) fail(`Cloudflare build failed for ${short}: ${red.name} ${red.conclusion} (${red.details_url})`, "fix the Worker build; gate tests the deployed preview");
     if (!runs.length) { console.log(`preview: no "${name}" check run on ${short}; e2e runs locally`); output("url", ""); process.exit(0); }
@@ -148,15 +149,18 @@ if (cmd === "plan") {
   const cfgFile = [...(rootPw ? ls(".") : []), ...(dir && !rootPw ? ls(dir).map((f) => `${dir}/${f}`) : [])].find((f) => /(^|\/)playwright\.config\.[cm]?[jt]s$/.test(f));
   const cfg = cfgFile ? rd(cfgFile, "utf8") : "", named = (b) => new RegExp(`name:\\s*['"\`]${b}['"\`]`).test(cfg);
   const projects = /\bprojects\s*:/.test(cfg) ? browsers().filter(named).map((b) => `--project=${b}`) : [];
-  // Without --project Playwright runs every project, so a config whose projects are named otherwise is refused.
-  if (!e2eCmd && !script && cfg && /\bprojects\s*:/.test(cfg) && !projects.length)
-    fail(`${cfgFile} defines projects but none named ${browsers().join(" or ")}, so gate cannot pick the Chromium run`, 'name the Chromium project "chromium" (gate runs only that), or set standards.json e2e.command');
   const pwBin = has("node_modules/.bin/playwright") ? ["node_modules/.bin/playwright", []] : ["npx", ["--no-install", "playwright"]];
-  const run = e2eCmd ? ["bash", ["-c", e2eCmd]] : script ? [pm, ["run", script]] : dir && pw ? [pwBin[0], [...pwBin[1], "test", dir, ...projects]]
+  // A package script that runs `playwright test` gets the same project selection (npm needs `--` before it).
+  const pwScript = script && /\bplaywright\s+test\b/.test(pkg.scripts[script]);
+  // Without --project Playwright runs every project, so a config whose projects are named otherwise is refused.
+  if (!e2eCmd && (!script || pwScript) && cfg && /\bprojects\s*:/.test(cfg) && !projects.length)
+    fail(`${cfgFile} defines projects but none named ${browsers().join(" or ")}, so gate cannot pick the Chromium run`, 'name the Chromium project "chromium" (gate runs only that), or set standards.json e2e.command');
+  const run = e2eCmd ? ["bash", ["-c", e2eCmd]] : script ? [pm, ["run", script, ...(pwScript && projects.length ? [...(pm === "npm" ? ["--"] : []), ...projects] : [])]] : dir && pw ? [pwBin[0], [...pwBin[1], "test", dir, ...projects]]
     : rootPw ? [pwBin[0], [...pwBin[1], "test", ...projects]]
     : dir && ls(dir, { recursive: true }).some((f) => /\.test\.[cm]?js$/.test(f)) ? ["node", ["--test", `${dir}/**/*.test.*js`]] : null;
   // Budget: the whole suite within gate_budget.e2e minutes (standards.json e2e.budget may only tighten it).
-  const mins = Math.min(Number(e2eCfg.budget ?? Infinity), pack.gate_budget?.e2e ?? 5), ms = Math.round(mins * 60000);
+  if (e2eCfg.budget !== undefined && !(typeof e2eCfg.budget === "number" && e2eCfg.budget > 0)) fail(`standards.json e2e.budget is ${JSON.stringify(e2eCfg.budget)}`, "minutes above 0 (it may only tighten the org budget)");
+  const mins = Math.min(e2eCfg.budget ?? Infinity, pack.gate_budget?.e2e ?? 5), ms = Math.round(mins * 60000);
   const url = env.GATE_PREVIEW_URL ?? "";
   if (run) {
     console.log(`e2e: ${run[0]} ${run[1].map((a) => (a.includes("*") ? `"${a}"` : a)).join(" ")}${url ? ` against ${url}` : ""} (budget ${mins} min)`);

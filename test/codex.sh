@@ -122,8 +122,9 @@ then ok skip-never-greens-gate; else fail skip-never-greens-gate "jobif=$jobif d
 # ---- the head's Workers Builds preview: a failed Cloudflare build fails gate; the URL comes from the bot comment
 CF='{user:{login:"cloudflare-workers-and-pages[bot]"},body:"## Deploying\n### Preview URL: https://feat.preview.example.test, https://feat-demo.example.test (commit '"${HEAD1:0:7}"')\n"}'
 pv() { (cd "$R" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$T/event.json" GATE_PREVIEW_WAIT_S=0 GITHUB_OUTPUT= node scripts/agent/gate.mjs preview 2>&1); }
-put "{pr:{number:7,head:{sha:\"$HEAD1\"}},checks:[{name:\"Workers Builds: demo\",status:\"completed\",conclusion:\"success\"}],comments:{7:[$CF]}}"; p1=$(pv); x1=$?
-put "{pr:{number:7,head:{sha:\"$HEAD1\"}},checks:[{name:\"Workers Builds: demo\",status:\"completed\",conclusion:\"failure\",details_url:\"https://dash.example\"}],comments:{7:[$CF]}}"; p2=$(pv); x2=$?
+PERMS_JS="perms:process.env.WF_PERMS.split(' ')"
+put "{$PERMS_JS,pr:{number:7,head:{sha:\"$HEAD1\"}},checks:[{name:\"Workers Builds: demo\",status:\"completed\",conclusion:\"success\"}],comments:{7:[$CF]}}"; p1=$(pv); x1=$?
+put "{$PERMS_JS,pr:{number:7,head:{sha:\"$HEAD1\"}},checks:[{name:\"Workers Builds: demo\",status:\"completed\",conclusion:\"failure\",details_url:\"https://dash.example\"}],comments:{7:[$CF]}}"; p2=$(pv); x2=$?
 put "{pr:{number:7,head:{sha:\"$HEAD1\"}},checks:[],comments:{7:[]}}"; p3=$(pv); x3=$?
 if [ $x1 -eq 0 ] && has "url=https://feat.preview.example.test" "$p1" && [ $x2 -eq 1 ] && has "Cloudflare build failed" "$p2" && [ $x3 -eq 0 ] && has "e2e runs locally" "$p3"
 then ok e2e-uses-preview-url; else fail e2e-uses-preview-url "ok=$x1 red=$x2 none=$x3: $p1 | $p2 | $p3"; fi

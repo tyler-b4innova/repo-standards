@@ -198,11 +198,14 @@ else fail error-tracker-rerun-safe "rc=$rc prs=$prs deletes=$(writes_since "$g2"
 node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.gate={canary:{client:"beta"}};require("fs").writeFileSync(f,JSON.stringify(o))' "$OV"
 k0=$(mark); cr1=$(sync --version 0.4.0); ck1=$?; wait_row=$(row acme/alpha)
 node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.gate={canary:{internal:"alpha"}};require("fs").writeFileSync(f,JSON.stringify(o))' "$OV"
+node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.gate={canary:{internal:"ghost"}};require("fs").writeFileSync(f,JSON.stringify(o))' "$OV"
+cr4=$(sync --version 0.5.0 --dry-run); ck4=$?
+node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.gate={canary:{internal:"alpha"}};require("fs").writeFileSync(f,JSON.stringify(o))' "$OV"
 cr3=$(sync --version 0.5.0 --dry-run); ck3=$?
 cr2=$(sync --version 0.5.0); ck2=$?
 first=$(printf '%s\n' "$cr2" | grep -E '^acme/[a-z]+: ' | head -1)
 if [ $ck1 -eq 1 ] && [ -n "$(printf "%s" "$cr1" | grep "canary acme/beta")" ] && [ -z "$(heads acme/alpha | grep v0.4.0)" ] && [ -z "$(printf '%s' "$cr1" | grep '^acme/alpha: ')" ] \
-  && [ -n "$(printf '%s' "$wait_row" | grep 'waiting: canary acme/beta')" ] && [ "${first%%:*}" = acme/alpha ] && [ -n "$(printf '%s\n' "$cr2" | grep '^acme/boot: ')" ] && [ $ck3 -eq 0 ] && [ -n "$(printf '%s\n' "$cr3" | grep '^\[dry-run\] acme/boot: ')" ]
-then ok pack-landing-cheap-except-canary; else fail pack-landing-cheap-except-canary "red=$ck1 green=$ck2 dry=$ck3 first=$first :: $cr1 :: $cr2 :: $cr3"; fi
+  && [ -n "$(printf '%s' "$wait_row" | grep 'waiting: canary acme/beta')" ] && [ "${first%%:*}" = acme/alpha ] && [ -n "$(printf '%s\n' "$cr2" | grep '^acme/boot: ')" ] && [ $ck3 -eq 0 ] && [ -n "$(printf '%s\n' "$cr3" | grep '^\[dry-run\] acme/boot: ')" ] && [ $ck4 -eq 1 ] && [ -n "$(printf '%s' "$cr4" | grep "acme/ghost (not in this pack's fleet)")" ] && [ -z "$(printf '%s\n' "$cr4" | grep '^\[dry-run\] acme/boot: ')" ]
+then ok pack-landing-cheap-except-canary; else fail pack-landing-cheap-except-canary "red=$ck1 green=$ck2 dry=$ck3 ghost=$ck4 first=$first :: $cr1 :: $cr2 :: $cr3 :: $cr4"; fi
 overlay
 done_cases
