@@ -143,6 +143,8 @@ createServer((req, res) => {
     }
     if (rest === "pulls" && req.method === "GET") {
       const st = q("state") ?? "open", head = q("head");
+      // Someone else lands on the default branch after sync cloned (sync looks up its own PRs before pushing).
+      if (head && cfg.move?.[r] && head.endsWith(`:${cfg.move[r]}`) && st === "all") { delete cfg.move[r]; moveDefault(r); }
       return send(200, list(r).filter((x) => x.pull && (st === "all" || x.state === st) && (!head || `${r.split("/")[0]}:${x.head}` === head)).map(pullView));
     }
     if (rest === "pulls" && req.method === "POST") return send(201, pullView(add(r, { pull: true, repo: r, title: body.title, body: body.body, head: body.head, base: body.base, merged_at: null, auto_merge: null })));

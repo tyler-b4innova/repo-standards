@@ -2,7 +2,7 @@
 // repo-standards: org-neutral standards engine. Each org's standards repo runs it with its overlay.
 //   repo-standards apply --target <repo> --overlay <org.json> [--profile internal|client] [--version X.Y.Z] [--dispatch auto|manual|off]
 //   repo-standards block --overlay <org.json> --profile <p>      print the rendered managed block
-//   repo-standards sync --overlay <org.json> --version X.Y.Z [--repo owner/name]  land the pack on each fleet repo when its gate passes
+//   repo-standards sync --overlay <org.json> --version X.Y.Z [--repo owner/name] [--proven]  land the pack on each fleet repo whose offline check passes
 //   repo-standards expiry --overlay <org.json>                   credential expiry sentinel
 //   repo-standards org-apply [create-app] --overlay <org.json> [--dry-run]  org rulesets, flow property, App (org/)
 import { readFileSync } from "node:fs";
@@ -15,7 +15,7 @@ const { values: o } = parseArgs({
   args: rest,
   options: {
     target: { type: "string" }, overlay: { type: "string" }, profile: { type: "string" }, version: { type: "string" },
-    dispatch: { type: "string" }, repo: { type: "string" }, "dry-run": { type: "boolean" }, help: { type: "boolean" },
+    dispatch: { type: "string" }, repo: { type: "string" }, "dry-run": { type: "boolean" }, proven: { type: "boolean" }, help: { type: "boolean" },
   },
 });
 const usage = () => process.stdout.write(readFileSync(new URL(import.meta.url), "utf8").split("\n").slice(1, 7).map((l) => l.replace(/^\/\/ ?/, "")).join("\n") + "\n");
@@ -31,7 +31,7 @@ try {
     process.stdout.write(renderBlock(overlay, o.profile ?? "internal"));
   } else if (cmd === "sync" || cmd === "expiry") {
     const { run } = await import(`../lib/${cmd}.mjs`);
-    await run({ overlay, repo: o.repo, dryRun: o["dry-run"], version: o.version });
+    await run({ overlay, repo: o.repo, dryRun: o["dry-run"], version: o.version, proven: o.proven });
   } else if (cmd === "org-apply") {
     const { run } = await import("../org/apply.mjs");
     await run({ overlay, dryRun: o["dry-run"], cmd: sub ?? "reconcile" });

@@ -68,6 +68,12 @@ mut "S.checks={'$HEAD_SHA':$green};S.pulls[0].state='closed'"; expect "closed un
 mut "S.pulls[0].merged=true"; expect "merged" 0 DONE
 mut "S.pulls[0].state='open';S.pulls[0].merged=false;S.pulls[0].body='no link'"; expect "no closes" 1 "body lacks Closes #N"
 mut "S.pulls[0].body='Fixes #3'"
+# with the org App posting `review`, DONE also needs review=success on the head
+cp scripts/agent/pack.json "$T/pack.bak"; node -e 'const f=process.argv[1],p=require(f);p.review_status=true;require("fs").writeFileSync(f,JSON.stringify(p))' "$PWD/scripts/agent/pack.json"
+mut "S.checks={'$HEAD_SHA':$green};S.statuses={}"; expect "review missing" 1 "no review status on the head SHA yet"
+mut "S.statuses={'$HEAD_SHA':[{context:'review',state:'failure',description:'1 unresolved Codex thread(s)'}]}"; expect "review red" 1 "review failure: 1 unresolved Codex thread(s)"
+mut "S.statuses={'$HEAD_SHA':[{context:'review',state:'success',description:'ok'}]}"; expect "review green" 0 DONE
+cp "$T/pack.bak" scripts/agent/pack.json
 if [ -z "$why" ]; then ok pr-status-done; else fail pr-status-done "$why"; fi
 
 # evidence-images-pinned-resolving (posting side): two posts leave one marked comment whose image URLs carry the 40-hex SHA.

@@ -28,6 +28,7 @@ const server = createServer((req, res) => {
       st.statuses = [...(st.statuses ?? []), { sha: m[1], ...JSON.parse(raw) }]; save(); return send(201, {});
     }
     if ((m = p.match(/^\/commits\/([0-9a-f]+)\/check-runs$/))) return send(200, { check_runs: st.checks ?? [] });
+    if ((m = p.match(/^\/contents\/(.+)$/))) return st.files?.[m[1]] ? send(200, st.files[m[1]]) : send(404, { message: "Not Found" });
     if (p === "/pulls/7") return send(200, st.pr);
     if (p === "/pulls") return send(200, st.recent ?? []);
     if ((m = p.match(/^\/issues\/(\d+)\/comments$/))) return send(200, (st.comments ?? {})[m[1]] ?? []);
