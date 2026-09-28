@@ -192,8 +192,9 @@ export async function postReviews({ api, owner, repo, prs = [], all = false, dry
       // Nothing to judge (draft, closed, not engine-managed, or review off on its base) - unless it moved meanwhile:
       // then a success already on the commit may not stand for its new base, so it goes pending until the next run.
       const now = await api("GET", `/repos/${owner}/${repo}/pulls/${pr}`);
-      if (before?.head?.sha && now?.head?.sha === before.head.sha && !same(now, snap(before)) && (now?.state ?? "open") === "open" && !now?.draft && !dryRun && !force) {
-        if (await post(before.head.sha, "pending", `#${pr} changed while being judged; re-judging`, now.html_url)) log(`#${pr}: changed while being judged; posted review=pending`);
+      if (before?.head?.sha && !same(now, snap(before)) && (now?.state ?? "open") === "open" && !now?.draft && !dryRun && !force) {
+        for (const h of new Set([before.head.sha, now.head.sha]))
+          if (await post(h, "pending", `#${pr} changed while being judged; re-judging`, now.html_url)) log(`#${pr}: changed while being judged; posted review=pending on ${h.slice(0, 7)}`);
       } else log(`#${pr}: nothing to post (draft, closed, not engine-managed, or the pack leaves review to gate)`);
       continue;
     }
