@@ -37,11 +37,11 @@ for (const pr of nums) {
   if (done.has(first.sha)) continue;
   done.add(first.sha);
   let r = first, from = pr;
-  const judged = new Set([pr]);
+  const judged = new Map([[pr, first]]);
   const judge = async (list) => {
     for (const s of list.filter((p) => !p.draft && p.head?.sha === first.sha && !judged.has(p.number))) {
-      judged.add(s.number);
       const other = await reviewStatus({ api, owner, repo, pr: s.number, force: o.force, serverUrl: env.GITHUB_SERVER_URL || "https://github.com" });
+      judged.set(s.number, other);
       if (other && rank[other.state] > rank[r.state]) { r = other; from = s.number; }
     }
   };
@@ -51,10 +51,14 @@ for (const pr of nums) {
   for (const d of r.details ?? []) console.log(`#${from} ${r.sha.slice(0, 7)}: ${d}`);
   console.log(`#${pr} ${r.sha.slice(0, 7)}: review=${r.state} (${r.description})${tag}`);
   if (o["dry-run"] || o.force) { console.log(`#${pr}: not posted (${o.force ? "--force only evaluates" : "dry run"})`); continue; }
-  const now = await api("GET", `/repos/${owner}/${repo}/pulls/${pr}`);
-  if (now?.head?.sha !== r.sha || (now?.base?.ref ?? null) !== first.base || (now?.base?.sha ?? null) !== first.base_sha || (now?.state ?? "open") !== "open" || now?.draft) {
-    console.log(`#${pr}: the pull request changed while evaluating (head, base, state or draft); not posted, the next run judges it`); continue;
+  // Every judged PR on this head must be as it was judged (head, base ref and commit, open and ready).
+  let moved = 0;
+  for (const [n, j] of judged) {
+    if (!j) continue;
+    const now = await api("GET", `/repos/${owner}/${repo}/pulls/${n}`);
+    if (now?.head?.sha !== j.sha || (now?.base?.ref ?? null) !== j.base || (now?.base?.sha ?? null) !== j.base_sha || (now?.state ?? "open") !== "open" || now?.draft) moved = n;
   }
+  if (moved) { console.log(`#${pr}: #${moved} changed while evaluating (head, base, state or draft); not posted, the next run judges it`); continue; }
   const description = (from === pr ? r.description : `#${from}: ${r.description}`).slice(0, 140);
   try {
     await api("POST", `/repos/${owner}/${repo}/statuses/${r.sha}`, { state: r.state, context: "review", description, target_url: r.target_url });

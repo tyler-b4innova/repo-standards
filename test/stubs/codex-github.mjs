@@ -32,7 +32,11 @@ const server = createServer((req, res) => {
     // retargetAfter: n reads of the PR see its base; later reads see it retargeted (a base change mid-run)
     if (p === "/pulls/7" && st.retargetAfter !== undefined) { st.reads = (st.reads ?? 0) + 1; save(); return send(200, st.reads > st.retargetAfter ? { ...st.pr, base: st.advance ? { ...st.pr.base, sha: "f".repeat(40) } : { ref: "elsewhere" } } : st.pr); }
     if (p === "/pulls/7") return send(200, st.pr);
-    if ((m = p.match(/^\/pulls\/(\d+)$/)) && st.prs?.[m[1]]) return send(200, st.prs[m[1]]);
+    // moveSibling: the second read of that PR sees it retargeted
+    if ((m = p.match(/^\/pulls\/(\d+)$/)) && st.prs?.[m[1]]) {
+      if (st.moveSibling === Number(m[1])) { st.sreads = (st.sreads ?? 0) + 1; save(); if (st.sreads > 1) return send(200, { ...st.prs[m[1]], base: { ref: "elsewhere" } }); }
+      return send(200, st.prs[m[1]]);
+    }
     if ((m = p.match(/^\/pulls\/(\d+)\/files$/))) return send(200, (st.prFiles ?? {})[m[1]] ?? []);
     if (p === "/pulls") return send(200, url.searchParams.get("state") === "open" ? st.open ?? [] : st.recent ?? []);
     if ((m = p.match(/^\/issues\/(\d+)\/comments$/))) return send(200, (st.comments ?? {})[m[1]] ?? []);
