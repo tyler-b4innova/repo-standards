@@ -15,10 +15,11 @@ const glob = (g) => new RegExp("^" + g.replace(/[.+^$()|[\]\\]/g, "\\$&").replac
 const short = (s) => s.slice(0, 7);
 
 // files: optional { pack, std } already read (gate passes its checkout's); otherwise read on the PR's base branch.
-export async function reviewStatus({ api, owner, repo, pr: n, files, now = Date.now(), serverUrl = "https://github.com", force = false }) {
+// pull: the PR as the caller already read it (postReviews passes its read, so the verdict is for exactly that state).
+export async function reviewStatus({ api, owner, repo, pr: n, pull, files, now = Date.now(), serverUrl = "https://github.com", force = false }) {
   const R = `/repos/${owner}/${repo}`;
   const all = async (path) => { const out = []; for (let p = 1; ; p++) { const b = (await api("GET", `${path}${path.includes("?") ? "&" : "?"}per_page=100&page=${p}`)) ?? []; out.push(...b); if (b.length < 100) return out; } };
-  const pr = await api("GET", `${R}/pulls/${n}`);
+  const pr = pull ?? (await api("GET", `${R}/pulls/${n}`));
   if (!pr || (pr.state ?? "open") !== "open" || pr.draft) return null;
   const head = pr.head.sha;
   // The rule and whether the org posts it come from the base branch (the org's current pack and the repository's
@@ -196,8 +197,7 @@ export async function postReviews({ api, owner, repo, prs = [], all = false, dry
     for (const l of (await listOpen()).filter((p) => !p.draft && p.head?.sha === sha)) {
       const pr = await api("GET", `${R}/pulls/${l.number}`);
       if (ready(pr)) seen.add(pr.head.sha);
-      const v = await reviewStatus({ api, owner, repo, pr: l.number, force, serverUrl });
-      if (v?.sha) seen.add(v.sha); // the verdict may have seen a newer head than the read above
+      const v = await reviewStatus({ api, owner, repo, pr: l.number, pull: pr, force, serverUrl }); // judged on that very read
       out.set(l.number, { pr, v, sig: shape(pr) + JSON.stringify([v?.sha ?? null, v?.base ?? null, v?.base_sha ?? null, v?.state ?? null, v?.description ?? null]) });
     }
     return out;
