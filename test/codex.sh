@@ -45,7 +45,8 @@ st false alice feat "$HEAD1" '🔄 **Running** since' 5 "[]" yes "$HEAD1" "$OLD"
 st false alice feat "$OLD" '✅ **Completed** now' 30 "[]" yes "$HEAD1" "$OLD"; chk 1 "no Codex verdict for ccccccc after"
 st true alice feat none x 30 "[]" yes "$HEAD1" "$OLD"; chk 0 "draft or closed; not evaluated"
 st false alice feat none x 30 "[]" no "$HEAD1" "$OLD"; chk 0 "no Codex reviews on this repo"
-st false 'example-sync[bot]' standards/v1.2.3 none x 30 "[]" yes "$HEAD1" "$OLD"; chk 0 "pack sync pull request"
+# a pack-sync fallback PR is reviewed like any other (anyone with write access can push to its branch)
+st false 'example-sync[bot]' standards/v1.2.3 none x 30 "[]" yes "$HEAD1" "$OLD"; chk 1 "no Codex verdict for ccccccc"
 # without actions: read (a private repo) the run-list read fails: the stand-in grants only what std-gate.yml lists
 PERMS="contents pull-requests issues" st false alice feat "$HEAD1" '✅ **Completed** now' 5 "$DONE" yes "$HEAD1" "$HEAD1"; chk 1 "actions/runs?head_sha=$HEAD1&event=pull_request&per_page=100: 403"
 if [ -z "$r" ]; then ok codex-verdict-required; else fail codex-verdict-required "$r"; fi

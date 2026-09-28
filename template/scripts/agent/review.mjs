@@ -1,7 +1,8 @@
 // The `review` verdict for a pull request: everything that lives in its conversation, not its code. Gate checks the
 // code; this checks the Codex verdict and its threads, the evidence comment for UI changes, and a promotion's design
 // sign-off. It only reads, through the caller's GitHub API function, so the org launcher (every tick), an org's merge
-// helper and scripts/agent/verdict-recheck share one rule:
+// helper and scripts/agent/verdict-recheck share one rule (a pack-sync PR gets no exemption: a person fixes it on
+// their own branch, or it is reviewed like any other):
 //   reviewStatus({ api, owner, repo, pr }) -> null | { state: "success"|"failure"|"pending", description, sha, base, base_sha, target_url, details }
 // api(method, path, body?) resolves parsed JSON, null for a 404, and throws on any other failure. Paths are from the
 // API root ("/repos/o/r/pulls/7"); GraphQL is api("POST", "/graphql", { query, variables }).
@@ -29,8 +30,6 @@ export async function reviewStatus({ api, owner, repo, pr: n, files, now = Date.
   // base, base_sha: what was judged against (the pack is read at that commit); a poster re-reads the PR and posts only
   // if its head and base (ref and commit) are unchanged.
   const verdict = (state, description, details = []) => ({ state, description: description.slice(0, 140), sha: head, base: pr.base?.ref ?? null, base_sha: pr.base?.sha ?? null, target_url: pr.html_url, details });
-  if (pack.sync_app_login && pr.user?.login === pack.sync_app_login && /^standards\/v\d+\.\d+\.\d+$/.test(pr.head.ref))
-    return verdict("success", "pack sync pull request: gate and the pack's own CI cover it");
 
   const info = (await api("GET", R)) ?? {};
   const uiOpt = std.ui_paths, inc = (Array.isArray(uiOpt) ? uiOpt : uiOpt?.include ?? pack.ui_paths ?? []).map(glob);
@@ -168,8 +167,8 @@ export async function reviewStatus({ api, owner, repo, pr: n, files, now = Date.
 }
 
 // Judge and post `review` for pull requests (the launcher's tick, verdict-recheck). A status belongs to a commit, so
-// every open ready PR on the head is judged, twice, and each is read once more; only when both passes and the reads
-// agree is the worst verdict posted. Anything that moved meanwhile (head, base ref or commit, state, draft, verdict)
+// every open ready PR on the head is read and judged in three full passes; only when all three agree is the worst
+// verdict of the last one posted. Anything that moved meanwhile (head, base ref or commit, state, draft, verdict)
 // or could not be judged gets `pending` on every head involved, so an earlier success never stands for a state that
 // was not judged. Callers run one pass at a time (the launcher's tick).
 //   postReviews({ api, owner, repo, prs | all: true, dryRun, force, serverUrl, log }) -> { posted, failed }
@@ -204,16 +203,17 @@ export async function postReviews({ api, owner, repo, prs = [], all = false, dry
       sha = pr.head.sha;
       if (done.has(sha)) continue;
       done.add(sha);
-      const a = await pass(sha), b = await pass(sha);
-      const heads = new Set([sha]), nums = new Set([n, ...a.keys(), ...b.keys()]);
-      let moved = [...nums].find((k) => a.has(k) !== b.has(k) || (a.has(k) && a.get(k).sig !== b.get(k).sig)) ?? 0;
-      for (const k of nums) { // read once more: the state that was judged must still be the state
-        const now = await api("GET", `${R}/pulls/${k}`);
-        if (ready(now)) heads.add(now.head.sha);
-        const was = b.get(k)?.pr;
-        if (!moved && (was ? shape(now) !== shape(was) : ready(now) && now.head.sha === sha)) moved = k;
+      // Three full passes (each PR read and judged again); the verdict posted is the last one, and only if all agree.
+      const passes = [await pass(sha), await pass(sha), await pass(sha)], last = passes[2];
+      const nums = new Set([n, ...passes.flatMap((x) => [...x.keys()])]);
+      const heads = new Set([sha, ...passes.flatMap((x) => [...x.values()].filter((y) => ready(y.pr)).map((y) => y.pr.head.sha))]);
+      let moved = !last.has(n) ? n : [...nums].find((k) => passes.some((x) => x.has(k) !== last.has(k) || (x.has(k) && x.get(k).sig !== last.get(k).sig))) ?? 0;
+      if (moved) {
+        for (const k of nums) { const now = await api("GET", `${R}/pulls/${k}`); if (ready(now)) heads.add(now.head.sha); } // where each PR is now
+        for (const h of heads) await post(h, "pending", `#${moved} changed while being judged; re-judging`, pr.html_url);
+        continue;
       }
-      if (moved) { for (const h of heads) await post(h, "pending", `#${moved} changed while being judged; re-judging`, pr.html_url); continue; }
+      const b = last;
       const judged = [...b].filter(([, x]) => x.v).sort(([, x], [, y]) => rank[y.v.state] - rank[x.v.state]);
       if (!judged.length) { log(`#${n}: nothing to post (not engine-managed, or review is off on its base)`); continue; }
       const [from, { v }] = judged[0];
