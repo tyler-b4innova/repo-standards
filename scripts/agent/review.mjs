@@ -194,10 +194,10 @@ export async function postReviews({ api, owner, repo, prs = [], all = false, dry
     }
     return out;
   };
-  const listed = all ? (await listOpen()).filter((p) => !p.draft) : [];
+  const listed = (await listOpen()).filter((p) => !p.draft);
   const targets = all ? listed.map((p) => p.number) : prs;
   for (const n of targets) {
-    let sha = listed.find((p) => p.number === n)?.head?.sha; // known from the listing, so an error below can still pend it
+    let sha = listed.find((p) => p.number === n)?.head?.sha; // known from the listing, so an error below can still pend it (--all or not)
     try {
       const pr = await api("GET", `${R}/pulls/${n}`);
       if (!ready(pr)) { log(`#${n}: nothing to post (draft or closed)`); continue; }

@@ -27,7 +27,7 @@ export function render(overlay) {
   // The ruleset requirement and the pack's own switch move together: required but not posted blocks every merge;
   // posted but not required lets gate skip the conversation with nothing enforcing it.
   if ((oa.review_status === true) !== (overlay.review?.status === true))
-    throw new Error(`org_admin.review_status (${oa.review_status === true}) and review.status (${overlay.review?.status === true}) must match: turn both on in one overlay release, run org-apply first (merges wait for \`review\` until the pack lands), then sync and start the poster`);
+    throw new Error(`org_admin.review_status (${oa.review_status === true}) and review.status (${overlay.review?.status === true}) must match (one overlay release changes both). Turning on: org-apply first (merges wait for \`review\` until the pack lands), then sync and start the poster. Turning off: sync first (gate checks the conversation again), then org-apply`);
   for (const k of ["require_extra_approval_for_unattributed_changes", "push_app_bypass", "review_status"])
     if (oa[k] !== undefined && typeof oa[k] !== "boolean") throw new Error(`overlay org_admin.${k} must be true or false when set`);
   const vars = {
