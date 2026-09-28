@@ -29,14 +29,20 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, files, now =
   const info = (await api("GET", R)) ?? {};
   // Only this repository's own default branch promotes: a fork's branch of the same name is an ordinary PR.
   const promotion = Boolean(info.default_branch) && pr.head?.repo?.full_name === `${owner}/${repo}` && pr.head?.ref === info.default_branch && pr.base?.ref !== info.default_branch;
-  const cfgRef = promotion ? pr.head.sha : pr.base?.sha ?? pr.base?.ref ?? "";
+  // GitHub may leave pull.base.sha at the commit from when the PR was opened, even after sync updates the base.
+  // Resolve the current base ref once, then read both policy files from that exact commit.
+  const baseHead = promotion ? pr.head.sha : pr.base?.ref
+    ? (await api("GET", `${R}/branches/${encodeURIComponent(pr.base.ref)}`))?.commit?.sha
+    : pr.base?.sha;
+  if (pr.base?.ref && !baseHead) throw new Error(`cannot resolve current base branch ${pr.base.ref}`);
+  const cfgRef = baseHead ?? "";
   const read = async (f) => b64(await api("GET", `${R}/contents/${f}?ref=${encodeURIComponent(cfgRef)}`));
   const pack = files?.pack ?? (await read("scripts/agent/pack.json")), std = files?.std ?? (await read("standards.json")) ?? {};
   if (!pack) return null;
   if (!pack.review_status && !force) return null; // gate's own steps still enforce this for the org
   // base, base_sha: what was judged against (the pack is read at that commit); a poster re-reads the PR and posts only
   // if its head and base (ref and commit) are unchanged.
-  const verdict = (state, description, details = []) => ({ state, description: description.slice(0, 140), sha: head, base: pr.base?.ref ?? null, base_sha: pr.base?.sha ?? null, target_url: pr.html_url, details });
+  const verdict = (state, description, details = []) => ({ state, description: description.slice(0, 140), sha: head, base: pr.base?.ref ?? null, base_sha: baseHead ?? null, target_url: pr.html_url, details });
 
   const uiOpt = std.ui_paths, inc = (Array.isArray(uiOpt) ? uiOpt : uiOpt?.include ?? pack.ui_paths ?? []).map(glob);
   const ign = [...(pack.ui_ignore ?? []), ...(uiOpt?.ignore ?? [])].map(glob);
@@ -210,7 +216,9 @@ export async function postReviews({ api, owner, repo, prs = [], all = false, dry
   let listed = [];
   try { listed = await listOpen(); }
   catch (e) { failed++; log(`could not list open pull requests (${e.message})`); if (all) return { posted, failed }; }
-  const targets = all ? listed.map((p) => p.number) : prs;
+  // Draft invalidation must precede ready verdicts when they share a commit status.
+  const targets = (all ? listed.map((p) => p.number) : [...prs]).sort((a, b) =>
+    Number(!listed.find((p) => p.number === a)?.draft) - Number(!listed.find((p) => p.number === b)?.draft));
   for (const n of targets) {
     let sha = listed.find((p) => p.number === n)?.head?.sha; // known from the listing, so an error below can still pend it (--all or not)
     seen = new Set(sha ? [sha] : []);

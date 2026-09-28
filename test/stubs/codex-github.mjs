@@ -22,6 +22,7 @@ const server = createServer((req, res) => {
     if (p === "/graphql") return send(200, { data: { repository: { pullRequest: { reviewThreads: { nodes: st.threads ?? [] } } } } });
     const save = () => writeFileSync(stateFile, JSON.stringify(st));
     if (p === "") return send(200, st.info ?? { default_branch: "main" });
+    if ((m = p.match(/^\/branches\/(.+)$/))) return send(200, { commit: { sha: st.branchHeads?.[decodeURIComponent(m[1])] ?? decodeURIComponent(m[1]) } });
     if ((m = p.match(/^\/actions\/runs\/(\d+)\/attempts\/(\d+)\/jobs$/))) return send(200, { jobs: [{ name: "gate", steps: (st.attempts ?? {})[m[2]] ?? [] }] });
     if (p === "/actions/workflows/std-gate.yml/runs") return send(200, { workflow_runs: st.gateRuns ?? [] });
     if ((m = p.match(/^\/actions\/runs\/(\d+)\/rerun$/)) && req.method === "POST") { st.reruns = [...(st.reruns ?? []), Number(m[1])]; save(); return send(201, {}); }
