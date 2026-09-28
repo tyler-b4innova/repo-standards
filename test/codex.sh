@@ -115,10 +115,10 @@ OLDPACK="{content:Buffer.from(JSON.stringify(require('$R/scripts/agent/pack.json
 put "{$base,threads:[],files:{'scripts/agent/pack.json@main':$PACKFILE,'scripts/agent/pack.json@feat':$OLDPACK}}"; v6=$(vr 7); s6=$(node -p 'JSON.stringify((require(process.argv[1]).statuses??[]).map(x=>x.context+"="+x.state))' "$T/state.json")
 # retargeted during the run (the base read at the end differs from the one judged): nothing is posted
 put "{$base,threads:[],files:{'scripts/agent/pack.json':$PACKFILE}}"
-node -e 'const f=process.argv[1],s=JSON.parse(require("fs").readFileSync(f,"utf8"));s.retargetAfter=1;require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json"
+node -e 'const f=process.argv[1],s=JSON.parse(require("fs").readFileSync(f,"utf8"));s.retargetAfter=2;require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json"
 v8=$(vr 7); s8=$(node -p 'JSON.stringify(require(process.argv[1]).statuses??[])' "$T/state.json")
 put "{$base,threads:[],files:{'scripts/agent/pack.json':$PACKFILE}}"
-node -e 'const f=process.argv[1],s=JSON.parse(require("fs").readFileSync(f,"utf8"));s.pr.base.sha="e".repeat(40);s.retargetAfter=1;s.advance=true;require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json"
+node -e 'const f=process.argv[1],s=JSON.parse(require("fs").readFileSync(f,"utf8"));s.pr.base.sha="e".repeat(40);s.retargetAfter=2;s.advance=true;require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json"
 v9=$(vr 7); s9=$(node -p 'JSON.stringify(require(process.argv[1]).statuses??[])' "$T/state.json")
 # a sibling on the same head retargeted mid-run blocks the post too
 put "{$base,threads:[],files:{'scripts/agent/pack.json':$PACKFILE},open:[{number:7,head:{sha:'$HEAD1'}},{number:8,head:{sha:'$HEAD1'}}],prs:{8:{number:8,state:'open',draft:false,html_url:'u8',user:{login:'alice'},head:{sha:'$HEAD1',ref:'feat'},base:{ref:'other'}}},prFiles:{8:[]},moveSibling:8}"
@@ -126,10 +126,14 @@ v10=$(vr 7); s10=$(node -p 'JSON.stringify(require(process.argv[1]).statuses??[]
 # ... also one whose own base leaves review off (judged null), in case the retarget makes it need review
 put "{$base,threads:[],files:{'scripts/agent/pack.json@main':$PACKFILE,'scripts/agent/pack.json@other':$OLDPACK},open:[{number:7,head:{sha:'$HEAD1'}},{number:8,head:{sha:'$HEAD1'},base:{ref:'other'}}],prs:{8:{number:8,state:'open',draft:false,html_url:'u8',user:{login:'alice'},head:{sha:'$HEAD1',ref:'feat'},base:{ref:'other'}}},prFiles:{8:[]},moveSibling:8}"
 v11=$(vr 7); s11=$(node -p 'JSON.stringify(require(process.argv[1]).statuses??[])' "$T/state.json")
+# the PR itself judged null (review off on its base) but retargeted meanwhile: pending replaces any earlier success
+put "{$base,threads:[],files:{'scripts/agent/pack.json@main':$OLDPACK}}"
+node -e 'const f=process.argv[1],s=JSON.parse(require("fs").readFileSync(f,"utf8"));s.retargetAfter=1;require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json"
+v12=$(vr 7); s12=$(node -p 'JSON.stringify(require(process.argv[1]).statuses??[])' "$T/state.json")
 # two open PRs on one head share its commit status: the worse verdict (the sibling's missing evidence) is posted
 put "{$base,threads:[],files:{'scripts/agent/pack.json':$PACKFILE},open:[{number:7,head:{sha:'$HEAD1'}},{number:8,head:{sha:'$HEAD1'}}],prs:{8:{number:8,state:'open',draft:false,html_url:'u8',user:{login:'alice'},head:{sha:'$HEAD1',ref:'feat'},base:{ref:'other'}}},prFiles:{8:[{filename:'src/app.css'}]}}"; v7=$(vr 7); s7=$(node -p 'JSON.stringify((require(process.argv[1]).statuses??[]).map(x=>x.state+":"+x.description))' "$T/state.json")
 put "{$base,threads:[],files:{'scripts/agent/pack.json':$PACKFILE}}"; v5=$(vr 7 --dry-run); s5=$(node -p 'JSON.stringify(require(process.argv[1]).statuses??[])' "$T/state.json")
 if [ $y1 -eq 0 ] && [ "$s1" = '["review=success@'"${HEAD1:0:7}"'"]' ] && has "failure:1 unresolved Codex thread" "$s2" && [ "$s3" = "[]" ] && has "nothing to post" "$v3" \
-  && [ $y4 -eq 1 ] && has "must be the org App's token" "$v4" && [ "$s5" = "[]" ] && has "dry run" "$v5" && [ "$s6" = '["review=success"]' ] && has "failure:#8: UI paths changed" "$s7" && [ "$s8" = "[]" ] && has "changed while evaluating" "$v8" && [ "$s9" = "[]" ] && [ "$s10" = "[]" ] && has "#8 changed while evaluating" "$v10" && [ "$s11" = "[]" ] && has "#8 changed while evaluating" "$v11"
-then ok review-status-posted; else fail review-status-posted "posted=$s1 | red=$s2 | off=$s3 | forbidden=$y4 | dry=$s5 | old-head=$s6 | shared=$s7 | retarget=$s8 | base-moved=$s9 | sibling-moved=$s10 | null-sibling-moved=$s11 :: $v1 | $v2 | $v3 | $v4 | $v5 | $v6"; fi
+  && [ $y4 -eq 1 ] && has "must be the org App's token" "$v4" && [ "$s5" = "[]" ] && has "dry run" "$v5" && [ "$s6" = '["review=success"]' ] && has "failure:#8: UI paths changed" "$s7" && has '"state":"pending"' "$s8" && has "changed while being judged" "$v8" && has '"state":"pending"' "$s9" && has '"state":"pending"' "$s10" && has "#8 changed while being judged" "$v10" && has '"state":"pending"' "$s11" && has "#8 changed while being judged" "$v11" && has '"state":"pending"' "$s12"
+then ok review-status-posted; else fail review-status-posted "posted=$s1 | red=$s2 | off=$s3 | forbidden=$y4 | dry=$s5 | old-head=$s6 | shared=$s7 | retarget=$s8 | base-moved=$s9 | sibling-moved=$s10 | null-sibling-moved=$s11 | null-self-moved=$s12 :: $v1 | $v2 | $v3 | $v4 | $v5 | $v6"; fi
 done_cases

@@ -31,9 +31,24 @@ const nums = o.all ? open.map((p) => p.number) : positionals.map(Number);
 // and the worst result is posted, so one PR's success never satisfies a sibling's failed review.
 const rank = { failure: 2, pending: 1, success: 0 }, done = new Set();
 let failed = 0;
+const post = async (sha, state, description, target_url) => {
+  try { await api("POST", `/repos/${owner}/${repo}/statuses/${sha}`, { state, context: "review", description: description.slice(0, 140), target_url }); return true; }
+  catch (e) { failed++; console.error(`could not post review on ${sha.slice(0, 7)} (${e.message}); GH_TOKEN must be the org App's token with statuses: write`); return false; }
+};
+const snap = (p) => ({ sha: p?.head?.sha, base: p?.base?.ref ?? null, base_sha: p?.base?.sha ?? null });
+const same = (now, j) => now?.head?.sha === j.sha && (now?.base?.ref ?? null) === j.base && (now?.base?.sha ?? null) === j.base_sha && (now?.state ?? "open") === "open" && !now?.draft;
 for (const pr of nums) {
+  const before = await api("GET", `/repos/${owner}/${repo}/pulls/${pr}`);
   const first = await reviewStatus({ api, owner, repo, pr, force: o.force, serverUrl: env.GITHUB_SERVER_URL || "https://github.com" });
-  if (!first) { console.log(`#${pr}: nothing to post (draft, closed, not engine-managed, or the pack leaves review to gate)`); continue; }
+  if (!first) {
+    // Nothing to judge (draft, closed, not engine-managed, or review off on its base) - unless it moved meanwhile:
+    // then a success already on the commit may not stand for its new base, so it goes pending until the next run.
+    const now = await api("GET", `/repos/${owner}/${repo}/pulls/${pr}`);
+    if (before?.head?.sha && now?.head?.sha === before.head.sha && !same(now, snap(before)) && (now?.state ?? "open") === "open" && !now?.draft && !o["dry-run"] && !o.force) {
+      if (await post(before.head.sha, "pending", `#${pr} changed while being judged; re-judging`, now.html_url)) console.log(`#${pr}: changed while being judged; posted review=pending`);
+    } else console.log(`#${pr}: nothing to post (draft, closed, not engine-managed, or the pack leaves review to gate)`);
+    continue;
+  }
   if (done.has(first.sha)) continue;
   done.add(first.sha);
   let r = first, from = pr;
@@ -42,7 +57,7 @@ for (const pr of nums) {
     for (const s of list.filter((p) => !p.draft && p.head?.sha === first.sha && !judged.has(p.number))) {
       const other = await reviewStatus({ api, owner, repo, pr: s.number, force: o.force, serverUrl: env.GITHUB_SERVER_URL || "https://github.com" });
       // A sibling judged null (review off on its base) is still re-read: a retarget could make it need review.
-      judged.set(s.number, other ?? { sha: s.head.sha, base: s.base?.ref ?? null, base_sha: s.base?.sha ?? null });
+      judged.set(s.number, other ?? snap(s));
       if (other && rank[other.state] > rank[r.state]) { r = other; from = s.number; }
     }
   };
@@ -52,17 +67,14 @@ for (const pr of nums) {
   for (const d of r.details ?? []) console.log(`#${from} ${r.sha.slice(0, 7)}: ${d}`);
   console.log(`#${pr} ${r.sha.slice(0, 7)}: review=${r.state} (${r.description})${tag}`);
   if (o["dry-run"] || o.force) { console.log(`#${pr}: not posted (${o.force ? "--force only evaluates" : "dry run"})`); continue; }
-  // Every judged PR on this head must be as it was judged (head, base ref and commit, open and ready).
+  // Every judged PR on this head must be as it was judged (head, base ref and commit, open and ready). If one moved,
+  // the verdict is not posted, and pending replaces any earlier success on the commit until the next run judges it.
   let moved = 0;
-  for (const [n, j] of judged) {
-    const now = await api("GET", `/repos/${owner}/${repo}/pulls/${n}`);
-    if (now?.head?.sha !== j.sha || (now?.base?.ref ?? null) !== j.base || (now?.base?.sha ?? null) !== j.base_sha || (now?.state ?? "open") !== "open" || now?.draft) moved = n;
+  for (const [n, j] of judged) if (!same(await api("GET", `/repos/${owner}/${repo}/pulls/${n}`), j)) moved = n;
+  if (moved) {
+    if (await post(r.sha, "pending", `#${moved} changed while being judged; re-judging`, r.target_url)) console.log(`#${pr}: #${moved} changed while being judged; posted review=pending`);
+    continue;
   }
-  if (moved) { console.log(`#${pr}: #${moved} changed while evaluating (head, base, state or draft); not posted, the next run judges it`); continue; }
-  const description = (from === pr ? r.description : `#${from}: ${r.description}`).slice(0, 140);
-  try {
-    await api("POST", `/repos/${owner}/${repo}/statuses/${r.sha}`, { state: r.state, context: "review", description, target_url: r.target_url });
-    console.log(`#${pr}: posted review=${r.state}`);
-  } catch (e) { failed++; console.error(`#${pr}: could not post review (${e.message}); GH_TOKEN must be the org App's token with statuses: write`); }
+  if (await post(r.sha, r.state, from === pr ? r.description : `#${from}: ${r.description}`, r.target_url)) console.log(`#${pr}: posted review=${r.state}`);
 }
 process.exit(failed ? 1 : 0);
