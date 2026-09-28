@@ -37,10 +37,16 @@ for (const pr of nums) {
   if (done.has(first.sha)) continue;
   done.add(first.sha);
   let r = first, from = pr;
-  for (const s of open.filter((p) => p.head?.sha === first.sha && p.number !== pr)) {
-    const other = await reviewStatus({ api, owner, repo, pr: s.number, force: o.force, serverUrl: env.GITHUB_SERVER_URL || "https://github.com" });
-    if (other && rank[other.state] > rank[r.state]) { r = other; from = s.number; }
-  }
+  const judged = new Set([pr]);
+  const judge = async (list) => {
+    for (const s of list.filter((p) => !p.draft && p.head?.sha === first.sha && !judged.has(p.number))) {
+      judged.add(s.number);
+      const other = await reviewStatus({ api, owner, repo, pr: s.number, force: o.force, serverUrl: env.GITHUB_SERVER_URL || "https://github.com" });
+      if (other && rank[other.state] > rank[r.state]) { r = other; from = s.number; }
+    }
+  };
+  await judge(open);
+  await judge(await listOpen()); // re-listed right before posting: a PR opened on this head meanwhile is judged too
   const tag = from === pr ? "" : ` (from #${from}, which shares this head)`;
   for (const d of r.details ?? []) console.log(`#${from} ${r.sha.slice(0, 7)}: ${d}`);
   console.log(`#${pr} ${r.sha.slice(0, 7)}: review=${r.state} (${r.description})${tag}`);
