@@ -107,8 +107,9 @@ export async function reviewStatus({ api, owner, repo, pr: n, files, now = Date.
         if (!cmp || !["ahead", "identical"].includes(cmp.status)) { outside = s; break; }
         const commits = (cmp.commits ?? []).length < 100 ? cmp.commits ?? [] : await paged(`${R}/compare/${s}...${head}`, "commits");
         for (const k of commits) {
-          const files = (await paged(`${R}/commits/${k.sha}`, "files")).map((f) => f.filename).filter((f) => !f.startsWith(".evidence/"));
-          if (ui(files).length) { stale = k.sha; break; }
+          const all3k = await paged(`${R}/commits/${k.sha}`, "files"); // GitHub lists at most 3,000: treat a capped commit as a UI change
+          const files = all3k.map((f) => f.filename).filter((f) => !f.startsWith(".evidence/"));
+          if (all3k.length >= 3000 || ui(files).length) { stale = k.sha; break; }
         }
         if (stale) break;
       }
