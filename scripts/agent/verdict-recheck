@@ -1,0 +1,83 @@
+#!/usr/bin/env node
+// Re-check a pull request's gate verdict without rebuilding it. The org's launcher or merge helper (or a person) runs
+// this after a Codex review or thread resolution, after new evidence, and before merging:
+//   scripts/agent/verdict-recheck <pr> [--evidence] [--revalidate] [--wait] [--dry-run]
+// It re-runs the head's gate run only when that can change the result: the last attempt failed only on evidence
+// (--evidence: new evidence was posted) or on the Codex verdict that now passes, or it passed while the verdict has
+// since failed (--revalidate: always, before a merge). A re-run reuses the build, about one billed minute.
+// With pack.json codex_verdict "status", it also posts the `codex-verdict` commit status; that needs the org App's
+// token in GH_TOKEN (the org ruleset pins the status to the App). Token: GH_TOKEN, GITHUB_TOKEN, else `gh auth token`.
+// Exit 0 when nothing more is needed now; 1 when the gate failed on something a re-check cannot fix.
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { parseArgs } from "node:util";
+
+const { values: o, positionals } = parseArgs({ allowPositionals: true, options: { evidence: { type: "boolean" }, revalidate: { type: "boolean" }, wait: { type: "boolean" }, "dry-run": { type: "boolean" }, help: { type: "boolean" } } });
+if (o.help || !/^\d+$/.test(positionals[0] ?? "")) { console.log(readFileSync(new URL(import.meta.url), "utf8").split("\n").slice(1, 11).map((l) => l.slice(3)).join("\n")); process.exit(o.help ? 0 : 2); }
+const n = Number(positionals[0]), env = process.env;
+const die = (m) => { console.error(`verdict-recheck: ${m}`); process.exit(1); };
+const sh = (c, a) => execFileSync(c, a, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+const root = sh("git", ["rev-parse", "--show-toplevel"]);
+let repo = env.GITHUB_REPOSITORY;
+if (!repo) { try { repo = sh("git", ["remote", "get-url", "origin"]).replace(/\.git$/, "").match(/[:/]([^/:]+\/[^/]+)$/)[1]; } catch { die("no GITHUB_REPOSITORY and no origin remote"); } }
+let token = env.GH_TOKEN || env.GITHUB_TOKEN;
+try { token ||= sh("gh", ["auth", "token"]); } catch {}
+if (!token) die("no token: set GH_TOKEN or log in with gh");
+const API = `${(env.GITHUB_API_URL || "https://api.github.com").replace(/\/$/, "")}/repos/${repo}`;
+const call = async (method, path, body) => {
+  const r = await fetch(`${API}${path}`, { method, headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" }, body: body && JSON.stringify(body) });
+  return { ok: r.ok, status: r.status, json: r.status === 204 ? null : await r.json().catch(() => null) };
+};
+const get = async (path) => { const r = await call("GET", path); if (!r.ok) die(`GET ${path}: ${r.status}`); return r.json; };
+const pack = (() => { try { return JSON.parse(readFileSync(join(root, "scripts/agent/pack.json"), "utf8")); } catch { return {}; } })();
+
+const pr = await get(`/pulls/${n}`), head = pr.head.sha, short = head.slice(0, 7);
+// The Codex verdict, by gate's own rule (gate.mjs codex), evaluated here for this pull request.
+const ev = join(mkdtempSync(join(tmpdir(), "verdict-")), "event.json");
+writeFileSync(ev, JSON.stringify({ pull_request: { number: n } }));
+const c = spawnSync("node", [join(root, "scripts/agent/gate.mjs"), "codex"], { cwd: root, encoding: "utf8",
+  env: { ...env, GITHUB_EVENT_PATH: ev, GITHUB_EVENT_NAME: "pull_request", GITHUB_REPOSITORY: repo, GH_TOKEN: token, GATE_CODEX_EVALUATE: "1" } });
+const said = `${c.stdout}${c.stderr}`.split("\n").map((l) => l.replace(/^::error::/, "")).find((l) => l.startsWith("codex:")) ?? "codex: no result";
+const verdict = c.status === 0 ? "success" : /awaiting/.test(said) ? "pending" : "failure";
+console.log(`${short}: ${said}`);
+
+if (pack.codex_verdict === "status") {
+  const body = { state: verdict, context: "codex-verdict", description: said.slice(0, 140), target_url: pr.html_url };
+  if (o["dry-run"]) console.log(`would post codex-verdict=${verdict} on ${short}`);
+  else {
+    const r = await call("POST", `/statuses/${head}`, body);
+    if (!r.ok) die(`posting codex-verdict on ${short}: ${r.status} (status mode needs the org App's token in GH_TOKEN)`);
+    console.log(`posted codex-verdict=${verdict} on ${short}`);
+  }
+}
+
+// The head's latest gate run (a pull_request run, or a workflow_dispatch re-gate after a base change).
+const latest = async () => ((await get(`/actions/workflows/std-gate.yml/runs?head_sha=${head}&per_page=20`)).workflow_runs ?? [])
+  .find((r) => ["pull_request", "workflow_dispatch"].includes(r.event));
+let run = await latest();
+if (!run) { console.log(`no gate run for ${short} yet`); process.exit(0); }
+for (let i = 0; run.status !== "completed" && o.wait && i < 90; i++) { await new Promise((r) => setTimeout(r, Number(env.VERDICT_POLL_MS ?? 20000))); run = await latest(); }
+if (run.status !== "completed") { console.log(`gate run ${run.id} is ${run.status}; its evidence and codex steps read the current state`); process.exit(0); }
+const jobs = (await get(`/actions/runs/${run.id}/attempts/${run.run_attempt}/jobs`)).jobs ?? [];
+const failed = (jobs.find((j) => j.name === "gate")?.steps ?? []).filter((s) => s.conclusion === "failure").map((s) => s.name);
+const soft = ["evidence", "codex review"];
+let why = "";
+if (run.conclusion === "success") {
+  if (o.revalidate) why = "re-validating before merge";
+  else if (pack.codex_verdict !== "status" && verdict === "failure") why = "the Codex verdict failed after gate passed";
+} else if (failed.length && failed.every((s) => soft.includes(s))) {
+  const codexOk = !failed.includes("codex review") || verdict === "success", evidenceOk = !failed.includes("evidence") || o.evidence;
+  if (codexOk && evidenceOk) why = `it failed only on ${failed.join(" and ")}, which may pass now`;
+  else console.log(`gate run ${run.id} failed on ${failed.join(" and ")}; ${!codexOk ? `the Codex verdict is still ${verdict}` : "no new evidence (--evidence)"}, so no re-run`);
+} else if (run.conclusion !== "success") {
+  console.log(`gate run ${run.id} failed on ${failed.join(", ") || run.conclusion}; that needs a push, not a re-check`);
+  process.exit(1);
+}
+if (!why) { if (run.conclusion === "success") console.log(`gate run ${run.id} passed; nothing to re-check`); process.exit(0); }
+if (o["dry-run"]) { console.log(`would re-run gate run ${run.id} (${why})`); process.exit(0); }
+const r = await call("POST", `/actions/runs/${run.id}/rerun`);
+if (r.ok) console.log(`re-running gate run ${run.id} for ${short} (${why}); it reuses the build`);
+else if ((await get(`/actions/runs/${run.id}`)).status !== "completed") console.log(`gate run ${run.id} was re-run by another event first`);
+else die(`re-running gate run ${run.id}: ${r.status} (the token needs actions: write)`);

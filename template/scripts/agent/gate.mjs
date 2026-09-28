@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Steps of the `gate` job (std-gate.yml), also runnable locally:
-//   classify [base] | install | run <script>... | e2e | evidence | codex | secrets
+//   plan | classify [base] | install | run <script>... | preview | e2e | evidence | codex | secrets | syntax
 // UI paths: pack.json defaults; standards.json "ui_paths" as a list replaces the include globs,
 // as {include, ignore} replaces include and adds ignore. e2e: none fails unless "e2e": false.
 // evidence: PR UI changes need a comment by the author or an app whose .evidence/ images exist at a pinned SHA.
@@ -10,7 +10,7 @@ import { existsSync as has, mkdtempSync, readdirSync as ls, readFileSync as rd, 
 import { tmpdir } from "node:os";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
-const SUBS = ["classify", "install", "run", "e2e", "evidence", "codex", "secrets"], ok = SUBS.includes(cmd);
+const SUBS = ["plan", "classify", "install", "run", "preview", "e2e", "evidence", "codex", "secrets", "syntax"], ok = SUBS.includes(cmd);
 if (!ok || args.includes("--help")) {
   console.log(rd(new URL(import.meta.url), "utf8").split("\n").slice(1, 6).map((l) => l.slice(3)).join("\n"));
   process.exit(ok || cmd === "--help" ? 0 : 2);
@@ -27,13 +27,93 @@ const sh = (c, a) => spawnSync(c, a, { stdio: "inherit" }).status ?? 1;
 const must = (c, a) => { const s = sh(c, a); if (s) process.exit(s); };
 const glob = (g) => new RegExp("^" + g.replace(/[.+^$()|[\]\\]/g, "\\$&").replace(/\{([^}]+)\}/g, (_, a) => `(${a.split(",").join("|")})`)
   .replace(/\*\*\//g, "\0").replace(/\*\*/g, "\x01").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]").replace(/\0/g, "(.*/)?").replace(/\x01/g, ".*") + "$");
+// The pull request this run is for: the event's, or a workflow_dispatch re-gate's `pr` input (base retargets).
+const event = env.GITHUB_EVENT_PATH ? json(env.GITHUB_EVENT_PATH) ?? {} : {};
+const prNumber = event.pull_request?.number ?? (env.GITHUB_EVENT_NAME === "workflow_dispatch" && /^\d+$/.test(event.inputs?.pr ?? "") ? Number(event.inputs.pr) : null);
+const pack = json("scripts/agent/pack.json") ?? {};
+const e2eCfg = typeof std.e2e === "object" && std.e2e ? std.e2e : {}, e2eCmd = typeof std.e2e === "string" ? std.e2e : e2eCfg.command;
+// Browsers for this run: Chromium, plus the repo's (and overlay's) extra browsers on promotion PRs only (plan sets GATE_BROWSERS).
+const browsers = () => (env.GATE_BROWSERS || "chromium").split(",").filter(Boolean);
+const output = (k, v) => { console.log(`${k}=${v}`); if (env.GITHUB_OUTPUT) writeFileSync(env.GITHUB_OUTPUT, `${k}=${v}\n`, { flag: "a" }); };
+const ghApi = () => {
+  let token = env.GH_TOKEN || env.GITHUB_TOKEN;
+  try { token ||= ex("gh", ["auth", "token"], { encoding: "utf8", stdio: "pipe" }).trim(); } catch {}
+  const base = `${env.GITHUB_API_URL || "https://api.github.com"}/repos/${env.GITHUB_REPOSITORY}`, headers = { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" };
+  return async (path, { need = true } = {}) => {
+    const r = await fetch(`${base}${path}`, { headers });
+    if (r.ok) return r.json();
+    if (need) fail(`GET ${path}: ${r.status}`, "grant the job actions, pull-requests and issues read");
+    return null;
+  };
+};
 function ui(files) {
   const p = json("scripts/agent/pack.json") ?? {}, o = std.ui_paths;
   const inc = (Array.isArray(o) ? o : o?.include ?? p.ui_paths ?? []).map(glob), ign = [...(p.ui_ignore ?? []), ...(o?.ignore ?? [])].map(glob);
   return files.filter((f) => inc.some((r) => r.test(f)) && !ign.some((r) => r.test(f)));
 }
 
-if (cmd === "classify") {
+if (cmd === "plan") {
+  // full: build and test this head. reuse: a re-run of a run whose earlier attempt passed every build and test step
+  // (same run = same SHA and workflow file), so only evidence, approval and the Codex verdict are checked again.
+  // cheap: drafts, and pack-only landings (standards/v*) outside the profile's canary repository.
+  const get = ghApi(), attempt = Number(env.GITHUB_RUN_ATTEMPT || 1), BUILD = ["standards", "secrets", "install", "typecheck", "build", "e2e", "repo checks"];
+  let mode = "full", why = "first build of this head";
+  for (let a = attempt - 1; a >= 1 && mode === "full"; a--) {
+    const jobs = (await get(`/actions/runs/${env.GITHUB_RUN_ID}/attempts/${a}/jobs`, { need: false }))?.jobs ?? [];
+    const steps = jobs.find((j) => j.name === "gate")?.steps ?? [];
+    if (BUILD.every((n) => steps.find((x) => x.name === n)?.conclusion === "success")) { mode = "reuse"; why = `attempt ${a} of this run passed ${BUILD.join(", ")}`; }
+  }
+  const repoName = (env.GITHUB_REPOSITORY ?? "").split("/")[1];
+  const pr = mode === "full" && prNumber ? await get(`/pulls/${prNumber}`) : null;
+  if (mode === "full" && pr?.draft) { mode = "cheap"; why = "draft: the full gate runs from ready_for_review"; }
+  if (mode === "full" && env.GITHUB_EVENT_NAME === "push" && /^standards\/v\d+\.\d+\.\d+$/.test(env.GITHUB_REF_NAME ?? "")) {
+    if ((pack.gate_canary ?? []).includes(repoName)) why = "pack landing on this profile's canary: full gate";
+    else { mode = "cheap"; why = "pack-only landing (the evidence step holds it to managed paths)"; }
+  }
+  let list = ["chromium"];
+  if (pr) {
+    const info = (await get("", { need: false })) ?? {}, flow = std.flow ?? info.custom_properties?.flow;
+    if (flow === "staged" && pr.head.ref === info.default_branch && pr.base.ref !== info.default_branch)
+      list = [...new Set([...list, ...(e2eCfg.browsers ?? []), ...(pack.e2e_promotion_browsers ?? [])])];
+  }
+  console.log(`plan: ${mode} (${why})`);
+  output("mode", mode);
+  output("browsers", list.join(","));
+} else if (cmd === "syntax") {
+  // The cheap gate's stand-in for building: managed scripts and workflows must at least parse.
+  const bad = [];
+  for (const f of git("ls-files", "scripts/agent", ".github/workflows").split("\n").filter(Boolean)) {
+    const text = rd(f, "utf8"), first = text.split("\n")[0];
+    const r = /\.(sh)$/.test(f) || /^#!.*\bbash\b/.test(first) ? spawnSync("bash", ["-n", f], { encoding: "utf8" })
+      : /\.(mjs|js)$/.test(f) || /^#!.*\bnode\b/.test(first) ? spawnSync("node", ["--check", ...(/\.(mjs|js)$/.test(f) ? [f] : ["--input-type=module"])], { encoding: "utf8", input: /\.(mjs|js)$/.test(f) ? undefined : text.replace(/^#!.*\n/, "") })
+      : /\.ya?ml$/.test(f) ? spawnSync("python3", ["-c", "import sys,yaml; yaml.safe_load(open(sys.argv[1]))", f], { encoding: "utf8" }) : null;
+    if (r && r.status && !(r.error && /\.ya?ml$/.test(f))) bad.push(`${f}: ${(r.stderr || r.stdout || "").trim().split("\n").slice(-1)[0]}`);
+  }
+  if (bad.length) fail(`syntax errors:\n  ${bad.join("\n  ")}`, "fix them; managed files come from the pack (setup.sh --check names the restore)");
+  console.log("syntax: scripts and workflows parse");
+} else if (cmd === "preview") {
+  // The head's Workers Builds preview, when the repo has one: a failed Cloudflare build fails gate; a build still
+  // running is waited on for at most 3 minutes; the URL comes from the Cloudflare bot's PR comment for this commit.
+  if (!prNumber || e2eCfg.preview === false) { console.log("preview: none (not a pull request, or e2e.preview is false)"); output("url", ""); process.exit(0); }
+  const get = ghApi(), pr = await get(`/pulls/${prNumber}`), head = pr.head.sha, short = head.slice(0, 7);
+  const name = pack.preview?.check_name ?? "Workers Builds", author = pack.preview?.comment_author ?? "cloudflare-workers-and-pages[bot]";
+  const wait = Number(env.GATE_PREVIEW_WAIT_S ?? 180) * 1000, start = Date.now();
+  for (;;) {
+    const runs = ((await get(`/commits/${head}/check-runs?per_page=100`, { need: false }))?.check_runs ?? []).filter((c) => c.name?.startsWith(name));
+    const red = runs.find((c) => c.status === "completed" && !["success", "neutral", "skipped"].includes(c.conclusion));
+    if (red) fail(`Cloudflare build failed for ${short}: ${red.name} ${red.conclusion} (${red.details_url})`, "fix the Worker build; gate tests the deployed preview");
+    if (!runs.length) { console.log(`preview: no "${name}" check run on ${short}; e2e runs locally`); output("url", ""); process.exit(0); }
+    if (runs.every((c) => c.status === "completed")) break;
+    if (Date.now() - start >= wait) { console.log(`preview: the Cloudflare build for ${short} is still running after ${wait / 1000}s; e2e runs locally`); output("url", ""); process.exit(0); }
+    await new Promise((r) => setTimeout(r, 15000));
+  }
+  const comments = [];
+  for (let page = 1; ; page++) { const b = (await get(`/issues/${prNumber}/comments?per_page=100&page=${page}`)) ?? []; comments.push(...b); if (b.length < 100) break; }
+  const url = comments.filter((c) => c.user?.login === author).reverse().flatMap((c) => c.body.split("\n"))
+    .filter((l) => l.includes(short) && /https:\/\//.test(l)).map((l) => l.match(/https:\/\/[^\s,<>)"'|]+/)[0])[0] ?? "";
+  console.log(url ? `preview: ${url} (${short})` : `preview: no preview URL for ${short} in the Cloudflare comment; e2e runs locally`);
+  output("url", url);
+} else if (cmd === "classify") {
   // Codex cloud has no origin: fall back to a local default branch, then to HEAD itself (uncommitted and untracked
   // files only). Never the branch's upstream: that is usually the pushed feature head, which would hide its changes.
   let base;
@@ -50,7 +130,9 @@ if (cmd === "classify") {
     must(pm, pm === "pnpm" ? ["install", "--frozen-lockfile"] : pm === "yarn" ? ["install", has(".yarnrc.yml") ? "--immutable" : "--frozen-lockfile"]
       : has("package-lock.json") || has("npm-shrinkwrap.json") ? ["ci"] : ["install", "--no-package-lock"]);
     const d = { ...pkg.dependencies, ...pkg.devDependencies };
-    if (d.playwright || d["@playwright/test"]) must("npx", ["playwright", "install", "--with-deps", "chromium"]);
+    // The repo's own Playwright (so the browser matches the lockfile); only this run's browsers. Browsers are not cached.
+    const bin = has("node_modules/.bin/playwright") ? ["node_modules/.bin/playwright", []] : ["npx", ["--no-install", "playwright"]];
+    if ((d.playwright || d["@playwright/test"]) && !args.includes("--no-browsers")) must(bin[0], [...bin[1], "install", "--with-deps", ...browsers()]);
   }
 } else if (cmd === "run") {
   const s = args.find((x) => pkg?.scripts?.[x]);
@@ -61,17 +143,33 @@ if (cmd === "classify") {
   // standards.json "e2e": "<command>" names the suite; else a script, a tests/e2e or e2e dir, or a root Playwright config.
   const script = ["test:e2e", "e2e"].find((s) => pkg?.scripts?.[s]), dir = ["tests/e2e", "e2e"].find(has);
   const rootPw = ls(".").some((f) => /^playwright\.config\.[cm]?[jt]s$/.test(f)), pw = rootPw || (dir && ls(dir).some((f) => /^playwright\.config\.[cm]?[jt]s$/.test(f)));
-  const run = typeof std.e2e === "string" ? ["bash", ["-c", std.e2e]] : script ? [pm, ["run", script]] : dir && pw ? ["npx", ["playwright", "test", dir]]
-    : rootPw ? ["npx", ["playwright", "test"]]
+  // Playwright runs this run's browsers only (Chromium unless a promotion opts in more), when the config defines
+  // those projects; a config without projects runs as it is.
+  const cfgFile = [...(rootPw ? ls(".") : []), ...(dir && !rootPw ? ls(dir).map((f) => `${dir}/${f}`) : [])].find((f) => /(^|\/)playwright\.config\.[cm]?[jt]s$/.test(f));
+  const cfg = cfgFile ? rd(cfgFile, "utf8") : "", named = (b) => new RegExp(`name:\\s*['"\`]${b}['"\`]`).test(cfg);
+  const projects = /\bprojects\s*:/.test(cfg) ? browsers().filter(named).map((b) => `--project=${b}`) : [];
+  const pwBin = has("node_modules/.bin/playwright") ? ["node_modules/.bin/playwright", []] : ["npx", ["--no-install", "playwright"]];
+  const run = e2eCmd ? ["bash", ["-c", e2eCmd]] : script ? [pm, ["run", script]] : dir && pw ? [pwBin[0], [...pwBin[1], "test", dir, ...projects]]
+    : rootPw ? [pwBin[0], [...pwBin[1], "test", ...projects]]
     : dir && ls(dir, { recursive: true }).some((f) => /\.test\.[cm]?js$/.test(f)) ? ["node", ["--test", `${dir}/**/*.test.*js`]] : null;
-  if (run) { console.log(`e2e: ${run[0]} ${run[1].map((a) => (a.includes("*") ? `"${a}"` : a)).join(" ")}`); must(...run); }
+  // Budget: the whole suite within gate_budget.e2e minutes (standards.json e2e.budget may only tighten it).
+  const mins = Math.min(Number(e2eCfg.budget ?? Infinity), pack.gate_budget?.e2e ?? 5), ms = Math.round(mins * 60000);
+  const url = env.GATE_PREVIEW_URL ?? "";
+  if (run) {
+    console.log(`e2e: ${run[0]} ${run[1].map((a) => (a.includes("*") ? `"${a}"` : a)).join(" ")}${url ? ` against ${url}` : ""} (budget ${mins} min)`);
+    const r = spawnSync(run[0], run[1], { stdio: "inherit", timeout: ms, killSignal: "SIGKILL",
+      env: { ...env, PW_GLOBAL_TIMEOUT: String(ms), ...(url && { PLAYWRIGHT_BASE_URL: url, BASE_URL: url }) } });
+    if (r.error?.code === "ETIMEDOUT" || r.signal) fail(`e2e exceeded its ${mins}-minute budget`, "make the slow tests faster (fewer navigations, the preview URL), then move the slow tail to promotion PRs; do not shard");
+    if (r.status) process.exit(r.status);
+  }
   else if (std.e2e === false) console.log('::warning::no e2e suite; standards.json sets "e2e": false (docs and static repos only)');
   else fail("no e2e suite (test:e2e or e2e script; tests/e2e/ or e2e/ with playwright.config.* or *.test.*js)",
     'add an end-to-end suite through the real entry point; docs/static repos only: "e2e": false in standards.json');
 } else if (cmd === "evidence") {
   const t = git("ls-files", "--", ".evidence").split("\n")[0];
   if (t) fail(`.evidence/ is tracked (${t}); it would reach the default branch`, "git rm -r --cached .evidence and commit");
-  const event = env.GITHUB_EVENT_PATH ? json(env.GITHUB_EVENT_PATH) ?? {} : {}, pr = event.pull_request;
+  let pr = event.pull_request;
+  if (!pr && prNumber) pr = await ghApi()(`/pulls/${prNumber}`); // a workflow_dispatch re-gate of this pull request
   // A push to standards/vX.Y.Z is the sync's landing branch: that run skips the PR checks, so it must come from an App
   // and change only pack paths (those in the base or new lock, within the managed prefixes).
   if (!pr && env.GITHUB_EVENT_NAME === "push" && /^standards\/v\d+\.\d+\.\d+$/.test(env.GITHUB_REF_NAME ?? "")) {
@@ -169,14 +267,14 @@ if (cmd === "classify") {
   // Codex verdict on the current head: its summary comment shows this head's short SHA as Completed and every
   // Codex review thread is resolved. Drafts are not evaluated; repos without Codex reviews and the sync's
   // fallback PRs are exempt. No verdict 20 min after the head was pushed or marked ready fails for the launcher.
-  const event = env.GITHUB_EVENT_PATH ? json(env.GITHUB_EVENT_PATH) ?? {} : {};
-  if (!event.pull_request) { console.log("codex: not a pull request"); process.exit(0); }
-  const pk = json("scripts/agent/pack.json") ?? {};
+  if (!prNumber) { console.log("codex: not a pull request"); process.exit(0); }
+  const pk = pack;
   if (std.codex_review === false || pk.codex_review === false) { console.log("codex: review is off for this repo"); process.exit(0); }
+  if (pk.codex_verdict === "status" && !env.GATE_CODEX_EVALUATE) { console.log("codex: the verdict is the codex-verdict commit status, posted by the org App (scripts/agent/verdict-recheck)"); process.exit(0); }
   const repo = env.GITHUB_REPOSITORY, base = env.GITHUB_API_URL || "https://api.github.com", API = `${base}/repos/${repo}`;
   const auth = { Authorization: `Bearer ${env.GH_TOKEN || env.GITHUB_TOKEN}`, Accept: "application/vnd.github+json" };
   const get = async (p) => { const r = await fetch(`${API}${p}`, { headers: auth }); if (!r.ok) fail(`GET ${p}: ${r.status}`, "grant the job actions, pull-requests and issues read"); return r.json(); };
-  const n = event.pull_request.number, pr = await get(`/pulls/${n}`), head = pr.head.sha;
+  const n = prNumber, pr = await get(`/pulls/${n}`), head = pr.head.sha;
   if (pr.draft) { console.log("codex: draft, not evaluated"); process.exit(0); }
   if (pk.sync_app_login && pr.user?.login === pk.sync_app_login && /^standards\/v\d+\.\d+\.\d+$/.test(pr.head.ref)) { console.log("codex: pack-sync fallback PR, exempt"); process.exit(0); }
   const bot = (u) => /codex/i.test(u?.login ?? "") && u?.type === "Bot", MARK = "<!-- codex-pull-request-review-summary -->";

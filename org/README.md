@@ -34,12 +34,13 @@ Overlay:
   "push_ignored_paths": [],
   "push_ruleset": "managed",
   "push_app_bypass": false,
+  "codex_verdict_status": false,
   "max_file_size_mb": 50
 }
 ```
 
 `review_thread_resolution` and `strict_status_checks` default to `false`; each org sets them in its overlay. App permissions are listed with their callers in `app-manifest.json`; the App has no webhook because the launcher polls.
 
-Push paths are additive: `extra_restricted_paths` adds patterns, and `push_ignored_paths` exempts matches (GitHub honours `ignored_file_paths` on a push ruleset, so `.env.*` plus `**/.env.*` with `.env.example` and `**/.env.example` ignored blocks `.env.test` and allows `.env.example`, verified live). `push_ruleset: "external"` leaves every org push ruleset alone: org-apply neither writes nor deletes one. `push_app_bypass: true` lets the App bypass the push ruleset too (off by default: an org without it keeps none). `require_extra_approval_for_unattributed_changes` sets that pull-request rule option on every branch ruleset; leave it out to keep each live ruleset's value. Extra checks are objects `{ "context": "<check>", "integration_id": <app id> }`; omit `integration_id` to accept the check from any source.
+Push paths are additive: `extra_restricted_paths` adds patterns, and `push_ignored_paths` exempts matches (GitHub honours `ignored_file_paths` on a push ruleset, so `.env.*` plus `**/.env.*` with `.env.example` and `**/.env.example` ignored blocks `.env.test` and allows `.env.example`, verified live). `push_ruleset: "external"` leaves every org push ruleset alone: org-apply neither writes nor deletes one. `codex_verdict_status: true` requires the `codex-verdict` status beside `gate`, pinned to the App (it posts it through `scripts/agent/verdict-recheck`); turn it on only after the App has `statuses: write` (an owner accepts the permission change on the installation), or every merge blocks. `push_app_bypass: true` lets the App bypass the push ruleset too (off by default: an org without it keeps none). `require_extra_approval_for_unattributed_changes` sets that pull-request rule option on every branch ruleset; leave it out to keep each live ruleset's value. Extra checks are objects `{ "context": "<check>", "integration_id": <app id> }`; omit `integration_id` to accept the check from any source.
 
 `app.id` must be the real App id (the example's `0` is refused before anything is written). `gate_integration_id` pins `gate` to the check-run App that runs it (the Actions App on your host), so a status from another App cannot satisfy it; leave it out to accept `gate` from any source. Before touching rulesets, apply turns on squash merging for every active repo and merge commits for staged repos where the repo setting has them off, since a ruleset can only narrow the methods a repository allows.

@@ -193,4 +193,15 @@ prs=$(q acme/filer 's.items.filter(i => i.pull).map(i => i.state + ":" + i.head)
 if [ $rc -eq 0 ] && [ "$prs" = "closed:chore/sentry-project-web open:chore/sentry-project-retry/web/2" ] && [ -n "$(printf '%s' "$r3" | grep 'mapping PR')" ] \
   && [ -z "$(writes_since "$g2" | grep DELETE)" ] && [ -n "$(printf '%s' "$r4" | grep 'mapping PR already open')" ]; then ok error-tracker-rerun-safe
 else fail error-tracker-rerun-safe "rc=$rc prs=$prs deletes=$(writes_since "$g2" | grep DELETE) $r3 | $r4"; fi
+
+# pack-landing-cheap-except-canary (sync side): each profile's canary lands first; a red canary stops the fleet
+node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.gate={canary:{client:"beta"}};require("fs").writeFileSync(f,JSON.stringify(o))' "$OV"
+k0=$(mark); cr1=$(sync --version 0.4.0); ck1=$?; wait_row=$(row acme/alpha)
+node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.gate={canary:{internal:"alpha"}};require("fs").writeFileSync(f,JSON.stringify(o))' "$OV"
+cr2=$(sync --version 0.5.0); ck2=$?
+first=$(printf '%s\n' "$cr2" | grep -E '^acme/[a-z]+: ' | head -1)
+if [ $ck1 -eq 1 ] && [ -n "$(printf "%s" "$cr1" | grep "canary acme/beta")" ] && [ -z "$(heads acme/alpha | grep v0.4.0)" ] && [ -z "$(printf '%s' "$cr1" | grep '^acme/alpha: ')" ] \
+  && [ -n "$(printf '%s' "$wait_row" | grep 'waiting: canary acme/beta')" ] && [ "${first%%:*}" = acme/alpha ] && [ -n "$(printf '%s\n' "$cr2" | grep '^acme/boot: ')" ]
+then ok pack-landing-cheap-except-canary; else fail pack-landing-cheap-except-canary "red=$ck1 green=$ck2 first=$first :: $cr1 :: $cr2"; fi
+overlay
 done_cases

@@ -15,8 +15,26 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 - **`ui-paths-empty-warns`**: an explicit `ui_paths: []` turns the evidence gate off, and `--check` warns naming tracked files the defaults would cover.
 - **`no-evidence-on-main`**: tracked `.evidence/` fails `--check` and `gate`; the PR helper leaves no `.evidence/` on the branch tip after posting.
 
-- **`codex-verdict-required`**: a non-draft PR passes `gate` only when the Codex summary shows the current head as Completed (after the head's push and any base edit) and every Codex thread is resolved; pending or stale fails (after 20 min: "no Codex verdict … the launcher will request one"); drafts, repos without Codex reviews, and the sync's fallback PRs are exempt. Comments and reviews re-run the PR's gate run in place instead of cancelling it.
-- **`gate-rerun-never-cancelled`**: `std-gate-rerun` has no concurrency group, so a burst of review events leaves no cancelled check runs (GitHub reported clean PRs UNSTABLE); each run re-runs a finished gate run once, waits for one in flight, and exits green when another event already re-ran it; an outside PR author's event does not wait for a run in flight.
+- **`codex-verdict-required`**: a non-draft PR passes `gate` only when the Codex summary shows the current head as Completed (after the head's push and any base edit) and every Codex thread is resolved; pending or stale fails (after 20 min: "no Codex verdict … the launcher will request one"); drafts, repos without Codex reviews, and the sync's fallback PRs are exempt.
+- **`codex-verdict-status`**: with the overlay's `codex.verdict: "status"`, `verdict-recheck` posts the `codex-verdict` commit status on the head (a token that cannot post fails loudly), and gate's codex step defers to that status.
+- **`gate-rerun-never-cancelled`**: `std-gate-rerun` has no concurrency group, so a burst of events leaves no cancelled check runs (GitHub reported clean PRs UNSTABLE); an approval re-runs a finished gate run once, a lost race counts as done, and a base change dispatches std-gate.
+
+### CI minutes (each reproduces a measured cost from the Sep 27 Actions audit)
+
+- **`rerun-reuses-build`**: a re-run of a gate run reuses the head's passed build (install, typecheck, build, e2e, repo checks), also through an earlier reuse attempt, and still checks evidence and the Codex verdict; a cheap or failed-standards attempt does not qualify. `verdict-recheck` re-runs only when that can change the result. Incident: every Codex event rebuilt the site (759 billed minutes of review re-runs in one org in a day; 241 minutes in 138 runs on one repo in the other).
+- **`rerun-ignores-noise-senders`**: comments start no gate run at all (every reply on a Codex thread was a full gate), and reviews re-gate only when a person approves or dismisses. Incident: 104 minutes of re-runs came from preview-bot comments.
+- **`rerun-never-polls`**: the re-run wrapper never waits for a gate in flight and is capped at 2 minutes. Incident: its 35-minute wait loop.
+- **`gate-no-push-regate`**: pushes to main or staging start no gate run (the tree was gated as a PR); `standards/v*` landings do. Incident: 442 billed minutes of post-merge gates.
+- **`gate-ignores-body-edits`**: a title or body edit starts no gate run; a base change re-gates the PR's fresh merge ref by dispatch.
+- **`skip-never-greens-gate`**: the gate job has no job-level `if` (a skipped job reports success and could mask a red gate on the same head); a dispatch re-gate evaluates the PR, never "not a pull request"; evidence and the Codex verdict run after a failed build step.
+- **`pack-landing-cheap-except-canary`**: a pack-only landing runs the cheap gate (check, secret scan, syntax) except on the profile's canary, which runs the full gate; sync lands the canaries first and stops the fleet when one is red. Incident: each fleet roll re-ran every repo's full gate twice (about 60 billed minutes).
+- **`draft-cheap-ready-full`**: drafts run the cheap gate; `ready_for_review` runs the full one.
+- **`e2e-chromium-default`**: gate installs and runs Chromium only; more browsers run on promotion PRs when `standards.json` `e2e.browsers` (or the overlay) opts in, and only for projects the Playwright config defines. Incident: three-browser suites ran on every PR.
+- **`e2e-uses-preview-url`**: with a Workers Builds check run on the head, e2e runs against the preview URL from the Cloudflare comment for that commit; a red Cloudflare build fails gate; with none, e2e runs locally.
+- **`e2e-budget-enforced`**: an e2e suite over its budget (5 minutes; `e2e.budget` may only tighten it) fails gate.
+- **`quarantine-expires`**: `@quarantine` needs an issue link and an expiry at most 14 days out; an expired one fails `--check`.
+- **`no-duplicate-gate-workflows`**: a repository workflow that runs checks on pull requests, or re-tests pushes to the default or integration branch, or a schedule more frequent than daily, fails `--check`; the declared deploy workflow may build on push. Incidents: a duplicate `validate.yml` ran 142 times; a sub-hourly alert poll billed 166 minutes.
+- **`jobs-have-timeouts`**: a workflow job without `timeout-minutes` fails `--check` (the default is 360 minutes).
 
 ## Promotions (flow `staged`)
 

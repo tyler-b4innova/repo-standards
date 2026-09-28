@@ -1,54 +1,97 @@
-# Managed by the standards pack: the one required check, job `gate`.
-# Repo-owned checks go in scripts/agent/gate.local.sh. Review and comment events re-run this workflow's
-# pull_request run through std-gate-rerun.yml, so they never cancel a gate in flight.
+# Managed by the standards pack: the one required check, job `gate`. It builds once per pull request head. A re-run
+# of the same run (scripts/agent/verdict-recheck, an approval, `pr.sh evidence`) reuses that head's build and checks
+# only evidence, approval and the Codex verdict again. Repo-owned checks go in scripts/agent/gate.local.sh.
+# No job-level `if` and no early exit: a skipped job reports success and could mask a red gate on the same head.
 name: std-gate
 on:
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review, edited] # edited: a base change re-evaluates the diff
+    types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
   push:
-    branches: [main, staging, "standards/v*"]
+    branches: ["standards/v*"]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "Pull request to re-gate on its fresh merge ref (std-gate-rerun sends this after a base change)"
+        required: true
 permissions:
   actions: read
   contents: read
   pull-requests: read
   issues: read
 concurrency:
-  group: std-gate-${{ github.event.pull_request.number || github.ref }}
+  group: std-gate-${{ github.event.pull_request.number || inputs.pr || github.ref }}
   cancel-in-progress: true
 jobs:
   gate:
     name: gate
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # The runner is an org variable, so an org can move gate to another pool (and back) without a pack release.
+    runs-on: ${{ vars.STD_GATE_RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.pr && format('refs/pull/{0}/merge', inputs.pr) || '' }}
           fetch-depth: 0
           persist-credentials: false
+      - name: merge ref
+        if: failure() && inputs.pr
+        run: echo "::error::refs/pull/${{ inputs.pr }}/merge is missing, so the pull request conflicts with its new base; resolve the conflict and push"
+      - id: pm
+        run: if [ -f package-lock.json ]; then echo cache=npm >>"$GITHUB_OUTPUT"; fi
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
+          cache: ${{ steps.pm.outputs.cache }}
+      - name: plan
+        id: plan
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/agent/gate.mjs plan
       - name: standards
         run: scripts/agent/setup.sh --check
+      - name: secrets
+        if: steps.plan.outputs.mode != 'reuse'
+        run: node scripts/agent/gate.mjs secrets
+      - name: syntax
+        if: steps.plan.outputs.mode == 'cheap'
+        run: node scripts/agent/gate.mjs syntax
+      - name: install
+        if: steps.plan.outputs.mode == 'full'
+        env:
+          GATE_BROWSERS: ${{ steps.plan.outputs.browsers }}
+        run: node scripts/agent/gate.mjs install
+      - name: typecheck
+        if: steps.plan.outputs.mode == 'full'
+        run: node scripts/agent/gate.mjs run typecheck
+      - name: build
+        if: steps.plan.outputs.mode == 'full'
+        run: node scripts/agent/gate.mjs run build
+      - name: preview
+        id: preview
+        if: steps.plan.outputs.mode == 'full'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/agent/gate.mjs preview
+      - name: e2e
+        if: steps.plan.outputs.mode == 'full'
+        env:
+          GATE_BROWSERS: ${{ steps.plan.outputs.browsers }}
+          GATE_PREVIEW_URL: ${{ steps.preview.outputs.url }}
+        run: node scripts/agent/gate.mjs e2e
+      - name: repo checks
+        if: steps.plan.outputs.mode == 'full'
+        run: |
+          if [ -f scripts/agent/gate.local.sh ]; then bash scripts/agent/gate.local.sh; else echo "notice: no scripts/agent/gate.local.sh"; fi
+      # Evidence and the Codex verdict run last and even after a failed build step, so a later re-run for new evidence
+      # or a new verdict reuses a build that passed.
       - name: evidence
+        if: ${{ !cancelled() && steps.plan.outcome == 'success' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/agent/gate.mjs evidence
-      - name: secrets
-        run: node scripts/agent/gate.mjs secrets
-      - name: install
-        run: node scripts/agent/gate.mjs install
-      - name: typecheck
-        run: node scripts/agent/gate.mjs run typecheck
-      - name: build
-        run: node scripts/agent/gate.mjs run build
-      - name: e2e
-        run: node scripts/agent/gate.mjs e2e
-      - name: repo checks
-        run: |
-          if [ -f scripts/agent/gate.local.sh ]; then bash scripts/agent/gate.local.sh; else echo "notice: no scripts/agent/gate.local.sh"; fi
       - name: codex review
+        if: ${{ !cancelled() && steps.plan.outcome == 'success' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/agent/gate.mjs codex

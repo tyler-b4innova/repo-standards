@@ -1,0 +1,22 @@
+# Managed by the standards pack. Pull requests can read the default branch's dependency cache but not each other's,
+# so a lockfile change on the default branch refreshes it here. Not a required check; browsers are never cached.
+name: std-cache-warm
+on:
+  push:
+    branches: [main, staging]
+    paths: [package-lock.json]
+permissions:
+  contents: read
+jobs:
+  warm:
+    runs-on: ${{ vars.STD_GATE_RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: node scripts/agent/gate.mjs install --no-browsers

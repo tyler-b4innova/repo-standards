@@ -122,6 +122,8 @@ evidence() {
   id=$(js 'String((d.find(c=>a[0]&&c.user?.login===a[0]&&(c.body||"").includes("<!-- std:evidence -->"))||{}).id||"")' "$me" <<<"$R")
   if [ -n "$id" ]; then req PATCH "issues/comments/$id" "$body"; else req POST "issues/$pr/comments" "$body"; fi
   js 'd.html_url' <<<"$R"
+  # comments start no gate run: re-run the head's gate (it reuses the build) so it reads this evidence
+  "$top/scripts/agent/verdict-recheck" "$pr" --evidence --wait >&2 || echo "pr.sh: verdict-recheck failed; run scripts/agent/verdict-recheck $pr --evidence" >&2
 }
 
 feedback() {

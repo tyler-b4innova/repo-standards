@@ -34,7 +34,13 @@ else {
   else {
     const one = (k, vals) => vals.includes(std[k]) || fail(`standards.json ${k} is ${JSON.stringify(std[k])}`, `use one of ${vals.join("|")}`);
     one("pack", [pack.pack]); one("profile", ["internal", "client"]); one("dispatch", ["auto", "manual", "off"]);
-    one("sensitive", [true, false]); if (!(std.e2e === undefined || std.e2e === false || (typeof std.e2e === "string" && std.e2e.trim()))) fail(`standards.json e2e is ${JSON.stringify(std.e2e)}`, "use false (docs/static only) or the e2e command"); one("flow", [undefined, "staged", "direct"]); one("design_signoff", [undefined, true, false]);
+    one("sensitive", [true, false]); const e = std.e2e, eo = e && typeof e === "object" && !Array.isArray(e);
+    const e2eOk = e === undefined || e === false || (typeof e === "string" && e.trim()) || (eo && Object.keys(e).every((k) => ["command", "browsers", "preview", "budget"].includes(k))
+      && (e.command === undefined || (typeof e.command === "string" && e.command.trim())) && (e.browsers === undefined || (Array.isArray(e.browsers) && e.browsers.every((b) => ["chromium", "firefox", "webkit"].includes(b))))
+      && [undefined, false].includes(e.preview) && (e.budget === undefined || (typeof e.budget === "number" && e.budget > 0)));
+    if (!e2eOk) fail(`standards.json e2e is ${JSON.stringify(e)}`, 'use false (docs/static only), the e2e command, or {"command", "browsers" (promotion PRs), "preview": false, "budget" (minutes, tighter only)}');
+    if (std.deploy_workflow !== undefined && !(typeof std.deploy_workflow === "string" && /^[\w.-]+\.ya?ml$/.test(std.deploy_workflow)))
+      fail(`standards.json deploy_workflow is ${JSON.stringify(std.deploy_workflow)}`, "name the one deploy workflow file, e.g. deploy.yml"); one("flow", [undefined, "staged", "direct"]); one("design_signoff", [undefined, true, false]);
     if (std.allow_paths !== undefined && !(Array.isArray(std.allow_paths) && std.allow_paths.every((g) => typeof g === "string" && g.trim())))
       fail(`standards.json allow_paths is ${JSON.stringify(std.allow_paths)}`, 'a list of globs, e.g. ["plugins/*/.mcp.json"]');
     if (!/^\d+\.\d+\.\d+$/.test(std.version ?? "")) fail("standards.json version is not X.Y.Z", restore("standards.json"));
@@ -99,6 +105,54 @@ else {
     if ((/\.(md|markdown)$/i.test(name) && dirs.some((d) => pack.decision_dirs.includes(d))) || /^ADR-.*\.md$/i.test(name) || pack.decision_record_globs.some((g) => glob(g).test(f)))
       fail(`decision record tracked: ${f}`, `git rm ${f}   (decisions are not recorded; they must be evident in the work)`);
     if (!ok) for (const g of pack.forbid_paths) if (glob(g).test(f)) fail(`${f} matches the org's forbidden path ${g}`, `git rm -r --cached ${f}`);
+  }
+  // CI: one gate per head. Every job has a timeout; repo workflows neither test on pull requests nor re-test pushes to
+  // the default or integration branch (checks go in scripts/agent/gate.local.sh); no schedule runs more than daily;
+  // Playwright installs name their browsers. A line-level reading of the block YAML workflows use.
+  const deploy = std?.deploy_workflow;
+  for (const f of tracked.filter((f) => /^\.github\/workflows\/[^/]+\.ya?ml$/.test(f))) {
+    const text = read(f) ?? "", L = text.split("\n"), name = f.split("/").pop(), managed = /^std-/.test(name);
+    const onAt = L.findIndex((l) => /^["']?on["']?:/.test(l)), inline = onAt >= 0 ? L[onAt].replace(/^["']?on["']?:\s*/, "").trim() : "";
+    const block = (at, indent) => { const b = []; for (let i = at + 1; i < L.length && (L[i].trim() === "" || L[i].search(/\S/) > indent || L[i].trim().startsWith("#")); i++) b.push(L[i]); return b; };
+    const onBlock = onAt >= 0 ? block(onAt, 0) : [];
+    const triggers = inline ? inline.replace(/[[\]{}]/g, "").split(",").map((t) => t.trim().split(":")[0]).filter(Boolean)
+      : onBlock.filter((l) => /^ {2}[a-z_]+:/.test(l)).map((l) => l.trim().split(":")[0]);
+    const pushAt = onBlock.findIndex((l) => /^ {2}push:/.test(l)), push = pushAt >= 0 ? block(pushAt, 2).map((l) => l.trim()).join(" ") : "";
+    const pushBranches = /branches:/.test(push) ? push.replace(/.*branches:\s*/, "").split(/tags:|paths:|branches-ignore:|paths-ignore:/)[0].match(/[\w./*-]+/g) ?? [] : null;
+    const integrationPush = triggers.includes("push") && (pushBranches === null ? !/tags:/.test(push) : pushBranches.some((b) => ["main", "master", "staging", "develop", "*", "**"].includes(b)));
+    const crons = [...text.matchAll(/cron:\s*["']([^"']+)["']/g)].map((m) => m[1].trim());
+    if (crons.length > 1 || crons.some((c) => !/^\d+\s+\d+\s/.test(c)))
+      fail(`${f} is scheduled more often than daily (${crons.join("; ")})`, "one daily or rarer cron; polling and monitoring belong in Workers Cron Triggers");
+    const jobsAt = L.findIndex((l) => /^jobs:/.test(l));
+    const jobs = [];
+    if (jobsAt >= 0) for (let i = jobsAt + 1; i < L.length; i++) {
+      const m = L[i].match(/^ {2}([A-Za-z0-9_-]+):\s*$/);
+      if (m) jobs.push({ name: m[1], body: block(i, 2) });
+      else if (/^\S/.test(L[i])) break;
+    }
+    for (const j of jobs) if (!j.body.some((l) => /^ {4}(timeout-minutes|uses):/.test(l)))
+      fail(`${f} job ${j.name} has no timeout-minutes (the default is 360 minutes)`, `add timeout-minutes to ${j.name} (gate 15, anything else at most 20)`);
+    const runs = jobs.flatMap((j) => j.body).filter((l) => !/^\s*(-\s*)?(name|uses|id|if):/.test(l)).join("\n");
+    if (/playwright install\b(?![^\n;&|]*\b(chromium|chrome|firefox|webkit|msedge)\b)/.test(runs))
+      fail(`${f} runs playwright install without naming a browser (it downloads all of them)`, "name the browser: playwright install --with-deps chromium");
+    const checks = /\b(tests?|e2e|lint|typecheck|tsc|vitest|jest|playwright|eslint|biome|gate|check)\b/i, builds = /\bbuild\b/i;
+    if (!managed && (triggers.some((t) => ["pull_request", "pull_request_target"].includes(t)) || (integrationPush && name !== deploy)) && (checks.test(runs) || (name !== deploy && integrationPush && builds.test(runs))))
+      fail(`${f} runs checks on ${triggers.filter((t) => ["pull_request", "pull_request_target", "push"].includes(t)).join(" and ")}, beside the one gate`, "move them into scripts/agent/gate.local.sh and delete the workflow (a deploy workflow on push is declared as standards.json deploy_workflow and does not test)");
+    if (!managed && name === deploy && checks.test(runs)) fail(`${f} is the declared deploy workflow but runs checks`, "gate tests; the deploy workflow only builds and deploys");
+  }
+  const scripts = Object.values(json("package.json")?.scripts ?? {}).join("\n") + "\n" + (read("scripts/agent/gate.local.sh") ?? "");
+  if (/playwright install\b(?![^\n;&|]*\b(chromium|chrome|firefox|webkit|msedge)\b)/.test(scripts))
+    fail("package.json scripts or gate.local.sh run playwright install without naming a browser", "name the browser: playwright install --with-deps chromium");
+  // Quarantined tests: @quarantine(<issue link>, until YYYY-MM-DD), at most 14 days out, never past due.
+  let q = "";
+  try { q = git("grep", "-nI", "@quarantine", "--", ".", ":!scripts/agent", ":!*.md"); } catch {}
+  const today = new Date().toISOString().slice(0, 10), limit = new Date(Date.now() + 14 * 864e5).toISOString().slice(0, 10);
+  const testFile = (f) => /\.[cm]?[jt]sx?$/.test(f) && (/\.(test|spec)\.[cm]?[jt]sx?$/.test(f) || /(^|\/)(tests?|e2e|__tests__)\//.test(f));
+  for (const line of q.split("\n").filter((l) => l && testFile(l.split(":")[0]))) {
+    const at = line.split(":").slice(0, 2).join(":"), m = line.match(/@quarantine\b.*?(https?:\/\/\S+\/issues\/\d+|#\d+).*?\buntil\s+(\d{4}-\d{2}-\d{2})/);
+    if (!m) fail(`${at}: @quarantine needs an issue link and an expiry`, "write @quarantine(#123, until YYYY-MM-DD), at most 14 days out");
+    else if (m[2] < today) fail(`${at}: quarantine expired ${m[2]}`, "fix the test, or delete it; quarantine is not a place to keep it");
+    else if (m[2] > limit) fail(`${at}: quarantine runs to ${m[2]}, more than 14 days out`, `set until ${limit} or sooner`);
   }
   for (const pat of pack.forbid_patterns) {
     let hit = "";

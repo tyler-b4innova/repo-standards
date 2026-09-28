@@ -4,12 +4,15 @@
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 const a = process.argv.slice(2), f = process.env.FAKE_GH_STATE, st = JSON.parse(readFileSync(f, "utf8"));
+if (a[0] === "workflow" && a[1] === "run") { // gh workflow run <file> -R <repo> --ref <ref> -f k=v
+  appendFileSync(process.env.FAKE_GH_LOG, `DISPATCH ${a.slice(2).join(" ")}\n`); st.dispatches = (st.dispatches ?? 0) + 1; writeFileSync(f, JSON.stringify(st)); process.exit(0);
+}
 const method = a.includes("-X") ? a[a.indexOf("-X") + 1] : "GET", jq = a.includes("--jq") ? a[a.indexOf("--jq") + 1] : null;
 const path = a.find((x, i) => i > 0 && !x.startsWith("-") && a[i - 1] !== "-X" && a[i - 1] !== "--jq");
 appendFileSync(process.env.FAKE_GH_LOG, `${method} ${path}\n`);
 let out;
 if (/\/pulls\/\d+$/.test(path)) out = { head: { sha: st.sha } };
-else if (/\/workflows\/std-gate\.yml\/runs/.test(path)) out = { workflow_runs: [{ ...st.run, pull_requests: [{ number: Number(process.env.PR) }] }] };
+else if (/\/workflows\/std-gate\.yml\/runs/.test(path)) out = { workflow_runs: [{ event: "pull_request", ...st.run, pull_requests: [{ number: Number(process.env.PR) }] }] };
 else if (method === "POST" && /\/runs\/\d+\/rerun$/.test(path)) {
   if (st.run.status !== "completed") { process.stderr.write("gh: This workflow is already running (HTTP 403)\n"); process.exit(1); }
   st.run = { ...st.run, status: "queued", run_started_at: new Date().toISOString().replace(/\.\d+Z$/, "Z") }; st.reruns = (st.reruns ?? 0) + 1;

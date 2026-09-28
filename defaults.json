@@ -60,5 +60,12 @@
   "evidence_trusted_authors": [
     "pr_author",
     "app"
-  ]
+  ],
+  "gate_budget": {
+    "e2e": 5
+  },
+  "preview": {
+    "check_name": "Workers Builds",
+    "comment_author": "cloudflare-workers-and-pages[bot]"
+  }
 }

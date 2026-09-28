@@ -49,7 +49,7 @@ out=$(node --input-type=module -e '
   import { readFileSync } from "node:fs";
   const o = JSON.parse(readFileSync(process.argv[1], "utf8"));
   const a = render(o);
-  o.org_admin.review_thread_resolution = true; o.org_admin.strict_status_checks = true; o.org_admin.extra_checks = { default: [{ context: "lint" }], staged_main: [{ context: "promote-main" }], staging: [{ context: "preview" }] }; o.org_admin.push_ignored_paths = [".env.example"]; o.org_admin.max_file_size_mb = 20; o.org_admin.push_app_bypass = true; o.org_admin.require_extra_approval_for_unattributed_changes = true;
+  o.org_admin.review_thread_resolution = true; o.org_admin.strict_status_checks = true; o.org_admin.extra_checks = { default: [{ context: "lint" }], staged_main: [{ context: "promote-main" }], staging: [{ context: "preview" }] }; o.org_admin.push_ignored_paths = [".env.example"]; o.org_admin.max_file_size_mb = 20; o.org_admin.push_app_bypass = true; o.org_admin.require_extra_approval_for_unattributed_changes = true; o.org_admin.codex_verdict_status = true;
   const b = render(o);
   const rs = (x, n) => x.rulesets.find((r) => r.name.includes(n)).rules;
   const refuse = (oa) => { try { render({ org_admin: oa }); return false; } catch { return true; } };
@@ -68,9 +68,10 @@ out=$(node --input-type=module -e '
     ignored: [rs(a, "push").file_path_restriction.ignored_file_paths ?? null, rs(b, "push").file_path_restriction.ignored_file_paths],
     pinned: rs(a, "default branch").required_status_checks.required_status_checks, unpinned,
     pushOptIn: b.rulesets.find((r) => r.target === "push").bypass_actors,
+    verdict: [a, b].map((x) => x.rulesets.filter((r) => r.rules.required_status_checks?.required_status_checks.some((c) => c.context === "codex-verdict" && c.integration_id === 4242)).length),
     unattributed: [a, b].map((x) => [...new Set(x.rulesets.flatMap((r) => r.rules.pull_request ? [r.rules.pull_request.require_extra_approval_for_unattributed_changes] : []))]),
     placeholders: JSON.stringify(a).includes("\"$"), refused }));' "$T/org.json" 2>&1)
-want='{"bypass":["branch:[{\"actor_id\":4242,\"actor_type\":\"Integration\",\"bypass_mode\":\"always\"},{\"actor_id\":null,\"actor_type\":\"OrganizationAdmin\",\"bypass_mode\":\"pull_request\"}]","push:[]"],"threadOff":false,"threadOn":true,"stagingThreadOn":true,"direct":["squash"],"staged":["merge"],"vault":true,"size":[50,20],"strict":[[false],[true]],"checks":["gate+lint","gate+promote-main","gate+preview"],"ignored":[null,[".env.example"]],"pinned":[{"context":"gate","integration_id":42}],"unpinned":[{"context":"gate"}],"pushOptIn":[{"actor_id":4242,"actor_type":"Integration","bypass_mode":"always"}],"unattributed":[[false],[true]],"placeholders":false,"refused":true}'
+want='{"bypass":["branch:[{\"actor_id\":4242,\"actor_type\":\"Integration\",\"bypass_mode\":\"always\"},{\"actor_id\":null,\"actor_type\":\"OrganizationAdmin\",\"bypass_mode\":\"pull_request\"}]","push:[]"],"threadOff":false,"threadOn":true,"stagingThreadOn":true,"direct":["squash"],"staged":["merge"],"vault":true,"size":[50,20],"strict":[[false],[true]],"checks":["codex-verdict+gate+lint","codex-verdict+gate+promote-main","codex-verdict+gate+preview"],"ignored":[null,[".env.example"]],"pinned":[{"context":"gate","integration_id":42}],"unpinned":[{"context":"gate"}],"pushOptIn":[{"actor_id":4242,"actor_type":"Integration","bypass_mode":"always"}],"verdict":[0,3],"unattributed":[[false],[true]],"placeholders":false,"refused":true}'
 [ "$out" = "$want" ] && ok org-rulesets-render || fail org-rulesets-render "$out"
 
 # engine-org-dry-run-diff: a dry run names each change (field diffs for a matched ruleset, its old name, creates,
@@ -124,6 +125,6 @@ if [ $lx -ne 0 ] && grep -q "vendor must be claude or codex" <<<"$lb" && [ ! -s 
 # the overlay's App name, webhook off, and exactly the manifest's permissions.
 link=$(run create-app | grep -o 'https://github.com/organizations/[^ ]*')
 got=$(node -e 'const u=new URL(process.argv[1]); const q=Object.fromEntries(u.searchParams); const perms=Object.keys(q).filter(k=>!["name","url","description","public","webhook_active"].includes(k)).sort().map(k=>k+"="+q[k]).join(","); console.log(u.pathname, q.name, q.public, q.webhook_active, perms)' "$link" 2>&1)
-[ "$got" = "/organizations/acme/settings/apps/new acme-bot false false actions=write,checks=read,contents=write,issues=write,metadata=read,pull_requests=write,statuses=read,workflows=write" ] && ok engine-org-app-link || fail engine-org-app-link "$got"
+[ "$got" = "/organizations/acme/settings/apps/new acme-bot false false actions=write,checks=read,contents=write,issues=write,metadata=read,pull_requests=write,statuses=write,workflows=write" ] && ok engine-org-app-link || fail engine-org-app-link "$got"
 
 done_cases

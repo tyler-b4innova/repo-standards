@@ -62,6 +62,25 @@ o2=$(su); l2=$(cat "$T/setup.log")
 if has "playwright is in package.json but not installed" "$o1" && ! has playwright "$l1" && has "npm ci" "$l2" && has "playwright install --with-deps chromium" "$l2" && ! has npx "$l2"
 then ok setup-installs-repo-playwright; else fail setup-installs-repo-playwright "missing: $o1 | $l1 || present: $o2 | $l2"; fi
 
+# ---- e2e runs Chromium only (unless this run's browsers say more), within its budget, against the preview when given
+R=$(mkrepo); mkdir -p "$R/node_modules/.bin"
+printf '#!/bin/sh\necho "playwright $* base=${PLAYWRIGHT_BASE_URL:-none} budget=$PW_GLOBAL_TIMEOUT" >> "%s/pw.log"\n' "$T" > "$R/node_modules/.bin/playwright"; chmod +x "$R/node_modules/.bin/playwright"
+echo '{"name":"app","private":true,"devDependencies":{"@playwright/test":"1.63.0"}}' > "$R/package.json"
+echo 'export default { projects: [{ name: "chromium" }, { name: "firefox" }, { name: "webkit" }] };' > "$R/playwright.config.js"
+pwrun() { : > "$T/pw.log"; (cd "$R" && env "$@" node scripts/agent/gate.mjs e2e) >/dev/null 2>&1; cat "$T/pw.log"; }
+e1=$(pwrun GATE_X=1) e2=$(pwrun GATE_BROWSERS=chromium,firefox) e3=$(pwrun GATE_PREVIEW_URL=https://feat.preview.example.test)
+echo 'export default { use: {} };' > "$R/playwright.config.js"; e4=$(pwrun GATE_X=1)
+IB=$T/install-bin; mkpath "$IB"; shim "$IB" npm 'exit 0'
+: > "$T/pw.log"; (cd "$R" && PATH="$IB" GATE_BROWSERS=chromium node scripts/agent/gate.mjs install) >/dev/null 2>&1; i1=$(cat "$T/pw.log")
+if has "playwright test --project=chromium base=none budget=300000" "$e1" && has "test --project=chromium --project=firefox" "$e2" && has "base=https://feat.preview.example.test" "$e3" \
+  && has "playwright test base=none" "$e4" && ! has "project" "$e4" && has "install --with-deps chromium" "$i1" && ! has "firefox" "$i1"
+then ok e2e-chromium-default; else fail e2e-chromium-default "default=$e1 | two=$e2 | preview=$e3 | no-projects=$e4 | install=$i1"; fi
+jset "$R/standards.json" 'o.e2e={command:"sleep 5",budget:0.02}'
+t0=$(date +%s); bo=$(cd "$R" && node scripts/agent/gate.mjs e2e 2>&1); bx=$?; t1=$(date +%s)
+jset "$R/standards.json" 'o.e2e={command:"true",budget:0.02}'; (cd "$R" && node scripts/agent/gate.mjs e2e) >/dev/null 2>&1; bq=$?
+if [ $bx -eq 1 ] && has "e2e exceeded its 0.02-minute budget" "$bo" && [ $((t1 - t0)) -lt 5 ] && [ $bq -eq 0 ]; then ok e2e-budget-enforced
+else fail e2e-budget-enforced "over=$bx in $((t1 - t0))s quick=$bq: $bo"; fi
+
 # ---- the rendered workflow
 R=$(mkrepo)
 shape=$(cd "$R" && node -e '
