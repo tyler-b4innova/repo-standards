@@ -141,7 +141,11 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, files, now =
     const at = (ev) => timeline.filter((e) => e.event === ev).map((e) => Date.parse(e.created_at));
     const baseAt = Math.max(0, ...at("base_ref_changed"));
     const runs = (await api("GET", `${R}/actions/runs?head_sha=${head}&event=pull_request&per_page=100`))?.workflow_runs ?? [];
-    const pushedAt = Math.max(Math.min(...runs.map((r) => Date.parse(r.created_at)), now), baseAt);
+    // Without a pull_request gate run (a PR older than std-gate), the head commit's date and the PR's creation stand in,
+    // so the 20 minutes still run out instead of restarting at every evaluation.
+    const commitAt = runs.length ? 0 : Date.parse((await api("GET", `${R}/commits/${head}`))?.commit?.committer?.date ?? 0) || 0;
+    const firstRun = runs.length ? Math.min(...runs.map((r) => Date.parse(r.created_at))) : Math.max(Date.parse(pr.created_at ?? 0) || 0, commitAt);
+    const pushedAt = Math.max(Math.min(firstRun || now, now), baseAt);
     const reviews = await all(`${R}/pulls/${n}/reviews`);
     const reviewed = (row && head.startsWith(row[2]) && /Completed/i.test(row[1]) && Date.parse(summary.updated_at) >= pushedAt)
       || reviews.some((r) => bot(r.user) && r.commit_id === head && Date.parse(r.submitted_at) >= baseAt);
@@ -181,7 +185,7 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, files, now =
 export async function postReviews({ api, owner, repo, prs = [], all = false, dryRun = false, force = false, serverUrl = "https://github.com", log = console.log }) {
   const R = `/repos/${owner}/${repo}`;
   const listOpen = async () => { const out = []; for (let p = 1; ; p++) { const b = (await api("GET", `${R}/pulls?state=open&per_page=100&page=${p}`)) ?? []; out.push(...b); if (b.length < 100) return out; } };
-  const rank = { failure: 2, pending: 1, success: 0 }, done = new Set();
+  const rank = { failure: 2, pending: 1, success: 0 }, done = new Map(); // head -> the PRs its posted verdict covered
   let failed = 0, posted = 0;
   const post = async (sha, state, description, target_url) => {
     if (dryRun || force) { log(`${sha.slice(0, 7)}: would post review=${state} (${description}); ${force ? "--force only evaluates" : "dry run"}`); return false; }
@@ -202,7 +206,10 @@ export async function postReviews({ api, owner, repo, prs = [], all = false, dry
     }
     return out;
   };
-  const listed = (await listOpen()).filter((p) => !p.draft);
+  // A failed listing does not stop named PRs: they are read directly (and pended on their head if that fails too).
+  let listed = [];
+  try { listed = (await listOpen()).filter((p) => !p.draft); }
+  catch (e) { failed++; log(`could not list open pull requests (${e.message})`); if (all) return { posted, failed }; }
   const targets = all ? listed.map((p) => p.number) : prs;
   for (const n of targets) {
     let sha = listed.find((p) => p.number === n)?.head?.sha; // known from the listing, so an error below can still pend it (--all or not)
@@ -212,10 +219,11 @@ export async function postReviews({ api, owner, repo, prs = [], all = false, dry
       if (ready(pr)) seen.add(pr.head.sha);
       if (!ready(pr)) { log(`#${n}: nothing to post (draft or closed)`); continue; }
       sha = pr.head.sha;
-      if (done.has(sha)) continue;
-      done.add(sha);
+      if (done.get(sha)?.has(n)) continue; // already judged with this head's other PRs
+      done.set(sha, new Set([n])); // a PR that joins a head judged earlier in this run has it judged again, with them
       // Three full passes (each PR read and judged again); the verdict posted is the last one, and only if all agree.
       const passes = [await pass(sha), await pass(sha), await pass(sha)], last = passes[2];
+      for (const k of last.keys()) done.get(sha).add(k);
       const nums = new Set([n, ...passes.flatMap((x) => [...x.keys()])]);
       const heads = new Set([sha, ...passes.flatMap((x) => [...x.values()].filter((y) => ready(y.pr)).map((y) => y.pr.head.sha))]);
       let moved = !last.has(n) ? n : [...nums].find((k) => passes.some((x) => x.has(k) !== last.has(k) || (x.has(k) && x.get(k).sig !== last.get(k).sig))) ?? 0;
