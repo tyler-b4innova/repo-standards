@@ -154,6 +154,13 @@ if [ "$b1" = "$b0" ] && [ "$beta_pr1" = '[[1,"open","standards/v0.1.0","chore: s
   ok sync-opens-pr-when-red
 else fail sync-opens-pr-when-red "b0=$b0 b1=$b1 prs1=$beta_pr1 body1=$beta_body1 row1=$beta_row1 row2=$beta_row2 prs=$(q acme/beta "JSON.stringify($prs.map(p => [p.number, p.state, p.head]))") out4=$out4 w4=$w4"; fi
 
+# A push the default branch refuses for any other reason (here a server hook) also ends in one PR for a person.
+seed acme/locked "$(std example internal)"
+printf '#!/bin/sh\nwhile read old new ref; do [ "$ref" = refs/heads/main ] && { echo "denied: main is locked" >&2; exit 1; }; done\nexit 0\n' > "$R/acme/locked.git/hooks/pre-receive" && chmod +x "$R/acme/locked.git/hooks/pre-receive"
+lk=$(sync --version 0.2.0 --repo acme/locked); lr=$(row acme/locked)
+if [ -n "$(printf '%s' "$lr" | grep -F 'PR #1: push to main failed')" ] && [ "$(q acme/locked "$prs.length")" = 1 ] && [ -n "$(q acme/locked "$prs[0]?.body" | grep 'denied: main is locked')" ]; then ok sync-opens-pr-when-red
+else fail sync-opens-pr-when-red "locked: row=$lr out=$lk"; fi
+
 # breaking-release-proves-first: an engine release marked breaking refuses the fleet; it lands on one repository
 # (--repo), and on the fleet only with --proven. (A copy of this engine with "breaking": true.)
 EB=$T/engine-breaking; mkdir -p "$EB" && cp -R bin lib template modules org defaults.json package.json "$EB/"

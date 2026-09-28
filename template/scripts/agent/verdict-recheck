@@ -24,7 +24,8 @@ if (!full) { console.error("verdict-recheck: no GITHUB_REPOSITORY and no origin 
 let token = env.GH_TOKEN || env.GITHUB_TOKEN;
 try { token ||= sh("gh", ["auth", "token"]); } catch {}
 const [owner, repo] = full.split("/"), api = restApi({ token });
-const nums = o.all ? ((await api("GET", `/repos/${owner}/${repo}/pulls?state=open&per_page=100`)) ?? []).filter((p) => !p.draft).map((p) => p.number) : positionals.map(Number);
+const open = async () => { const out = []; for (let p = 1; ; p++) { const b = (await api("GET", `/repos/${owner}/${repo}/pulls?state=open&per_page=100&page=${p}`)) ?? []; out.push(...b); if (b.length < 100) return out; } };
+const nums = o.all ? (await open()).filter((p) => !p.draft).map((p) => p.number) : positionals.map(Number);
 let failed = 0;
 for (const pr of nums) {
   const r = await reviewStatus({ api, owner, repo, pr, force: o.force, serverUrl: env.GITHUB_SERVER_URL || "https://github.com" });
