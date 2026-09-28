@@ -13,34 +13,33 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 - **`evidence-document-pages`**: a PR whose UI paths are all documents (.docx, .pptx and similar) accepts before and after page images (`before-N`, `after-N`) with at least one page in both; a PR that also changes web UI needs the 400 and 1280px set and the pages.
 - **`ui-paths-repo-override`**: `standards.json` `ui_paths` replaces the default globs, and `{ "ignore": [...] }` keeps them while exempting paths (release notes generated upstream once tripped the evidence gate).
 - **`ui-paths-empty-warns`**: an explicit `ui_paths: []` turns the evidence gate off, and `--check` warns naming tracked files the defaults would cover.
-- **`no-evidence-on-main`**: tracked `.evidence/` fails `--check` and `gate`; the PR helper leaves no `.evidence/` on the branch tip after posting.
+- **`no-evidence-on-main`**: tracked `.evidence/` fails `--check` (gate's standards step); the PR helper leaves no `.evidence/` on the branch tip after posting.
 
-- **`codex-verdict-required`**: a non-draft PR passes `gate` only when the Codex summary shows the current head as Completed (after the head's push and any base edit) and every Codex thread is resolved; pending or stale fails (after 20 min: "no Codex verdict … the launcher will request one"); drafts, repos without Codex reviews, and the sync's fallback PRs are exempt.
-- **`codex-verdict-status`**: with the overlay's `codex.verdict: "status"`, `verdict-recheck` posts the `codex-verdict` commit status on the head (a token that cannot post fails loudly), and gate's codex step defers to that status.
-- **`gate-rerun-never-cancelled`**: `std-gate-rerun` has no concurrency group, so a burst of events leaves no cancelled check runs (GitHub reported clean PRs UNSTABLE); an approval re-runs a finished gate run once, a lost race counts as done, and a base change dispatches std-gate (a fork's pull request is asked for a push instead).
+### Review (the pull request's conversation: `scripts/agent/review.mjs`)
+
+- **`codex-verdict-required`**: the review rule passes a non-draft PR only when the Codex summary shows the current head as Completed (after the head's push and any base edit) and every Codex thread is resolved; before that it is pending for 20 minutes, then fails ("no Codex verdict … request a review"); drafts are not evaluated; repos without Codex reviews and the sync's fallback PRs pass. The evidence cases above and the promotion cases below go through the same rule.
+- **`review-status-posted`**: `verdict-recheck` posts the `review` commit status on the head from the same rule the launcher imports (`repo-standards/review`); nothing is posted while the pack leaves review to gate or on a dry run, and a token that cannot post fails loudly.
+- **`gate-code-only`**: only code changes start gate (a pull request's commits, the merge queue, the launcher's dispatch after a base change); comments, reviews, edits and pushes start nothing, and no re-run wrapper ships. With the org App posting `review`, gate's review step evaluates nothing. Incident: every Codex event and thread reply rebuilt the site (759 billed minutes of review re-runs in one org in a day; 241 minutes in 138 runs on one repo in the other; 104 minutes from preview-bot comments).
 
 ### CI minutes (each reproduces a measured cost from the Sep 27 Actions audit)
 
-- **`rerun-reuses-build`**: a re-run of a gate run reuses the head's passed build (install, typecheck, build, e2e, repo checks), also through an earlier reuse attempt, and still checks evidence and the Codex verdict; a cheap or failed-standards attempt does not qualify. `verdict-recheck` re-runs only when that can change the result. Incident: every Codex event rebuilt the site (759 billed minutes of review re-runs in one org in a day; 241 minutes in 138 runs on one repo in the other).
-- **`rerun-ignores-noise-senders`**: comments start no gate run at all (every reply on a Codex thread was a full gate), and reviews re-gate only when a person approves or dismisses. Incident: 104 minutes of re-runs came from preview-bot comments.
-- **`rerun-never-polls`**: an approval during a gate run that has not read approvals yet exits at once; only an approval that lands after the run read them waits for it (bounded by the gate's timeout). Incident: the 35-minute wait loop on every event.
-- **`gate-no-push-regate`**: pushes to main or staging start no gate run (the tree was gated as a PR); `standards/v*` landings do. Incident: 442 billed minutes of post-merge gates.
-- **`gate-ignores-body-edits`**: a title or body edit starts no gate run; a base change re-gates the PR's fresh merge ref by dispatch.
-- **`skip-never-greens-gate`**: the gate job has no job-level `if` (a skipped job reports success and could mask a red gate on the same head); a dispatch re-gate evaluates the PR, never "not a pull request"; evidence and the Codex verdict run after a failed build step.
-- **`pack-landing-cheap-except-canary`**: a pack-only landing runs the cheap gate (check, secret scan, syntax) except on the profile's canary, which runs the full gate; sync lands the canaries first and stops the fleet when one is red or is not in the fleet (a dry run plans the whole fleet); the syntax pass fails a broken script and skips workflows where PyYAML is missing. Incident: each fleet roll re-ran every repo's full gate twice (about 60 billed minutes).
-- **`draft-cheap-ready-full`**: drafts run the cheap gate; `ready_for_review` runs the full one.
+- **`gate-no-push-regate`**: pushes start no gate run, neither to main or staging (the tree was gated as a PR) nor pack landings. Incident: 442 billed minutes of post-merge gates.
+- **`gate-ignores-body-edits`**: a title or body edit starts no gate run; after a base change the launcher dispatches gate on the PR's fresh merge ref.
+- **`skip-never-greens-gate`**: the gate job has no job-level `if` (a skipped job reports success and could mask a red gate on the same head); a dispatch re-gate evaluates the pull request, never "not a pull request".
+- **`draft-cheap-ready-full`**: drafts run the cheap gate (the check, the secret scan and a syntax pass that fails a broken script and skips workflows where PyYAML is missing); `ready_for_review` runs the full one.
 - **`e2e-chromium-default`**: gate installs and runs Chromium only; more browsers run on promotion PRs when `standards.json` `e2e.browsers` (or the overlay) opts in, and only for projects the Playwright config defines; a config whose projects are named otherwise is refused (without `--project` Playwright runs them all); a package script running `playwright test` gets the same selection. Incident: three-browser suites ran on every PR.
 - **`e2e-uses-preview-url`**: with a Workers Builds check run on the head, e2e runs against the preview URL from the Cloudflare comment for that commit; a red Cloudflare build fails gate; with none, e2e runs locally. The job has `checks: read`, which reading check runs needs.
 - **`e2e-budget-enforced`**: an e2e suite over its budget (5 minutes; `e2e.budget` may only tighten it) fails gate, and a zero or negative `e2e.budget` is refused rather than disabling the limit.
 - **`quarantine-expires`**: `@quarantine` needs an issue link and an expiry at most 14 days out; an expired one fails `--check`.
 - **`no-duplicate-gate-workflows`**: a repository workflow that runs checks on pull requests, or re-tests pushes to the default or integration branch, or a schedule more frequent than daily, fails `--check`; the declared deploy workflow may build on push. Incidents: a duplicate `validate.yml` ran 142 times; a sub-hourly alert poll billed 166 minutes.
 - **`jobs-have-timeouts`**: a workflow job without `timeout-minutes` fails `--check` (the default is 360 minutes).
+- **`secrets-scan-changes-only`**: the secret scan covers the pull request's own commits, including on a dispatch re-gate of the merge ref, so an old leak already on the base does not fail it.
 
 ## Promotions (flow `staged`)
 
-- **`promote-no-ui-auto`**: a promotion without UI changes passes `gate` with no approval, so auto-merge completes.
+- **`promote-no-ui-auto`**: a promotion without UI changes passes the review rule with no approval, so auto-merge completes.
 - **`promote-ui-needs-human-approval`**: a promotion with UI changes fails until a human with write access approves; a bot's or a read-only user's approval does not count.
-- **`promote-approval-then-merges`**: the approval re-runs `gate` (the workflow listens for review events) and turns it green on the same head.
+- **`promote-approval-then-merges`**: the approval turns the review verdict green on the same head with no push (the `review` status is re-evaluated each launcher tick; no workflow listens for reviews).
 - **`promote-stale-approval-rejected`**: an approval on an older head, or one later dismissed, does not count.
 
 ## Repository contents
@@ -61,9 +60,10 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 ## Pull requests and sync
 
 - **`pr-open-verified`**: the PR helper sends nothing on a dry run, refuses a branch that is not on GitHub, reuses the open PR, and prints a URL only after reading the PR back.
-- **`pr-status-done`**: `DONE` only when the PR is open or merged, closes an issue, and `gate` is green on the head SHA.
-- **`sync-lands-direct-when-green`**: sync pushes `standards/v<ver>`, which starts that repository's own `gate`; green fast-forwards the default branch (staging on staged repositories, never main) and deletes the branch; `gate` on that branch accepts only pack-managed paths, and its secret scan covers only what the default branch lacks. The default branch moving first costs one re-apply, then it lands. No PR is opened (a pack PR once merged red).
-- **`sync-opens-pr-when-red`**: when `gate` stays red after one re-run, sync opens exactly one PR for a person, naming the run, without auto-merge, and leaves the default branch alone; a PR a person closed for the same content is not reopened. Its body tells a person how to fix it from a fresh branch (only the App may push `standards/v*`).
+- **`pr-status-done`**: `DONE` only when the PR is open or merged, closes an issue, and `gate` is green on the head SHA (and `review`, when the org App posts it).
+- **`sync-lands-without-gate`**: a pack landing runs no gate (the engine's own CI is the release gate): sync commits on the default head, checks the tree offline, and fast-forwards the default branch (staging on staged repositories, never main) with no branch, PR or workflow run. The default branch moving first costs one re-apply, then it lands. Incident: each fleet roll ran every repository's gate twice (about 60 billed minutes).
+- **`breaking-release-proves-first`**: an engine release marked `breaking` (it can stop a repository's gate or check from passing) refuses the fleet; it lands on one repository with `--repo`, and on the fleet only with `--proven`.
+- **`sync-opens-pr-when-red`**: when the applied tree fails the repository's offline check, sync opens exactly one PR for a person, naming the failures, without auto-merge, and leaves the default branch alone; a PR a person closed for the same content is not reopened. Its body tells a person how to fix it from a fresh branch (only the App may push `standards/v*`).
 - **`sync-applies-release`**: sync applies the released overlay with the engine version it pins and refuses a mismatch (an old sync script once ran from a release tag).
 
 ## Modules

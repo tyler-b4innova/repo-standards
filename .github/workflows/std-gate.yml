@@ -1,18 +1,18 @@
-# Managed by the standards pack: the one required check, job `gate`. It builds once per pull request head. A re-run
-# of the same run (scripts/agent/verdict-recheck, an approval, `pr.sh evidence`) reuses that head's build and checks
-# only evidence, approval and the Codex verdict again. Repo-owned checks go in scripts/agent/gate.local.sh.
-# No job-level `if` and no early exit: a skipped job reports success and could mask a red gate on the same head.
+# Managed by the standards pack: the one required check for code, job `gate`. Only code changes start it: a pull
+# request's commits (opened, synchronize, reopened, ready_for_review), the merge queue, and a `workflow_dispatch`
+# the org launcher sends after a base change (gate then tests the fresh merge ref). Comments, reviews and edits start
+# nothing: the pull request's conversation is the org App's `review` status (scripts/agent/review.mjs).
+# Repo-owned checks go in scripts/agent/gate.local.sh. No job-level `if` and no early exit: a skipped job reports
+# success and could mask a red gate on the same head.
 name: std-gate
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
-  push:
-    branches: ["standards/v*"]
   workflow_dispatch:
     inputs:
       pr:
-        description: "Pull request to re-gate on its fresh merge ref (std-gate-rerun sends this after a base change)"
+        description: "Pull request to re-gate on its fresh merge ref (the org launcher sends this after a base change)"
         required: true
 permissions:
   actions: read
@@ -52,7 +52,6 @@ jobs:
       - name: standards
         run: scripts/agent/setup.sh --check
       - name: secrets
-        if: steps.plan.outputs.mode != 'reuse'
         run: node scripts/agent/gate.mjs secrets
       - name: syntax
         if: steps.plan.outputs.mode == 'cheap'
@@ -84,15 +83,8 @@ jobs:
         if: steps.plan.outputs.mode == 'full'
         run: |
           if [ -f scripts/agent/gate.local.sh ]; then bash scripts/agent/gate.local.sh; else echo "notice: no scripts/agent/gate.local.sh"; fi
-      # Evidence and the Codex verdict run last and even after a failed build step, so a later re-run for new evidence
-      # or a new verdict reuses a build that passed.
-      - name: evidence
-        if: ${{ !cancelled() && steps.plan.outcome == 'success' }}
+      # Until the org App posts the `review` status (pack.json review_status), gate evaluates the same rule here.
+      - name: review
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: node scripts/agent/gate.mjs evidence
-      - name: codex review
-        if: ${{ !cancelled() && steps.plan.outcome == 'success' }}
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: node scripts/agent/gate.mjs codex
+        run: node scripts/agent/gate.mjs review

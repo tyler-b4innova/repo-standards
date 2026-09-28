@@ -3,7 +3,7 @@
 <!-- std:begin example -->
 ## Example standards
 
-- Done = verified on GitHub: the PR exists, `gate` is green, evidence is posted. A text-only end of turn is a report. Never claim a PR, check or deploy you did not verify.
+- Done = verified on GitHub: the PR exists, its required checks are green, evidence is posted. A text-only end of turn is a report. Never claim a PR, check or deploy you did not verify.
 - Stop and name the stop point: `human-decision` label, uncheckable criteria, missing secret or permission, destructive step, a rule here that fights the task. No remote (Codex cloud): commit and stop at "diff ready"; the launcher pushes and opens the PR.
 - Silo: everything is in this repo: no global config, plugins, MCP or personal memory; nothing crosses orgs.
 - One concern per PR; new scope from review becomes an issue.
