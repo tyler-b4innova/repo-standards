@@ -182,7 +182,14 @@ vdr=$(vr --all); sdr=$(node -p 'JSON.stringify((require(process.argv[1]).statuse
 put "{$base,open:[{number:7,head:{sha:'$HEAD1'}}],threads:[],files:{'scripts/agent/pack.json':$PACKFILE}}"
 node -e 'const f=process.argv[1],s=require(f);s.retargetAfter=1;s.newHead=process.argv[2];require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json" "$OLD"
 vs=$(vr --all); ss=$(node -p 'JSON.stringify((require(process.argv[1]).statuses??[]).map(x=>x.state+"@"+x.sha.slice(0,7)).sort())' "$T/state.json")
+# The pull API can retain an old base.sha after the base branch receives the review-enabled pack.
+put "{$base,threads:[],branchHeads:{main:'$HEAD1'},files:{'scripts/agent/pack.json@$HEAD1':$PACKFILE,'scripts/agent/pack.json@$OLD':$OLDPACK}}"
+node -e 'const f=process.argv[1],s=require(f);s.pr.base.sha=process.argv[2];require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json" "$OLD"
+vb=$(vr 7); sb=$(node -p 'JSON.stringify((require(process.argv[1]).statuses??[]).map(x=>x.state))' "$T/state.json")
+# A ready PR listed before a draft on the same commit must end with the ready verdict.
+put "{$base,threads:[],files:{'scripts/agent/pack.json':$PACKFILE},open:[{number:7,head:{sha:'$HEAD1'},draft:false},{number:8,head:{sha:'$HEAD1'},draft:true}],prs:{8:{number:8,state:'open',draft:true,html_url:'u8',head:{sha:'$HEAD1'},base:{ref:'main'}}},statuses:[{sha:'$HEAD1',context:'review',state:'success'}]}"
+vbd=$(vr --all); sbd=$(node -p 'JSON.stringify((require(process.argv[1]).statuses??[]).map(x=>x.state))' "$T/state.json")
 if [ $y1 -eq 0 ] && [ "$s1" = '["review=success@'"${HEAD1:0:7}"'"]' ] && has "failure:1 unresolved Codex thread" "$s2" && [ "$s3" = "[]" ] && has "nothing to post" "$v3" \
-  && [ "$sd" = '["success","pending"]' ] && [ "$sdr" = '["success","pending","success"]' ] && [ "$ss" = '["pending@ccccccc","pending@ddddddd"]' ]
+  && [ "$sd" = '["success","pending"]' ] && [ "$sdr" = '["success","pending","success"]' ] && [ "$ss" = '["pending@ccccccc","pending@ddddddd"]' ] && [ "$sb" = '["success"]' ] && [ "$sbd" = '["success","pending","success"]' ]
 then ok review-status-posted; else fail review-status-posted "posted=$s1 | red=$s2 | off=$s3 | forbidden=$y4 | dry=$s5 | old-head=$s6 | shared=$s7 | retarget=$s8 | base-moved=$s9 | sibling-moved=$s10 | null-sibling-moved=$s11 | null-self-moved=$s12 | head-moved=$s13 | null-head-moved=$s14 | null-primary-sibling=$s15 | error=$y16 $s16 | late-thread=$s17 | all-read-error=$s18 | one-read-error=$s19 | error-new-head=$s20 | promotion=$s21 | fork-promotion=$s23 | list-fails=$s24 | verdict-head-then-error=$s22 :: $v1 | $v2 | $v3 | $v4 | $v5 | $v6"; fi
 done_cases
