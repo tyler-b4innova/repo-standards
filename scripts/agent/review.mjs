@@ -174,7 +174,7 @@ export async function reviewStatus({ api, owner, repo, pr: n, files, now = Date.
 export async function postReviews({ api, owner, repo, prs = [], all = false, dryRun = false, force = false, serverUrl = "https://github.com", log = console.log }) {
   const listOpen = async () => { const out = []; for (let p = 1; ; p++) { const b = (await api("GET", `/repos/${owner}/${repo}/pulls?state=open&per_page=100&page=${p}`)) ?? []; out.push(...b); if (b.length < 100) return out; } };
   const open = (await listOpen()).filter((p) => !p.draft);
-  const nums = all ? open.map((p) => p.number) : prs;
+  const nums = all ? open.map((p) => p.number) : [...prs];
   // A commit status belongs to the commit, not the pull request: every open PR whose head is that commit is judged,
   // and the worst result is posted, so one PR's success never satisfies a sibling's failed review.
   const rank = { failure: 2, pending: 1, success: 0 }, done = new Set();
@@ -189,6 +189,8 @@ export async function postReviews({ api, owner, repo, prs = [], all = false, dry
     const before = await api("GET", `/repos/${owner}/${repo}/pulls/${pr}`);
     const first = await reviewStatus({ api, owner, repo, pr, force, serverUrl });
     if (!first) {
+      // Its head's other open PRs are judged in their own right (one may target a base where review is on).
+      for (const s of open) if (s.head?.sha === before?.head?.sha && !nums.includes(s.number)) nums.push(s.number);
       // Nothing to judge (draft, closed, not engine-managed, or review off on its base) - unless it moved meanwhile:
       // then a success already on the commit may not stand for its new base, so it goes pending until the next run.
       const now = await api("GET", `/repos/${owner}/${repo}/pulls/${pr}`);
