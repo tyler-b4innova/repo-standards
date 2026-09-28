@@ -168,6 +168,37 @@ jobs:
     steps:
       - run: echo weekly'; out=$(cr "$R") || why="$why; a weekly schedule failed: $out"
 if [ -z "$why" ]; then ok no-duplicate-gate-workflows; else fail no-duplicate-gate-workflows "$why"; fi
+# A named duplicate check can stay only while its reviewed bytes and rationale match. Other workflow rules still apply.
+why=""
+R=$(mkrepo); wf "$R" validate.yml 'on:
+  pull_request:
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - run: npm test'
+out=$(cr "$R") && why="$why; an unexcepted PR check passed"
+has "validate.yml runs checks on pull_request" "$out" || why="$why; no-exception message: $out"
+pin_exception() { node -e 'const fs=require("fs"),c=require("crypto"),s=process.argv[1],w=process.argv[2],o=JSON.parse(fs.readFileSync(s));o.duplicate_check_exceptions=[{path:".github/workflows/validate.yml",sha256:c.createHash("sha256").update(fs.readFileSync(w)).digest("hex"),reason:"Preview artifacts consumed by protected publish"}];fs.writeFileSync(s,JSON.stringify(o,null,2)+"\n")' "$R/standards.json" "$R/.github/workflows/validate.yml"; }
+pin_exception; out=$(cr "$R") || why="$why; valid pinned exception failed: $out"
+apply "$R" >/dev/null; [ "$(node -p 'require(process.argv[1]).duplicate_check_exceptions?.length' "$R/standards.json")" = 1 ] || why="$why; apply dropped exception"
+jset "$R/standards.json" 'o.duplicate_check_exceptions=[{path:".github/workflows/validate.yml",sha256:"bad",reason:" "}]'; out=$(cr "$R") && why="$why; malformed exception passed"
+has "duplicate_check_exceptions has an invalid entry" "$out" || why="$why; malformed message: $out"
+pin_exception; echo '# changed' >> "$R/.github/workflows/validate.yml"; out=$(cr "$R") && why="$why; hash mismatch passed"
+has "duplicate_check_exceptions SHA256 mismatch" "$out" || why="$why; mismatch message: $out"
+wf "$R" validate.yml 'on:
+  pull_request:
+  schedule:
+    - cron: "*/10 * * * *"
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: npx playwright install && npm test'
+pin_exception; out=$(cr "$R") && why="$why; pinned exception bypassed other workflow rules"
+has "scheduled more often than daily" "$out" && has "has no timeout-minutes" "$out" && has "playwright install without naming a browser" "$out" || why="$why; guardrail message: $out"
+if [ -z "$why" ]; then ok duplicate-check-exception-pinned; else fail duplicate-check-exception-pinned "$why"; fi
 why=""
 R=$(mkrepo); wf "$R" manual.yml 'on: workflow_dispatch
 jobs:

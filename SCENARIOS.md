@@ -32,6 +32,7 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 - **`e2e-budget-enforced`**: an e2e suite over its budget (5 minutes; `e2e.budget` may only tighten it) fails gate, and a zero or negative `e2e.budget` is refused rather than disabling the limit.
 - **`quarantine-expires`**: `@quarantine` needs an issue link and an expiry at most 14 days out; an expired one fails `--check`.
 - **`no-duplicate-gate-workflows`**: a repository workflow that runs checks on pull requests, or re-tests pushes to the default or integration branch, or a schedule more frequent than daily, fails `--check`; the declared deploy workflow may build on push. Incidents: a duplicate `validate.yml` ran 142 times; a sub-hourly alert poll billed 166 minutes.
+- **`duplicate-check-exception-pinned`**: a repo can keep a named artifact-validation or promotion guard workflow beside gate only by listing its exact path, SHA256, and nonempty rationale in `standards.json` `duplicate_check_exceptions`; an absent, malformed, stale or changed pin fails `--check`. The exception affects only the duplicate-check rule: job timeouts, schedule frequency, and browser install checks still fail when violated.
 - **`jobs-have-timeouts`**: a workflow job without `timeout-minutes` fails `--check` (the default is 360 minutes).
 - **`secrets-scan-changes-only`**: the secret scan covers the pull request's own commits, including on a dispatch re-gate of the merge ref, so an old leak already on the base does not fail it.
 
