@@ -23,6 +23,7 @@ export function render(overlay) {
   const oa = overlay.org_admin ?? {};
   if (!Number.isInteger(oa.app?.id) || oa.app.id <= 0 || !oa.app?.slug) throw new Error("overlay org_admin.app.id (a positive number, not the example's 0) and org_admin.app.slug are required");
   if (oa.gate_integration_id !== undefined && !(Number.isInteger(oa.gate_integration_id) && oa.gate_integration_id > 0)) throw new Error("overlay org_admin.gate_integration_id must be a positive number when set");
+  if (oa.codex_verdict_status !== undefined) throw new Error("overlay org_admin.codex_verdict_status was replaced by org_admin.review_status (the App-posted `review` status); rename it (and codex.verdict to review.status) before running org-apply");
   for (const k of ["require_extra_approval_for_unattributed_changes", "push_app_bypass", "review_status"])
     if (oa[k] !== undefined && typeof oa[k] !== "boolean") throw new Error(`overlay org_admin.${k} must be true or false when set`);
   const vars = {

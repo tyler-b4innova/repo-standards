@@ -54,7 +54,7 @@ out=$(node --input-type=module -e '
   const rs = (x, n) => x.rulesets.find((r) => r.name.includes(n)).rules;
   const refuse = (oa) => { try { render({ org_admin: oa }); return false; } catch { return true; } };
   const refused = refuse({}) && refuse({ app: { id: 0, slug: "x" } }) && refuse({ app: { id: 1, slug: "x" }, gate_integration_id: "15" })
-    && refuse({ app: { id: 1, slug: "x" }, push_app_bypass: "yes" }) && refuse({ app: { id: 1, slug: "x" }, require_extra_approval_for_unattributed_changes: 1 });
+    && refuse({ app: { id: 1, slug: "x" }, push_app_bypass: "yes" }) && refuse({ app: { id: 1, slug: "x" }, codex_verdict_status: true }) && refuse({ app: { id: 1, slug: "x" }, require_extra_approval_for_unattributed_changes: 1 });
   const unpinned = render({ org_admin: { app: { id: 1, slug: "x" } } }).rulesets.find((r) => r.name.includes("default branch")).rules.required_status_checks.required_status_checks;
   console.log(JSON.stringify({
     bypass: [...new Set(a.rulesets.map((r) => `${r.target}:${JSON.stringify(r.bypass_actors)}`))].sort(),
