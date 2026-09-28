@@ -109,6 +109,22 @@ else {
   // CI: one gate per head. Every job has a timeout; repo workflows neither test on pull requests nor re-test pushes to
   // the default or integration branch (checks go in scripts/agent/gate.local.sh); no schedule runs more than daily;
   // Playwright installs name their browsers. A line-level reading of the block YAML workflows use.
+  const exceptions = new Set(), declared = std?.duplicate_check_exceptions;
+  if (declared !== undefined) {
+    if (!Array.isArray(declared)) fail("standards.json duplicate_check_exceptions must be a list", "use [{path, sha256, reason}] or remove it");
+    else for (const e of declared) {
+      const valid = e && typeof e === "object" && !Array.isArray(e) &&
+        Object.keys(e).sort().join(",") === "path,reason,sha256" &&
+        typeof e.path === "string" && /^\.github\/workflows\/[A-Za-z0-9._-]+\.ya?ml$/.test(e.path) &&
+        typeof e.sha256 === "string" && /^[0-9a-f]{64}$/.test(e.sha256) &&
+        typeof e.reason === "string" && e.reason.trim();
+      if (!valid) { fail("standards.json duplicate_check_exceptions has an invalid entry", "name one workflow path, its lowercase SHA256, and a nonempty reason"); continue; }
+      if (exceptions.has(e.path)) { fail(`duplicate_check_exceptions repeats ${e.path}`, "keep one pinned entry per workflow"); continue; }
+      if (!tracked.includes(e.path)) { fail(`duplicate_check_exceptions names missing workflow ${e.path}`, "track the exact workflow, or remove the exception"); continue; }
+      if (sha(readFileSync(e.path)) !== e.sha256) { fail(`duplicate_check_exceptions SHA256 mismatch for ${e.path}`, "update the reviewed hash and reason for this workflow revision, or remove the exception"); continue; }
+      exceptions.add(e.path);
+    }
+  }
   const deploy = std?.deploy_workflow;
   for (const f of tracked.filter((f) => /^\.github\/workflows\/[^/]+\.ya?ml$/.test(f))) {
     const text = read(f) ?? "", L = text.split("\n"), name = f.split("/").pop(), managed = /^std-/.test(name);
@@ -136,7 +152,7 @@ else {
     if (/playwright install\b(?![^\n;&|]*\b(chromium|chrome|firefox|webkit|msedge)\b)/.test(runs))
       fail(`${f} runs playwright install without naming a browser (it downloads all of them)`, "name the browser: playwright install --with-deps chromium");
     const checks = /\b(tests?|e2e|lint|typecheck|tsc|vitest|jest|playwright|eslint|biome|gate|check)\b/i, builds = /\bbuild\b/i;
-    if (!managed && (triggers.some((t) => ["pull_request", "pull_request_target"].includes(t)) || (integrationPush && name !== deploy)) && (checks.test(runs) || (name !== deploy && integrationPush && builds.test(runs))))
+    if (!managed && !exceptions.has(f) && (triggers.some((t) => ["pull_request", "pull_request_target"].includes(t)) || (integrationPush && name !== deploy)) && (checks.test(runs) || (name !== deploy && integrationPush && builds.test(runs))))
       fail(`${f} runs checks on ${triggers.filter((t) => ["pull_request", "pull_request_target", "push"].includes(t)).join(" and ")}, beside the one gate`, "move them into scripts/agent/gate.local.sh and delete the workflow (a deploy workflow on push is declared as standards.json deploy_workflow and does not test)");
     if (!managed && name === deploy && checks.test(runs)) fail(`${f} is the declared deploy workflow but runs checks`, "gate tests; the deploy workflow only builds and deploys");
   }
