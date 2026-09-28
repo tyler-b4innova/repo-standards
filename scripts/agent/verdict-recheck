@@ -24,19 +24,32 @@ if (!full) { console.error("verdict-recheck: no GITHUB_REPOSITORY and no origin 
 let token = env.GH_TOKEN || env.GITHUB_TOKEN;
 try { token ||= sh("gh", ["auth", "token"]); } catch {}
 const [owner, repo] = full.split("/"), api = restApi({ token });
-const open = async () => { const out = []; for (let p = 1; ; p++) { const b = (await api("GET", `/repos/${owner}/${repo}/pulls?state=open&per_page=100&page=${p}`)) ?? []; out.push(...b); if (b.length < 100) return out; } };
-const nums = o.all ? (await open()).filter((p) => !p.draft).map((p) => p.number) : positionals.map(Number);
+const listOpen = async () => { const out = []; for (let p = 1; ; p++) { const b = (await api("GET", `/repos/${owner}/${repo}/pulls?state=open&per_page=100&page=${p}`)) ?? []; out.push(...b); if (b.length < 100) return out; } };
+const open = (await listOpen()).filter((p) => !p.draft);
+const nums = o.all ? open.map((p) => p.number) : positionals.map(Number);
+// A commit status belongs to the commit, not the pull request: every open PR whose head is that commit is judged,
+// and the worst result is posted, so one PR's success never satisfies a sibling's failed review.
+const rank = { failure: 2, pending: 1, success: 0 }, done = new Set();
 let failed = 0;
 for (const pr of nums) {
-  const r = await reviewStatus({ api, owner, repo, pr, force: o.force, serverUrl: env.GITHUB_SERVER_URL || "https://github.com" });
-  if (!r) { console.log(`#${pr}: nothing to post (draft, closed, not engine-managed, or the pack leaves review to gate)`); continue; }
-  for (const d of r.details ?? []) console.log(`#${pr} ${r.sha.slice(0, 7)}: ${d}`);
-  console.log(`#${pr} ${r.sha.slice(0, 7)}: review=${r.state} (${r.description})`);
+  const first = await reviewStatus({ api, owner, repo, pr, force: o.force, serverUrl: env.GITHUB_SERVER_URL || "https://github.com" });
+  if (!first) { console.log(`#${pr}: nothing to post (draft, closed, not engine-managed, or the pack leaves review to gate)`); continue; }
+  if (done.has(first.sha)) continue;
+  done.add(first.sha);
+  let r = first, from = pr;
+  for (const s of open.filter((p) => p.head?.sha === first.sha && p.number !== pr)) {
+    const other = await reviewStatus({ api, owner, repo, pr: s.number, force: o.force, serverUrl: env.GITHUB_SERVER_URL || "https://github.com" });
+    if (other && rank[other.state] > rank[r.state]) { r = other; from = s.number; }
+  }
+  const tag = from === pr ? "" : ` (from #${from}, which shares this head)`;
+  for (const d of r.details ?? []) console.log(`#${from} ${r.sha.slice(0, 7)}: ${d}`);
+  console.log(`#${pr} ${r.sha.slice(0, 7)}: review=${r.state} (${r.description})${tag}`);
   if (o["dry-run"] || o.force) { console.log(`#${pr}: not posted (${o.force ? "--force only evaluates" : "dry run"})`); continue; }
   const now = await api("GET", `/repos/${owner}/${repo}/pulls/${pr}`);
   if (now?.head?.sha !== r.sha) { console.log(`#${pr}: the head moved while evaluating; not posted`); continue; }
+  const description = (from === pr ? r.description : `#${from}: ${r.description}`).slice(0, 140);
   try {
-    await api("POST", `/repos/${owner}/${repo}/statuses/${r.sha}`, { state: r.state, context: "review", description: r.description, target_url: r.target_url });
+    await api("POST", `/repos/${owner}/${repo}/statuses/${r.sha}`, { state: r.state, context: "review", description, target_url: r.target_url });
     console.log(`#${pr}: posted review=${r.state}`);
   } catch (e) { failed++; console.error(`#${pr}: could not post review (${e.message}); GH_TOKEN must be the org App's token with statuses: write`); }
 }

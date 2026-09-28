@@ -30,11 +30,13 @@ const server = createServer((req, res) => {
     if ((m = p.match(/^\/commits\/([0-9a-f]+)\/check-runs$/))) return send(200, { check_runs: st.checks ?? [] });
     if ((m = p.match(/^\/contents\/(.+)$/))) { const f = st.files?.[`${m[1]}@${url.searchParams.get("ref")}`] ?? st.files?.[m[1]]; return f ? send(200, f) : send(404, { message: "Not Found" }); }
     if (p === "/pulls/7") return send(200, st.pr);
-    if (p === "/pulls") return send(200, st.recent ?? []);
+    if ((m = p.match(/^\/pulls\/(\d+)$/)) && st.prs?.[m[1]]) return send(200, st.prs[m[1]]);
+    if ((m = p.match(/^\/pulls\/(\d+)\/files$/))) return send(200, (st.prFiles ?? {})[m[1]] ?? []);
+    if (p === "/pulls") return send(200, url.searchParams.get("state") === "open" ? st.open ?? [] : st.recent ?? []);
     if ((m = p.match(/^\/issues\/(\d+)\/comments$/))) return send(200, (st.comments ?? {})[m[1]] ?? []);
-    if (p === "/pulls/7/reviews") return send(200, st.reviews ?? []);
+    if ((m = p.match(/^\/pulls\/\d+\/reviews$/))) return send(200, st.reviews ?? []);
     if (p === "/actions/runs") return send(200, { workflow_runs: [{ created_at: st.pushed }] });
-    if (p === "/issues/7/timeline") return send(200, st.timeline ?? []);
+    if ((m = p.match(/^\/issues\/\d+\/timeline$/))) return send(200, st.timeline ?? []);
     if ((m = p.match(/^\/commits\/([0-9a-f]+)$/))) return send(200, { commit: { committer: { date: st.pushed } } });
     send(404, { message: `stub: no route ${req.method} ${p}` });
   });
