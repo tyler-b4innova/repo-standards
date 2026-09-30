@@ -5,7 +5,7 @@
 //   GITHUB_API_URL=… GITHUB_REPOSITORY=o/r node test/review-run.mjs <pr>
 import { reviewStatus } from "repo-standards/review";
 
-const root = process.env.GITHUB_API_URL.replace(/\/$/, ""), gql = process.env.GITHUB_GRAPHQL_URL || `${root}/graphql`;
+const root = process.env.GITHUB_API_URL.replace(/\/$/, ""), gql = `${root}/graphql`; // the stand-in serves both
 const [owner, repo] = process.env.GITHUB_REPOSITORY.split("/");
 const api = async (method, path, body) => {
   const r = await fetch(path === "/graphql" ? gql : `${root}${path}`, { method, headers: { Authorization: "Bearer t", Accept: "application/vnd.github+json", ...(body && { "Content-Type": "application/json" }) }, body: body && JSON.stringify(body) });
