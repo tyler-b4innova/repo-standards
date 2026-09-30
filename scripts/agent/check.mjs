@@ -68,6 +68,8 @@ else {
         const file = path.slice(0, -4), lines = (read(file) ?? "").split("\n"), i = lines.findIndex((l) => l.startsWith(`# std:begin ${pack.pack} `)), j = lines.indexOf("# std:end", i);
         if (i < 0 || j < 0 || sha(lines.slice(i, j + 1).join("\n") + "\n") !== want)
           fail(`the managed ${file} block was edited or removed`, `restore it from: git show ${pin}:${file}   (UI paths come from standards.json ui_paths)`);
+        else if (lines.slice(j + 1).some((l) => l.trim() && !l.trim().startsWith("#")))
+          fail(`${file} has lines after the managed block, which override it (the last match wins)`, "move them above the `# std:begin` line");
       } else if (!existsSync(path)) fail(`managed file missing: ${path}`, restore(path));
       else if (sha(readFileSync(path)) !== want) fail(`managed file changed: ${path}`, `${restore(path)}   (change it upstream)`);
     }

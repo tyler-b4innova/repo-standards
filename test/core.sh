@@ -277,6 +277,8 @@ grep -qx '\*\*/\*.tsx @acme/design @octocat' <<<"$co" && grep -qx '/src/componen
 out=$(check "$R") || why="$why; check on a fresh block: $out"
 sed -i.bak 's#^/public/\*\* .*#/public/** @someone-else#' "$R/.github/CODEOWNERS" && rm "$R/.github/CODEOWNERS.bak" && commit "$R"
 out=$(check "$R") && why="$why; an edited block passed check"; has "the managed .github/CODEOWNERS block was edited" "$out" || why="$why; [$out]"
+git -C "$R" checkout -q HEAD~1 -- .github/CODEOWNERS; printf '/src/components/** @someone-else\n' >> "$R/.github/CODEOWNERS"; commit "$R"
+out=$(check "$R") && why="$why; a line after the block passed check"; has "has lines after the managed block" "$out" || why="$why; [$out]"
 printf '* @repo-owner\n' > "$R/.github/CODEOWNERS"; jset "$R/standards.json" 'o.ui_paths={include:["content/**"],ignore:["content/drafts/**"]}'
 OVERLAY="$T/owners.json" apply "$R" >/dev/null; commit "$R"; co=$(cat "$R/.github/CODEOWNERS")
 [ "$(head -1 <<<"$co")" = "* @repo-owner" ] && grep -qx '/content/\*\* @acme/design @octocat' <<<"$co" && grep -qx '/content/drafts/\*\*' <<<"$co" && [ "$(tail -1 <<<"$co")" = "# std:end" ] && ! grep -q tsx <<<"$co" || why="$why; repo override: $co"
@@ -299,16 +301,20 @@ then ok agents-review-guidelines; else fail agents-review-guidelines "$blk"; fi
 # (any value, both files, profiles and a table left empty) and keeps other keys; --check fails on any pin left.
 R=$(mkrepo); fresh=$(node -e 'const s=require(process.argv[1]);console.log(s.model??"-",s.env?.CLAUDE_CODE_SUBAGENT_MODEL??"-")' "$R/.claude/settings.json"); c=$(cat "$R/.codex/config.toml")
 jset "$R/.claude/settings.json" 'o.model="sonnet";o.effortLevel="high";o.env={ANTHROPIC_MODEL:"x",CLAUDE_CODE_SUBAGENT_MODEL:"opus",CLAUDE_CODE_EFFORT_LEVEL:"max",KEEP_ME:"1"}'
-printf 'model = "gpt-repo"\nmodel_reasoning_effort = "high"\n%s\n\n[agents]\ndefault_subagent_model = "gpt-6-sol"\nmax_threads = 2\n\n[profiles.fast]\nmodel = "gpt-mini"\n\n[profiles."deep"]\nmodel_reasoning_effort = "xhigh"\napproval_policy = "never"\n' "$c" > "$R/.codex/config.toml"
+printf 'model = "gpt-repo"\nmodel_reasoning_effort = "high"\n%s\n\n[agents]\ndefault_subagent_model = "gpt-6-sol"\nmax_threads = 2\n\n[profiles.fast]\nmodel = "gpt-mini"\n\n[profiles."deep"]\nmodel_reasoning_effort = "xhigh"\napproval_policy = "never"\n\n[profiles."a.b"]\nmodel = "q"\n\n[notes]\ntext = """\nmodel = "prose, not a key"\n"""\n' "$c" > "$R/.codex/config.toml"
 commit "$R"; pinned=$(check "$R"); sp=$?
 apply "$R" >/dev/null; commit "$R"; uc=$(cat "$R/.codex/config.toml")
 up=$(node -e 'const s=require(process.argv[1]);console.log(JSON.stringify([s.model,s.effortLevel,s.env]))' "$R/.claude/settings.json")
 w=$(ANTHROPIC_MODEL=haiku check "$R"); sw=$?
 if [ "$fresh" = "- -" ] && ! grep -qE 'model|\[agents\]' <<<"$c" && [ $sp -eq 1 ] \
-  && has ".claude/settings.json model, .claude/settings.json effortLevel, .claude/settings.json env.ANTHROPIC_MODEL, .claude/settings.json env.CLAUDE_CODE_SUBAGENT_MODEL, .claude/settings.json env.CLAUDE_CODE_EFFORT_LEVEL, .codex/config.toml model, .codex/config.toml model_reasoning_effort, .codex/config.toml agents.default_subagent_model, .codex/config.toml profiles.fast.model, .codex/config.toml profiles.deep.model_reasoning_effort" "$pinned" \
-  && [ "$up" = '[null,null,{"KEEP_ME":"1"}]' ] && ! grep -qE 'model|profiles\.fast' <<<"$uc" && grep -qx 'max_threads = 2' <<<"$uc" && grep -qx '\[profiles."deep"\]' <<<"$uc" \
+  && has ".claude/settings.json model, .claude/settings.json effortLevel, .claude/settings.json env.ANTHROPIC_MODEL, .claude/settings.json env.CLAUDE_CODE_SUBAGENT_MODEL, .claude/settings.json env.CLAUDE_CODE_EFFORT_LEVEL, .codex/config.toml model, .codex/config.toml model_reasoning_effort, .codex/config.toml agents.default_subagent_model, .codex/config.toml profiles.fast.model, .codex/config.toml profiles.deep.model_reasoning_effort, .codex/config.toml profiles.a.b.model)" "$pinned" \
+  && [ "$up" = '[null,null,{"KEEP_ME":"1"}]' ] && [ "$(grep -cE 'model|profiles\.fast' <<<"$uc")" = 1 ] && grep -qx 'max_threads = 2' <<<"$uc" && grep -qx '\[profiles."deep"\]' <<<"$uc" && ! grep -q 'profiles."a.b"' <<<"$uc" && grep -qx 'model = "prose, not a key"' <<<"$uc" \
   && [ $sw -eq 0 ] && ! grep -qi model <<<"$w"
 then ok models-unpinned; else fail models-unpinned "fresh=$fresh | pinned=$sp $pinned | upgraded=$up | $uc | check=$sw $w"; fi
+# a pin inside an inline table: apply leaves the line (it holds other keys) and --check still fails naming it
+R=$(mkrepo); printf '%s\n[profiles]\nquick = { model = "z", approval_policy = "never" }\n' "$(cat "$R/.codex/config.toml")" > "$R/.codex/config.toml"
+apply "$R" >/dev/null; commit "$R"; out=$(check "$R"); st=$?
+if [ $st -eq 1 ] && has ".codex/config.toml profiles.quick (inline table)" "$out" && grep -q 'quick = { model = "z"' "$R/.codex/config.toml"; then ok models-unpinned; else fail models-unpinned "inline: $st $out"; fi
 
 R=$(mktemp -d "$T/r.XXXXXX"); git -C "$R" init -q -b main; mkdir -p "$R/.claude" "$R/.codex"
 echo '{"permissions":{"deny":["Read(./secrets.txt)"]}}' > "$R/.claude/settings.json"; printf '[agents]\nmax_threads = 2\n' > "$R/.codex/config.toml"
