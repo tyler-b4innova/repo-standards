@@ -135,10 +135,10 @@ export async function plan(gh, overlay) {
   const repos = (await gh("GET", `orgs/${org}/repos?per_page=100&type=all`)).filter((r) => !r.archived).map((r) => r.name);
   const staged = new Set(overlay.org_admin.staged ?? []);
   // A ruleset can only narrow merge methods the repository allows: every repo needs squash, and a staged
-  // repo also needs merge commits for promotions into main.
+  // repo also needs merge commits for promotions into main. Every repo deletes a PR's branch when it merges.
   for (const r of repos) {
     const repo = await gh("GET", `repos/${org}/${r}`);
-    const need = { allow_squash_merge: true, ...(staged.has(r) && { allow_merge_commit: true }) };
+    const need = { allow_squash_merge: true, delete_branch_on_merge: true, ...(staged.has(r) && { allow_merge_commit: true }) };
     const off = Object.keys(need).filter((k) => repo[k] === false);
     if (off.length) steps.push({ what: `repo ${r}: enable ${off.join(", ")}`, detail: [], call: ["PATCH", `repos/${org}/${r}`, Object.fromEntries(off.map((k) => [k, true]))] });
   }
