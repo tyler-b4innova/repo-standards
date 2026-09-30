@@ -9,11 +9,12 @@ An org-neutral engine for repo-scoped agent standards. Each organization keeps a
   "unassigned": ["<lane>"],
   "dispatch": [{ "repo": "standards", "workflow": "sync.yml", "every": "1d", "when": "drift" }],
   "sections": ["Goal", "Acceptance criteria"], "bodyBudget": 8000, "uiPaths": ["<glob>"],
-  "duplicates": { "apps": ["<app slug>"] }
+  "duplicates": { "apps": ["<app slug>"] },
+  "revert": { "newIssueEvents": 5, "eventFactor": 5 }
 }
 ```
 
-Every key is optional except a lane's `name` and `vendor` (`claude` or `codex`). A dispatch entry's `when: "drift"` fires it only when some repository's `standards.lock` is missing or behind the entry repository's latest release. Unknown keys, lanes named in `unassigned` that do not exist, schedules other than `<n>m|h|d`, and credential-looking values are refused. Other top-level keys the engine does not read pass through untouched.
+Every key is optional except a lane's `name` and `vendor` (`claude` or `codex`). `revert` holds the launcher's thresholds for reverting a production deploy (positive numbers; the launcher owns the defaults). A dispatch entry's `when: "drift"` fires it only when some repository's `standards.lock` is missing or behind the entry repository's latest release. Unknown keys, lanes named in `unassigned` that do not exist, schedules other than `<n>m|h|d`, and credential-looking values are refused. Other top-level keys the engine does not read pass through untouched.
 
 ## Consumer repositories
 
@@ -49,7 +50,7 @@ The managed AGENTS.md block carries a `## Review guidelines` line telling Codex 
 - Codex: trust each repository (accept the prompt, or add `[projects."<path>"] trust_level = "trusted"`). Until then Codex ignores the repo's bypass and rules; `setup.sh --check` warns with the fix.
 - Deny rules bind even under bypass: agents cannot read secret files or run `op`, and cannot force-push. Repo scripts that need a secret (for example `sentry-setup`) read it themselves.
 
-Models: the pack pins none; each person's picker (or a repository's own model key) decides. Apply removes the `opus` / `gpt-6-sol` pins that packs before 0.4.3 wrote and keeps any other value.
+Models: repositories never pin a model or effort; each person's app (or the org launcher) decides. Apply removes any pin from the root `.claude/settings.json` and `.codex/config.toml` (`scripts/agent/pins.mjs` lists the keys), and `--check` fails on one.
 
 ## Gotchas
 

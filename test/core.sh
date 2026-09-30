@@ -99,12 +99,13 @@ R=$(mkrepo) || why="example overlay with launcher refused"
 lbad() { node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));(new Function("l",process.argv[3]))(o.launcher);require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$T/lov.json" "$1"
   local d; d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; OVERLAY="$T/lov.json" apply "$d" 2>&1 && echo "ACCEPTED"; [ -z "$(ls -A "$d" | grep -v '^.git$')" ] || echo "WROTE"; }
 for c in 'l.lane=[]|launcher.lane is not a launcher setting' 'l.lanes[0].vendor="gpt"|vendor must be claude or codex' 'l.unassigned=["ghost"]|names ghost, which is not a lane' \
-  'l.dispatch[0].every="hourly"|every must look like' 'l.lanes[1].accounts=["gh"+"p_"+"a".repeat(36)]|looks like a credential' 'l.lanes[1].accounts=[" gh"+"p_"+"b".repeat(36)]|looks like a credential' 'l.lanes.push({name:"claude",vendor:"codex"})|duplicate lane claude'; do
+  'l.dispatch[0].every="hourly"|every must look like' 'l.lanes[1].accounts=["gh"+"p_"+"a".repeat(36)]|looks like a credential' 'l.lanes[1].accounts=[" gh"+"p_"+"b".repeat(36)]|looks like a credential' 'l.lanes.push({name:"claude",vendor:"codex"})|duplicate lane claude' \
+  'l.revert={newIssueEvents:0}|revert.newIssueEvents must be a positive number' 'l.revert={eventFactor:5,window:30}|launcher.revert.window is not a launcher setting'; do
   out=$(lbad "${c%%|*}"); has "${c#*|}" "$out" && ! has ACCEPTED "$out" && ! has WROTE "$out" || why="$why; [${c%%|*}] $out"
 done
 # dispatch when: only "drift"
-node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.launcher.dispatch[0].when="drift";require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$T/drift.json"
-d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; out=$(OVERLAY="$T/drift.json" apply "$d" 2>&1) || why="$why; when=drift refused: $out"
+node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.launcher.dispatch[0].when="drift";o.launcher.revert={newIssueEvents:5,eventFactor:2.5};require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$T/drift.json"
+d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; out=$(OVERLAY="$T/drift.json" apply "$d" 2>&1) || why="$why; when=drift or revert refused: $out"
 out=$(lbad 'l.dispatch[0].when="always"'); has 'when must be "drift"' "$out" && ! has ACCEPTED "$out" || why="$why; [when=always] $out"
 if [ -z "$why" ]; then ok overlay-launcher-validated; else fail overlay-launcher-validated "$why"; fi
 
@@ -294,20 +295,20 @@ if grep -qx "## Review guidelines" <<<"$blk" && grep -q 'Skip pack-managed paths
 then ok agents-review-guidelines; else fail agents-review-guidelines "$blk"; fi
 
 # ---- agent config: the pack pins no model; never read secrets, never force-push
-# models-unpinned: a fresh repo gets no model keys; re-applying removes the pins earlier packs wrote and keeps the
-# repo's own choices and other keys; --check says nothing about models
+# models-unpinned: repositories never pin a model or effort. A fresh repo gets none; re-applying removes every pin
+# (any value, both files, profiles and a table left empty) and keeps other keys; --check fails on any pin left.
 R=$(mkrepo); fresh=$(node -e 'const s=require(process.argv[1]);console.log(s.model??"-",s.env?.CLAUDE_CODE_SUBAGENT_MODEL??"-")' "$R/.claude/settings.json"); c=$(cat "$R/.codex/config.toml")
-jset "$R/.claude/settings.json" 'o.model="opus";o.env={CLAUDE_CODE_SUBAGENT_MODEL:"opus",KEEP_ME:"1"}'
-printf 'model = "gpt-6-sol"\n%s\n\n[agents]\ndefault_subagent_model = "gpt-6-sol"\n' "$c" > "$R/.codex/config.toml"
-commit "$R"; apply "$R" >/dev/null; commit "$R"
-up=$(node -e 'const s=require(process.argv[1]);console.log(s.model??"-",s.env?.CLAUDE_CODE_SUBAGENT_MODEL??"-",s.env?.KEEP_ME)' "$R/.claude/settings.json"); uc=$(cat "$R/.codex/config.toml")
-jset "$R/.claude/settings.json" 'o.model="sonnet"'; printf 'model = "gpt-repo"\n%s\n[agents]\nmax_threads = 2\ndefault_subagent_model = "gpt-6-sol"\n' "$uc" > "$R/.codex/config.toml"
-apply "$R" >/dev/null; commit "$R"
-kept="$(node -e 'console.log(require(process.argv[1]).model)' "$R/.claude/settings.json") $(grep -cE '^(model = "gpt-repo"|max_threads = 2)$' "$R/.codex/config.toml") $(grep -c default_subagent_model "$R/.codex/config.toml")"
-w=$(ANTHROPIC_MODEL=haiku CLAUDE_CODE_SUBAGENT_MODEL=haiku check "$R"); sw=$?
-if [ "$fresh" = "- -" ] && ! grep -qE '^(model|default_subagent_model) =|^\[agents\]' <<<"$c" && [ "$up" = "- - 1" ] && ! grep -qE 'model|\[agents\]' <<<"$uc" \
-  && [ "$kept" = "sonnet 2 0" ] && [ $sw -eq 0 ] && ! grep -qi model <<<"$w"
-then ok models-unpinned; else fail models-unpinned "fresh=$fresh | codex=$c | upgraded=$up | $uc | kept=$kept | check=$sw $w"; fi
+jset "$R/.claude/settings.json" 'o.model="sonnet";o.effortLevel="high";o.env={ANTHROPIC_MODEL:"x",CLAUDE_CODE_SUBAGENT_MODEL:"opus",CLAUDE_CODE_EFFORT_LEVEL:"max",KEEP_ME:"1"}'
+printf 'model = "gpt-repo"\nmodel_reasoning_effort = "high"\n%s\n\n[agents]\ndefault_subagent_model = "gpt-6-sol"\nmax_threads = 2\n\n[profiles.fast]\nmodel = "gpt-mini"\n\n[profiles."deep"]\nmodel_reasoning_effort = "xhigh"\napproval_policy = "never"\n' "$c" > "$R/.codex/config.toml"
+commit "$R"; pinned=$(check "$R"); sp=$?
+apply "$R" >/dev/null; commit "$R"; uc=$(cat "$R/.codex/config.toml")
+up=$(node -e 'const s=require(process.argv[1]);console.log(JSON.stringify([s.model,s.effortLevel,s.env]))' "$R/.claude/settings.json")
+w=$(ANTHROPIC_MODEL=haiku check "$R"); sw=$?
+if [ "$fresh" = "- -" ] && ! grep -qE 'model|\[agents\]' <<<"$c" && [ $sp -eq 1 ] \
+  && has ".claude/settings.json model, .claude/settings.json effortLevel, .claude/settings.json env.ANTHROPIC_MODEL, .claude/settings.json env.CLAUDE_CODE_SUBAGENT_MODEL, .claude/settings.json env.CLAUDE_CODE_EFFORT_LEVEL, .codex/config.toml model, .codex/config.toml model_reasoning_effort, .codex/config.toml agents.default_subagent_model, .codex/config.toml profiles.fast.model, .codex/config.toml profiles.deep.model_reasoning_effort" "$pinned" \
+  && [ "$up" = '[null,null,{"KEEP_ME":"1"}]' ] && ! grep -qE 'model|profiles\.fast' <<<"$uc" && grep -qx 'max_threads = 2' <<<"$uc" && grep -qx '\[profiles."deep"\]' <<<"$uc" \
+  && [ $sw -eq 0 ] && ! grep -qi model <<<"$w"
+then ok models-unpinned; else fail models-unpinned "fresh=$fresh | pinned=$sp $pinned | upgraded=$up | $uc | check=$sw $w"; fi
 
 R=$(mktemp -d "$T/r.XXXXXX"); git -C "$R" init -q -b main; mkdir -p "$R/.claude" "$R/.codex"
 echo '{"permissions":{"deny":["Read(./secrets.txt)"]}}' > "$R/.claude/settings.json"; printf '[agents]\nmax_threads = 2\n' > "$R/.codex/config.toml"

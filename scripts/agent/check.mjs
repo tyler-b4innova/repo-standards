@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { claudePins, codexPins } from "./pins.mjs";
 
 if (process.argv.includes("--help")) {
   console.log("usage: node scripts/agent/check.mjs   (offline standards self-check; exit 1 on failure)");
@@ -93,6 +94,9 @@ else {
   // The deny set and the Codex bypass keys are engine-owned; the pack pins no model.
   if (s && JSON.stringify(s.permissions?.deny) !== JSON.stringify(pack.permissions_deny))
     fail(".claude/settings.json deny set changed", restore(".claude/settings.json"));
+  // Repositories never pin a model or effort: each person's app (or the org launcher) chooses.
+  const pinned = [...claudePins(s).map((k) => `.claude/settings.json ${k}`), ...codexPins(read(".codex/config.toml")).map((p) => `.codex/config.toml ${p.key}`)];
+  if (pinned.length) fail(`the repo pins a model or effort (${pinned.join(", ")})`, "delete those keys (or re-apply the pack): model and effort belong to each person's app or the launcher");
   const [top] = (read(".codex/config.toml") ?? "").split(/^(?=\s*\[)/m);
   if (!Object.entries(pack.codex_top).every(([k, v]) => new RegExp(`^\\s*${k}\\s*=\\s*"${v}"\\s*(#.*)?$`, "m").test(top)))
     fail(".codex/config.toml engine keys changed", restore(".codex/config.toml"));

@@ -65,15 +65,39 @@ out=$(node --input-type=module -e '
     direct: rs(a, "direct").pull_request.allowed_merge_methods, staged: rs(a, "staged main").pull_request.allowed_merge_methods,
     vault: rs(a, "push").file_path_restriction.restricted_file_paths.includes("vault/**"),
     size: [rs(a, "push").max_file_size.max_file_size, rs(b, "push").max_file_size.max_file_size],
-    strict: [a, b].map((x) => [...new Set(x.rulesets.flatMap((r) => r.rules.required_status_checks ? [r.rules.required_status_checks.strict_required_status_checks_policy] : []))]),
+    strict: [a, b].map((x) => x.rulesets.filter((r) => r.rules.required_status_checks?.strict_required_status_checks_policy).map((r) => r.name)),
     checks: ["default branch", "staged main", "org: staging"].map((n) => rs(b, n).required_status_checks.required_status_checks.map((c) => c.context).join("+")),
     ignored: [rs(a, "push").file_path_restriction.ignored_file_paths ?? null, rs(b, "push").file_path_restriction.ignored_file_paths],
     pinned: rs(a, "default branch").required_status_checks.required_status_checks, unpinned,
     pushOptIn: b.rulesets.find((r) => r.target === "push").bypass_actors,
     unattributed: [a, b].map((x) => [...new Set(x.rulesets.flatMap((r) => r.rules.pull_request ? [r.rules.pull_request.require_extra_approval_for_unattributed_changes] : []))]),
     placeholders: JSON.stringify(a).includes("\"$"), refused }));' "$T/org.json" 2>&1)
-want='{"bypass":["branch:[{\"actor_id\":4242,\"actor_type\":\"Integration\",\"bypass_mode\":\"always\"},{\"actor_id\":null,\"actor_type\":\"OrganizationAdmin\",\"bypass_mode\":\"pull_request\"}]","push:[]"],"threads":[true,true,true,true],"codeOwners":["org: direct repos squash-merge","org: staged main takes promotions (merge commit)"],"direct":["squash"],"staged":["merge"],"vault":true,"size":[50,20],"strict":[[false],[true]],"checks":["gate+lint","gate+promote-main","gate+preview"],"ignored":[null,[".env.example"]],"pinned":[{"context":"gate","integration_id":42}],"unpinned":[{"context":"gate"}],"pushOptIn":[{"actor_id":4242,"actor_type":"Integration","bypass_mode":"always"}],"unattributed":[[false],[true]],"placeholders":false,"refused":true}'
+want='{"bypass":["branch:[{\"actor_id\":4242,\"actor_type\":\"Integration\",\"bypass_mode\":\"always\"},{\"actor_id\":null,\"actor_type\":\"OrganizationAdmin\",\"bypass_mode\":\"pull_request\"}]","push:[]"],"threads":[true,true,true,true],"codeOwners":["org: direct repos squash-merge","org: staged main takes promotions (merge commit)"],"direct":["squash"],"staged":["merge"],"vault":true,"size":[50,20],"strict":[[],["org: direct repos squash-merge","org: staging (PR + gate, squash)"]],"checks":["gate+lint","gate+promote-main","gate+preview"],"ignored":[null,[".env.example"]],"pinned":[{"context":"gate","integration_id":42}],"unpinned":[{"context":"gate"}],"pushOptIn":[{"actor_id":4242,"actor_type":"Integration","bypass_mode":"always"}],"unattributed":[[false],[true]],"placeholders":false,"refused":true}'
 [ "$out" = "$want" ] && ok org-rulesets-render || fail org-rulesets-render "$out"
+
+# promotion-not-strict: with strict_status_checks on, a staged repo's promotion into main whose main is ahead only by
+# earlier promotion merge commits (staging never gets them and cannot take a direct push) stays mergeable: no
+# ruleset that covers staged main is strict. Strict still holds where ordinary PRs land (staging, a direct repo's main).
+P=$T/promo; git init -q -b main "$P"; g() { git -C "$P" -c user.name=t -c user.email=t@t "$@"; }
+g commit -q --allow-empty -m base; g checkout -q -b staging; g commit -q --allow-empty -m work1
+g checkout -q main; g merge -q --no-ff -m "promote 1" staging; g checkout -q staging; g commit -q --allow-empty -m work2
+behind=$(git -C "$P" merge-base --is-ancestor main staging && echo no || echo yes)
+out=$(node --input-type=module -e '
+  import { render } from "./org/apply.mjs";
+  import { readFileSync } from "node:fs";
+  const o = JSON.parse(readFileSync(process.argv[1], "utf8")); o.org_admin.strict_status_checks = true;
+  const { rulesets } = render(o);
+  // the rulesets GitHub applies to <ref> in a repo with this default branch and flow (conditions as rendered)
+  const applies = (r, def, flow, ref) => {
+    if (r.target !== "branch") return false;
+    const c = r.conditions, refs = c.ref_name.include.map((x) => (x === "~DEFAULT_BRANCH" ? `refs/heads/${def}` : x === "~ALL" ? ref : x));
+    const prop = c.repository_property?.include?.find((p) => p.name === "flow");
+    return refs.includes(ref) && (!prop || prop.property_values.includes(flow));
+  };
+  const strict = (def, flow, ref) => rulesets.some((r) => applies(r, def, flow, ref) && r.rules.required_status_checks?.strict_required_status_checks_policy);
+  console.log([strict("staging", "staged", "refs/heads/main"), strict("main", "staged", "refs/heads/main"), strict("staging", "staged", "refs/heads/staging"), strict("main", "direct", "refs/heads/main")].join(" "));' "$T/org.json" 2>&1)
+# mergeable = not (strict and behind)
+if [ "$behind" = yes ] && [ "$out" = "false false true true" ]; then ok promotion-not-strict; else fail promotion-not-strict "behind=$behind strict(staged main, staged main with default main, staging, direct main)=$out"; fi
 
 # engine-org-dry-run-diff: a dry run names each change (field diffs for a matched ruleset, its old name, creates,
 # the stray delete, the property, a staged repo's missing merge-commit setting, the repo flows) and sends only GETs.
