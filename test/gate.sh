@@ -151,9 +151,9 @@ if [ $s1 -eq 1 ] && has "src/components/Button.tsx" "$out1" && has "no accepted 
 else fail ui-paths-evidence-required "no-comment=$s1 accepted=$s2: $out1 $out2"; fi
 
 bad=""
-for f in docs/report.docx deck/q3.pptx src/styles/site.scss index.html src/components/Nav.astro public/logo.svg; do
+for f in docs/report.docx deck/q3.pptx src/styles/site.scss index.html src/components/Nav.astro public/logo.svg "public/hero.png=>archive/hero.png"; do
   fx "{files:{2:[\"$f\"]}}"; out=$(ev "$R" 2); st=$?
-  { [ $st -eq 1 ] && has "$f" "$out"; } || bad="$bad $f=$st"
+  { [ $st -eq 1 ] && has "${f%%=>*}" "$out"; } || bad="$bad $f=$st"
 done
 echo "<p>x</p>" > "$R/site.css" && commit "$R" && echo "<p>y</p>" > "$R/site.css" && mkdir -p "$R/docs" && printf 'x' > "$R/docs/brief.docx" && echo x > "$R/lib.mjs"
 cls=$(G "$R" classify HEAD); cs=$?

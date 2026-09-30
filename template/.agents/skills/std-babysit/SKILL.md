@@ -11,7 +11,7 @@ Loop until `scripts/agent/pr.sh status <pr>` prints `DONE`:
 2. `scripts/agent/pr.sh feedback <pr>` lists comments and reviews newer than the last push. For each finding, open the code it points at:
    - correct: fix it, push, reply with the commit SHA;
    - wrong: `scripts/agent/pr.sh reply <pr> <id> "<reason citing the line>"`.
-   Never resolve a finding silently, and never resolve a human's thread.
+   Then `scripts/agent/pr.sh resolve <pr> <id>` (merging needs every thread resolved). Never resolve without a reply, and never resolve a human's thread.
 3. A finding that asks for new scope becomes an issue, linked in your reply.
 4. Nothing new and checks pending: wait 60s, then 120s, then 300s. Stay quiet meanwhile.
 

@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# PR helper over the GitHub REST API only. Auth: GH_TOKEN, GITHUB_TOKEN, else `gh auth token`.
+# PR helper over the GitHub REST API (GraphQL only for review threads: status, resolve). Auth: GH_TOKEN, GITHUB_TOKEN, else `gh auth token`.
 # Repo: GH_REPO, else the origin remote. API: GITHUB_API_URL (default https://api.github.com).
 #   pr.sh open [--base B] [--dry-run] [--] "<title>" <body-file>  draft PR (reused if open for this head and base); push first
 #   pr.sh status <pr>                     checks on the head SHA and open review threads, then DONE or NOT DONE: <reasons>
 #   pr.sh evidence <pr> <file>...         post SHA-pinned evidence; .evidence/ never stays on the branch tip
 #   pr.sh feedback <pr>                   comments and reviews newer than the last push, with ids
 #   pr.sh reply <pr> <comment-id> "<text>"  reply on the review thread, else as a PR comment
+#   pr.sh resolve <pr> <comment-id>       resolve the review thread holding that comment (after fixing or answering it)
 set -euo pipefail
-usage() { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; }
 die() { echo "pr.sh: $*" >&2; exit 1; }
 API=${GITHUB_API_URL:-https://api.github.com}
 REPO=${GH_REPO:-$(git remote get-url origin 2>/dev/null | sed -E 's#/+$##; s#\.git$##; s#.*[:/]([^/:]+/[^/:]+)$#\1#' || true)}
@@ -159,12 +160,24 @@ reply() {
   js 'd.html_url' <<<"$R"
 }
 
+resolve() {
+  [ $# -eq 2 ] || die 'usage: pr.sh resolve <pr> <comment-id>'
+  local q t
+  q=$(node -e 'const [o, n, pr] = process.argv.slice(1); console.log(JSON.stringify({ query: "query($o:String!,$n:String!,$pr:Int!){repository(owner:$o,name:$n){pullRequest(number:$pr){reviewThreads(first:100){nodes{id isResolved comments(first:100){nodes{databaseId}}}}}}}", variables: { o, n, pr: +pr } }))' -- "${REPO%%/*}" "${REPO#*/}" "$1")
+  req POST /graphql "$q"
+  t=$(js '((d.data?.repository?.pullRequest?.reviewThreads?.nodes??[]).find(x=>x.comments.nodes.some(c=>String(c.databaseId)===a[0]))||{}).id||""' "$2" <<<"$R")
+  [ -n "$t" ] || die "no review thread on #$1 holds comment $2 (pr.sh feedback lists the ids)"
+  req POST /graphql "$(node -e 'console.log(JSON.stringify({ query: "mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}", variables: { t: process.argv[1] } }))' -- "$t")"
+  [ "$(js 'String(d.data?.resolveReviewThread?.thread?.isResolved)' <<<"$R")" = true ] || die "resolving the thread failed: ${R:0:300}"
+  echo "resolved the thread holding comment $2"
+}
+
 cmd=${1:-}
 shift || true
 case "$cmd" in
   open) open_pr "$@" ;;
   status | feedback) [ $# -eq 1 ] || die "usage: pr.sh $cmd <pr>"; "$cmd" "$1" ;;
-  evidence | reply) "$cmd" "$@" ;;
+  evidence | reply | resolve) "$cmd" "$@" ;;
   -h | --help) usage ;;
   *) usage >&2; exit 2 ;;
 esac

@@ -31,7 +31,8 @@ const server = createServer((req, res) => {
     return send(200, { status: m[1] === m[2] ? "identical" : anc ? "ahead" : "diverged", commits: anc ? (git("rev-list", "--reverse", `${m[1]}..${m[2]}`) || "").split("\n").filter(Boolean).map((sha) => ({ sha })) : [] });
   }
   if ((m = rest.match(/^commits\/([0-9a-f]{40})$/))) return send(200, { sha: m[1], files: (git("diff", "--name-only", `${m[1]}^1`, m[1]) ?? "").split("\n").filter(Boolean).map((filename) => ({ filename })) });
-  if ((m = rest.match(/^pulls\/(\d+)\/files$/))) return page((fx.files[m[1]] ?? []).map((filename) => ({ filename, status: "modified" })));
+  // "old=>new" is a rename
+  if ((m = rest.match(/^pulls\/(\d+)\/files$/))) return page((fx.files[m[1]] ?? []).map((f) => (f.includes("=>") ? { filename: f.split("=>")[1], previous_filename: f.split("=>")[0], status: "renamed" } : { filename: f, status: "modified" })));
   if ((m = rest.match(/^issues\/(\d+)\/comments$/))) return page(fx.comments?.[m[1]] ?? []);
   // the repository's policy files come from gitDir's working tree (whatever ref is asked for)
   if ((m = rest.match(/^contents\/(scripts\/agent\/pack\.json|standards\.json)$/))) {

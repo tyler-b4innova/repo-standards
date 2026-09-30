@@ -49,6 +49,10 @@ else {
     const ui = std.ui_paths;
     if (!(globs(ui) || (ui && typeof ui === "object" && globs(ui.include) && globs(ui.ignore))))
       fail("standards.json ui_paths must be a glob list or {include, ignore}", "fix it, or delete it for the engine defaults");
+    if (!globs(std.risk_paths)) fail("standards.json risk_paths must be a glob list", "fix it, delete it for the engine defaults, or [] for none");
+    // production_urls: what the org launcher smoke-tests after a production deploy
+    if (std.production_urls !== undefined && !(Array.isArray(std.production_urls) && std.production_urls.every((u) => { try { return new URL(u).protocol === "https:"; } catch { return false; } })))
+      fail(`standards.json production_urls is ${JSON.stringify(std.production_urls)}`, 'a list of absolute https URLs, e.g. ["https://example.com/"]');
   }
 
   // The lock: every managed file and the AGENTS.md block, by sha256.
@@ -143,7 +147,7 @@ else {
     const onBlock = onAt >= 0 ? block(onAt, 0) : [];
     const triggers = inline ? inline.replace(/[[\]{}]/g, "").split(",").map((t) => t.trim().split(":")[0]).filter(Boolean)
       : onBlock.filter((l) => /^ {2}[a-z_]+:/.test(l)).map((l) => l.trim().split(":")[0]);
-    const pushAt = onBlock.findIndex((l) => /^ {2}push:/.test(l)), push = pushAt >= 0 ? block(pushAt, 2).map((l) => l.trim()).join(" ") : "";
+    const pushAt = onBlock.findIndex((l) => /^ {2}push:/.test(l)), push = pushAt >= 0 ? block(onAt + 1 + pushAt, 2).map((l) => l.trim()).join(" ") : "";
     const pushBranches = /branches:/.test(push) ? push.replace(/.*branches:\s*/, "").split(/tags:|paths:|branches-ignore:|paths-ignore:/)[0].match(/[\w./*-]+/g) ?? [] : null;
     const integrationPush = triggers.includes("push") && (pushBranches === null ? !/tags:/.test(push) : pushBranches.some((b) => ["main", "master", "staging", "develop", "*", "**"].includes(b)));
     const crons = [...text.matchAll(/cron:\s*["']([^"']+)["']/g)].map((m) => m[1].trim());

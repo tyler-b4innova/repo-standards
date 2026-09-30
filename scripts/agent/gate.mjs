@@ -81,21 +81,31 @@ if (cmd === "plan") {
   if (bad.length) fail(`syntax errors:\n  ${bad.join("\n  ")}`, "fix them; managed files come from the pack (setup.sh --check names the restore)");
   console.log("syntax: scripts and workflows parse");
 } else if (cmd === "preview") {
-  // The head's Workers Builds preview, when the repo has one: a failed Cloudflare build fails gate; a build still
-  // running is waited on for at most 3 minutes; the URL comes from the Cloudflare bot's PR comment for this commit.
+  // The head's Workers Builds preview must pass where the repo has Workers Builds (its base branch tip carries the
+  // check): gate waits for the head's build within GATE_PREVIEW_WAIT_S (default 8 minutes) and fails on a failed,
+  // missing or unfinished one; Cloudflare skipping the commit (build watch paths) passes without a preview. A repo
+  // without Workers Builds, or with "e2e": {"preview": false}, is unaffected. The URL comes from the Cloudflare bot's
+  // PR comment for this commit.
   if (!prNumber || e2eCfg.preview === false) { console.log("preview: none (not a pull request, or e2e.preview is false)"); output("url", ""); process.exit(0); }
   const get = ghApi(), pr = await get(`/pulls/${prNumber}`), head = pr.head.sha, short = head.slice(0, 7);
   const name = pack.preview?.check_name ?? "Workers Builds", author = pack.preview?.comment_author ?? "cloudflare-workers-and-pages[bot]";
-  const wait = Number(env.GATE_PREVIEW_WAIT_S ?? 180) * 1000, start = Date.now();
+  const builds = async (sha) => ((await get(`/commits/${sha}/check-runs?per_page=100`))?.check_runs ?? []).filter((c) => c.name?.startsWith(name));
+  const baseTip = pr.base?.ref ? (await get(`/branches/${encodeURIComponent(pr.base.ref)}`))?.commit?.sha : null;
+  const hasBuilds = (await builds(head)).length > 0 || (baseTip ? (await builds(baseTip)).length > 0 : false);
+  if (!hasBuilds) { console.log(`preview: the repository has no "${name}" check (none on ${short} or the ${pr.base?.ref ?? "base"} tip); e2e runs locally`); output("url", ""); process.exit(0); }
+  const wait = Number(env.GATE_PREVIEW_WAIT_S ?? 480) * 1000, start = Date.now();
+  let skipped = false;
   for (;;) {
-    const runs = ((await get(`/commits/${head}/check-runs?per_page=100`))?.check_runs ?? []).filter((c) => c.name?.startsWith(name));
-    const red = runs.find((c) => c.status === "completed" && !["success", "neutral", "skipped"].includes(c.conclusion));
-    if (red) fail(`Cloudflare build failed for ${short}: ${red.name} ${red.conclusion} (${red.details_url})`, "fix the Worker build; gate tests the deployed preview");
-    if (!runs.length) { console.log(`preview: no "${name}" check run on ${short}; e2e runs locally`); output("url", ""); process.exit(0); }
-    if (runs.every((c) => c.status === "completed")) break;
-    if (Date.now() - start >= wait) { console.log(`preview: the Cloudflare build for ${short} is still running after ${wait / 1000}s; e2e runs locally`); output("url", ""); process.exit(0); }
+    const runs = await builds(head);
+    const red = runs.find((c) => c.status === "completed" && !["success", "skipped"].includes(c.conclusion));
+    if (red) fail(`Cloudflare build failed for ${short}: ${red.name} ${red.conclusion} (${red.details_url})`, "fix the Worker build; gate needs the preview to pass");
+    if (runs.length && runs.every((c) => c.status === "completed")) { skipped = runs.every((c) => c.conclusion === "skipped"); break; }
+    if (Date.now() - start >= wait)
+      fail(runs.length ? `the Cloudflare build for ${short} is still running after ${wait / 1000}s` : `no "${name}" check on ${short} after ${wait / 1000}s, though the repository has Workers Builds`,
+        "re-run gate once the build finishes; if the Worker's builds are off for pull requests, turn them on, or set standards.json e2e.preview to false");
     await new Promise((r) => setTimeout(r, 15000));
   }
+  if (skipped) { console.log(`preview: Cloudflare skipped the build for ${short} (build watch paths); e2e runs locally`); output("url", ""); process.exit(0); }
   const comments = [];
   for (let page = 1; ; page++) { const b = (await get(`/issues/${prNumber}/comments?per_page=100&page=${page}`)) ?? []; comments.push(...b); if (b.length < 100) break; }
   const url = comments.filter((c) => c.user?.login === author).reverse().flatMap((c) => c.body.split("\n"))
