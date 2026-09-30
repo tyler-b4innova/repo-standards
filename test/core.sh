@@ -309,7 +309,7 @@ why=""
 node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.ui_owners=["@acme/design"];o.risk_owners=["@acme/leads"];require("fs").writeFileSync(process.argv[2],JSON.stringify(o));delete o.ui_owners;require("fs").writeFileSync(process.argv[3],JSON.stringify(o))' "$OV" "$T/risk.json" "$T/riskonly.json"
 R=$(OVERLAY="$T/risk.json" mkrepo); co=$(cat "$R/.github/CODEOWNERS")
 ig=$(grep -nx '/.github/\*\*' <<<"$co" | cut -d: -f1); wfl=$(grep -nx '/.github/workflows/\*\* @acme/leads' <<<"$co" | cut -d: -f1)
-{ [ -n "$ig" ] && [ -n "$wfl" ] && [ "$wfl" -gt "$ig" ] && grep -qx '\*\*/migrations/\*\* @acme/leads' <<<"$co" && grep -qx '\*\*/wrangler.jsonc @acme/leads' <<<"$co" && grep -qx '/CODEOWNERS @acme/leads' <<<"$co" && grep -qx '\*\*/\*.tsx @acme/design' <<<"$co"; } || why="$why; both: $co"
+{ [ -n "$ig" ] && [ -n "$wfl" ] && [ "$wfl" -gt "$ig" ] && grep -qx '\*\*/migrations/\*\* @acme/leads' <<<"$co" && grep -qx '\*\*/wrangler.jsonc @acme/leads' <<<"$co" && grep -qx '/CODEOWNERS @acme/leads' <<<"$co" && grep -qx '/AGENTS.md @acme/leads' <<<"$co" && grep -qx '/scripts/agent/\*\* @acme/leads' <<<"$co" && grep -qx '/.agents/skills/std-\*/\*\* @acme/leads' <<<"$co" && grep -qx '/standards.json @acme/leads' <<<"$co" && grep -qx '\*\*/\*.tsx @acme/design' <<<"$co"; } || why="$why; both: $co"
 out=$(check "$R") || why="$why; check: $out"
 jset "$R/standards.json" 'o.risk_paths=["db/**"]'; OVERLAY="$T/risk.json" apply "$R" >/dev/null; co=$(cat "$R/.github/CODEOWNERS")
 { grep -qx '/db/\*\* @acme/leads' <<<"$co" && ! grep -q migrations <<<"$co"; } || why="$why; override: $co"

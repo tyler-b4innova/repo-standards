@@ -12,7 +12,7 @@ Loop until `scripts/agent/pr.sh status <pr>` prints `DONE`:
    - correct: fix it, push, reply with the commit SHA;
    - wrong: `scripts/agent/pr.sh reply <pr> <id> "<reason citing the line>"`.
    Then `scripts/agent/pr.sh resolve <pr> <id>` (merging needs every thread resolved). Never resolve without a reply, and never resolve a human's thread.
-3. A finding that asks for new scope becomes an issue, linked in your reply.
+3. A finding that asks for new scope: reply why it is out of scope; file an issue only for an actionable defect or deliberate work (grouped with related work under one issue) and link it.
 4. Nothing new and checks pending: wait 60s, then 120s, then 300s. Stay quiet meanwhile.
 
 Stop when `gate` and the bots are green with every finding answered, or when a human decision is needed; say what is left. Do not merge unless the task says you may.

@@ -30,7 +30,14 @@
     "infra/**",
     ".github/CODEOWNERS",
     "CODEOWNERS",
-    "docs/CODEOWNERS"
+    "docs/CODEOWNERS",
+    "AGENTS.md",
+    "CLAUDE.md",
+    ".claude/**",
+    ".codex/**",
+    "scripts/agent/**",
+    ".agents/skills/std-*/**",
+    "standards.json"
   ],
   "permissions_allow": [],
   "forbidden_files": [

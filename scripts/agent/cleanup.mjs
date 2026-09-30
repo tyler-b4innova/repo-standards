@@ -3,7 +3,8 @@
 // branch, and the worktree holding it, go only when ALL hold, and anything unsure stays:
 //   - GitHub says the branch's pull request merged (asked of GitHub: squash merges look unmerged to git);
 //   - the local tip is the PR's merged head or an ancestor of it (no local work the PR lacks);
-//   - its worktree has no uncommitted or untracked changes (ignored files are fine), is not locked, is not the main
+//   - its worktree has no uncommitted, untracked or ignored files (ignored ones such as .env, .dev.vars and local
+//     database state cannot be recovered), except inside regenerable directories (REGEN); it is not locked, not the main
 //     worktree or the session's own directory, and is not under an app-managed root (~/.codex/worktrees,
 //     ~/.t3/worktrees, .claude/worktrees): those apps clean their own.
 // One batched GitHub call with a short timeout; a network or auth failure removes nothing. Prints one line when
@@ -18,6 +19,8 @@ const tryGit = (...a) => { try { return git(...a); } catch { return null; } };
 const real = (p) => { try { return realpathSync(p); } catch { return p; } };
 const within = (p, root) => p === root || p.startsWith(root.endsWith(sep) ? root : root + sep);
 const env = process.env;
+// Ignored directories a build or install recreates; anything else ignored keeps the worktree.
+const REGEN = new Set(["node_modules", "dist", "build", ".next", ".turbo", ".cache", "coverage", "test-results", "playwright-report"]);
 
 async function main() {
   const top = real(git("rev-parse", "--show-toplevel").trim());
@@ -76,8 +79,9 @@ async function main() {
     if (tree) {
       if (tree.path === mainTree || tree.locked || session.some((s) => within(s, tree.path)) || appManaged(tree.path)) continue;
       if (tree.prunable) continue; // its directory is missing (perhaps unmounted): leave it
-      const status = tryGit("-C", tree.path, "status", "--porcelain", "--untracked-files=all");
-      if (status === null || status.trim()) continue;
+      // Every change, untracked file and ignored path; an ignored path passes only inside a regenerable directory.
+      const status = tryGit("-C", tree.path, "status", "--porcelain", "--untracked-files=all", "--ignored");
+      if (status === null || status.split("\n").filter(Boolean).some((l) => !(l.startsWith("!! ") && l.slice(3).split("/").some((seg) => REGEN.has(seg))))) continue;
       if (tryGit("worktree", "remove", tree.path) === null) continue; // refuses a dirty tree itself too
       removed.push(`${b} (worktree ${tree.path})`);
     } else removed.push(b);

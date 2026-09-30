@@ -97,15 +97,16 @@ then ok e2e-uses-preview-url; else fail e2e-uses-preview-url "ok=$x1 red=$x2 non
 # preview-must-pass: where the repository has Workers Builds (its base tip carries the check), a missing, unfinished
 # or failed build on the head fails gate; a build Cloudflare skipped passes without a preview
 BASE_TIP=$(printf 'e%.0s' $(seq 40)); WB='{name:"Workers Builds: demo",status:"completed",conclusion:"success"}'
-pb() { put "{$PERMS_JS,pr:{number:7,head:{sha:\"$HEAD1\"},base:{ref:\"main\"}},branchHeads:{main:\"$BASE_TIP\"},checksBy:{\"$BASE_TIP\":[$WB],\"$HEAD1\":$1},comments:{7:[$CF]}}"; pv; }
+pb() { put "{$PERMS_JS,pr:{number:7,head:{sha:\"$HEAD1\"},base:{ref:\"main\"}},branchHeads:{main:\"$BASE_TIP\"},checksBy:{\"$BASE_TIP\":[$WB],\"$HEAD1\":$1},comments:{7:[${2-$CF}]}}"; pv; }
 q1=$(pb '[]'); y1=$?
 q2=$(pb '[{name:"Workers Builds: demo",status:"in_progress",conclusion:null}]'); y2=$?
 q3=$(pb '[{name:"Workers Builds: demo",status:"completed",conclusion:"cancelled",details_url:"https://dash.example"}]'); y3=$?
 q4=$(pb '[{name:"Workers Builds: demo",status:"completed",conclusion:"skipped"}]'); y4=$?
 q5=$(pb "[$WB]"); y5=$?
+q6=$(pb "[$WB]" ""); y6=$? # passed, but the Cloudflare comment has no URL for this commit: fail, never local
 if [ $y1 -eq 1 ] && has "no \"Workers Builds\" check on ${HEAD1:0:7}" "$q1" && [ $y2 -eq 1 ] && has "still running" "$q2" && [ $y3 -eq 1 ] && has "Cloudflare build failed" "$q3" \
-  && [ $y4 -eq 0 ] && has "skipped the build" "$q4" && [ $y5 -eq 0 ] && has "url=https://feat.preview.example.test" "$q5"
-then ok preview-must-pass; else fail preview-must-pass "missing=$y1 running=$y2 cancelled=$y3 skipped=$y4 ok=$y5: $q1 | $q2 | $q3 | $q4 | $q5"; fi
+  && [ $y4 -eq 0 ] && has "skipped the build" "$q4" && [ $y5 -eq 0 ] && has "url=https://feat.preview.example.test" "$q5" && [ $y6 -eq 1 ] && has "no preview URL for ${HEAD1:0:7}" "$q6" && ! has "runs locally" "$q6"
+then ok preview-must-pass; else fail preview-must-pass "missing=$y1 running=$y2 cancelled=$y3 skipped=$y4 ok=$y5 no-url=$y6: $q1 | $q2 | $q3 | $q4 | $q5 | $q6"; fi
 
 # ---- review-rule-reads-base: the rule and its settings come from the current base branch (a PR cannot bring its own);
 # a promotion (this repo's default branch into another) is judged by the default branch's pack, a fork's same-named
