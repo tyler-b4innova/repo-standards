@@ -41,7 +41,7 @@ cat >"$T/state.json" <<'JSON'
 JSON
 
 # org-rulesets-render: placeholders filled from the overlay (strict checks off unless set); bypass is the org App (always) and org admins
-# (pull_request only, branch rulesets; GitHub refuses that mode on push rulesets); every PR ruleset requires resolved
+# (pull_request only, branch rulesets; GitHub refuses that mode on push rulesets, which carry no bypass, not even the App's); every PR ruleset requires resolved
 # review threads, and code-owner review only on main (direct repos' default branch and main, staged repos' main);
 # `gate` is the only required check unless the overlay adds some; the removed review settings are refused;
 # extra paths and checks spread into their lists; `gate` is pinned to the overlay's
@@ -51,12 +51,12 @@ out=$(node --input-type=module -e '
   import { readFileSync } from "node:fs";
   const o = JSON.parse(readFileSync(process.argv[1], "utf8"));
   const a = render(o);
-  o.org_admin.strict_status_checks = true; o.org_admin.extra_checks = { default: [{ context: "lint" }], staged_main: [{ context: "promote-main" }], staging: [{ context: "preview" }] }; o.org_admin.push_ignored_paths = [".env.example"]; o.org_admin.max_file_size_mb = 20; o.org_admin.push_app_bypass = true; o.org_admin.require_extra_approval_for_unattributed_changes = true;
+  o.org_admin.strict_status_checks = true; o.org_admin.extra_checks = { default: [{ context: "lint" }], staged_main: [{ context: "promote-main" }], staging: [{ context: "preview" }] }; o.org_admin.push_ignored_paths = [".env.example"]; o.org_admin.max_file_size_mb = 20; o.org_admin.require_extra_approval_for_unattributed_changes = true;
   const b = render(o);
   const rs = (x, n) => x.rulesets.find((r) => r.name.includes(n)).rules;
   const refuse = (oa) => { try { render({ org_admin: oa }); return false; } catch { return true; } };
   const refused = refuse({}) && refuse({ app: { id: 0, slug: "x" } }) && refuse({ app: { id: 1, slug: "x" }, gate_integration_id: "15" })
-    && refuse({ app: { id: 1, slug: "x" }, push_app_bypass: "yes" }) && refuse({ app: { id: 1, slug: "x" }, codex_verdict_status: true }) && refuse({ app: { id: 1, slug: "x" }, review_status: true }) && refuse({ app: { id: 1, slug: "x" }, review_status: false }) && refuse({ app: { id: 1, slug: "x" }, review_thread_resolution: true }) && refuse({ app: { id: 1, slug: "x" }, require_extra_approval_for_unattributed_changes: 1 });
+    && refuse({ app: { id: 1, slug: "x" }, push_app_bypass: true }) && refuse({ app: { id: 1, slug: "x" }, push_app_bypass: false }) && refuse({ app: { id: 1, slug: "x" }, codex_verdict_status: true }) && refuse({ app: { id: 1, slug: "x" }, review_status: true }) && refuse({ app: { id: 1, slug: "x" }, review_status: false }) && refuse({ app: { id: 1, slug: "x" }, review_thread_resolution: true }) && refuse({ app: { id: 1, slug: "x" }, require_extra_approval_for_unattributed_changes: 1 });
   const unpinned = render({ org_admin: { app: { id: 1, slug: "x" } } }).rulesets.find((r) => r.name.includes("default branch")).rules.required_status_checks.required_status_checks;
   console.log(JSON.stringify({
     bypass: [...new Set(a.rulesets.map((r) => `${r.target}:${JSON.stringify(r.bypass_actors)}`))].sort(),
@@ -69,10 +69,10 @@ out=$(node --input-type=module -e '
     checks: ["default branch", "staged main", "org: staging"].map((n) => rs(b, n).required_status_checks.required_status_checks.map((c) => c.context).join("+")),
     ignored: [rs(a, "push").file_path_restriction.ignored_file_paths ?? null, rs(b, "push").file_path_restriction.ignored_file_paths],
     pinned: rs(a, "default branch").required_status_checks.required_status_checks, unpinned,
-    pushOptIn: b.rulesets.find((r) => r.target === "push").bypass_actors,
+    pushBypass: b.rulesets.find((r) => r.target === "push").bypass_actors,
     unattributed: [a, b].map((x) => [...new Set(x.rulesets.flatMap((r) => r.rules.pull_request ? [r.rules.pull_request.require_extra_approval_for_unattributed_changes] : []))]),
     placeholders: JSON.stringify(a).includes("\"$"), refused }));' "$T/org.json" 2>&1)
-want='{"bypass":["branch:[{\"actor_id\":4242,\"actor_type\":\"Integration\",\"bypass_mode\":\"always\"},{\"actor_id\":null,\"actor_type\":\"OrganizationAdmin\",\"bypass_mode\":\"pull_request\"}]","push:[]"],"threads":[true,true,true,true],"codeOwners":["org: direct repos squash-merge","org: staged main takes promotions (merge commit)"],"direct":["squash"],"staged":["merge"],"vault":true,"size":[50,20],"strict":[[],["org: direct repos squash-merge","org: staging (PR + gate, squash)"]],"checks":["gate+lint","gate+promote-main","gate+preview"],"ignored":[null,[".env.example"]],"pinned":[{"context":"gate","integration_id":42}],"unpinned":[{"context":"gate"}],"pushOptIn":[{"actor_id":4242,"actor_type":"Integration","bypass_mode":"always"}],"unattributed":[[false],[true]],"placeholders":false,"refused":true}'
+want='{"bypass":["branch:[{\"actor_id\":4242,\"actor_type\":\"Integration\",\"bypass_mode\":\"always\"},{\"actor_id\":null,\"actor_type\":\"OrganizationAdmin\",\"bypass_mode\":\"pull_request\"}]","push:[]"],"threads":[true,true,true,true],"codeOwners":["org: direct repos squash-merge","org: staged main takes promotions (merge commit)"],"direct":["squash"],"staged":["merge"],"vault":true,"size":[50,20],"strict":[[],["org: direct repos squash-merge","org: staging (PR + gate, squash)"]],"checks":["gate+lint","gate+promote-main","gate+preview"],"ignored":[null,[".env.example"]],"pinned":[{"context":"gate","integration_id":42}],"unpinned":[{"context":"gate"}],"pushBypass":[],"unattributed":[[false],[true]],"placeholders":false,"refused":true}'
 [ "$out" = "$want" ] && ok org-rulesets-render || fail org-rulesets-render "$out"
 
 # promotion-not-strict: with strict_status_checks on, a staged repo's promotion into main whose main is ahead only by

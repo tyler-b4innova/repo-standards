@@ -108,6 +108,41 @@ if [ $y1 -eq 1 ] && has "no \"Workers Builds\" check on ${HEAD1:0:7}" "$q1" && [
   && [ $y4 -eq 0 ] && has "skipped the build" "$q4" && [ $y5 -eq 0 ] && has "url=https://feat.preview.example.test" "$q5" && [ $y6 -eq 1 ] && has "no preview URL for ${HEAD1:0:7}" "$q6" && ! has "runs locally" "$q6"
 then ok preview-must-pass; else fail preview-must-pass "missing=$y1 running=$y2 cancelled=$y3 skipped=$y4 ok=$y5 no-url=$y6: $q1 | $q2 | $q3 | $q4 | $q5 | $q6"; fi
 
+# preview-url-from-bot-table: the URL is the Preview URL (or Deployment URL) cell of the bot's table row for the head,
+# read by its header; never the build's dashboard link; "No Preview URL", a table without the column and a row for
+# another commit are all "none" (gate fails, never a local run). Bodies: test/fixtures/cf-comments (real comments, made
+# neutral: the dashboard host is {dash}; builds-preview-column.md is the Workers Builds table with its Preview URL
+# column, built from the real production rows since no org's repositories have one yet).
+DASH=$(node -e 'console.log(["dash","cloudflare","com"].join("."))')
+# cfc <fixture> [from=to]...: a bot comment (JS object literal for the stand-in) with the fixture's commits renamed
+cfc() { node -e 'const fs=require("fs"),[f,dash,...m]=process.argv.slice(1);let b=fs.readFileSync("test/fixtures/cf-comments/"+f,"utf8").replaceAll("{dash}",dash);
+  for(const x of m){const [a,c]=x.split("=");b=b.replaceAll(a,c);} console.log(JSON.stringify({user:{login:"cloudflare-workers-and-pages[bot]"},body:b}))' "$@"; }
+H7=${HEAD1:0:7} H8=${HEAD1:0:8}
+u1=$(pb "[$WB]" "$(cfc builds-production.md "$DASH" ee8f57d6=$H8)"); z1=$?
+u2=$(pb "[$WB]" "$(cfc preview-html.html "$DASH" 1172353=$H7 776c540=fffffff)"); z2=$?
+u3=$(pb "[$WB]" "$(cfc preview-html.html "$DASH" 1172353=fffffff 776c540=$H7)"); z3=$?
+u4=$(pb "[$WB]" "$(cfc preview-html-failed.html "$DASH")"); z4=$?
+u5=$(pb "[$WB]" "$(cfc builds-preview-column.md "$DASH" ee8f57d6=$H8 1a2b3c4d=dddddddd)"); z5=$?
+u6=$(pb "[$WB]" "$(cfc builds-preview-column.md "$DASH" ee8f57d6=dddddddd 1a2b3c4d=$H8)"); z6=$?
+u7=$(pb "[$WB]" "$(cfc builds-preview-column.md "$DASH" ee8f57d6=dddddddd 1a2b3c4d=eeeeeeee)"); z7=$?
+u8=$(pb "[$WB]" "$(cfc builds-preview-column.md "$DASH" ee8f57d6=$H8 1a2b3c4d=dddddddd),$(cfc builds-production.md "$DASH" ee8f57d6=$H8)"); z8=$? # the newest comment is last
+bad=""
+for o in "$u1" "$u4" "$u6" "$u7"; do has "$DASH" "$o" && bad="$bad dashboard-link-leaked"; done
+if [ $z1 -eq 1 ] && has "no preview URL for $H7" "$u1" && ! has "url=https" "$u1" \
+  && [ $z2 -eq 0 ] && has "url=https://29eb2a3c-demo-site.preview.example.com" "$u2" \
+  && [ $z3 -eq 0 ] && has "url=https://9d5c3a3b-demo-site.preview.example.com" "$u3" \
+  && [ $z4 -eq 1 ] && has "no preview URL for $H7" "$u4" \
+  && [ $z5 -eq 0 ] && has "url=https://$H8-demo-site.preview.example.com" "$u5" \
+  && [ $z6 -eq 1 ] && has "no preview URL for $H7" "$u6" && [ $z7 -eq 1 ] && [ $z8 -eq 0 ] && has "url=https://$H8-demo-site.preview.example.com" "$u8" && [ -z "$bad" ]
+then ok preview-url-from-bot-table
+else fail preview-url-from-bot-table "production=$z1 html-latest=$z2 html-older=$z3 html-failed=$z4 column=$z5 no-preview-url=$z6 other-commit=$z7 newest-last=$z8 bad=[$bad] u2=$u1 | $u2 | $u3 | $u4 | $u5 | $u6 | $u7 | $u8"; fi
+# e2e-false-skips-preview: "e2e": false skips the preview step (Builds on every PR, no previews, no e2e suite)
+cp "$R/standards.json" "$T/std.keep"; node -e 'const fs=require("fs"),f=process.argv[1],o=JSON.parse(fs.readFileSync(f,"utf8"));o.e2e=false;fs.writeFileSync(f,JSON.stringify(o))' "$R/standards.json"
+w1=$(pb '[]' ""); w2=$?
+cp "$T/std.keep" "$R/standards.json"; w3=$(pb '[]' ""); w4=$?
+if [ $w2 -eq 0 ] && has "preview: none" "$w1" && ! has "Workers Builds" "$w1" && [ $w4 -eq 1 ] && has "no \"Workers Builds\" check on $H7" "$w3"; then ok e2e-false-skips-preview
+else fail e2e-false-skips-preview "e2e-false=$w2 (want 0) still-gated=$w4 (want 1): $w1 | $w3"; fi
+
 # ---- review-rule-reads-base: the rule and its settings come from the current base branch (a PR cannot bring its own);
 # a promotion (this repo's default branch into another) is judged by the default branch's pack, a fork's same-named
 # branch is not; a stale pull.base.sha is resolved through the branch. A null verdict here: no pack at the ref read.
