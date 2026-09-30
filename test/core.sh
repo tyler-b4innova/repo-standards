@@ -99,18 +99,25 @@ R=$(mkrepo) || why="example overlay with launcher refused"
 lbad() { node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));(new Function("l",process.argv[3]))(o.launcher);require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$T/lov.json" "$1"
   local d; d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; OVERLAY="$T/lov.json" apply "$d" 2>&1 && echo "ACCEPTED"; [ -z "$(ls -A "$d" | grep -v '^.git$')" ] || echo "WROTE"; }
 for c in 'l.lane=[]|launcher.lane is not a launcher setting' 'l.lanes[0].vendor="gpt"|vendor must be claude or codex' 'l.unassigned=["ghost"]|names ghost, which is not a lane' \
-  'l.dispatch[0].every="hourly"|every must look like' 'l.lanes[1].accounts=["gh"+"p_"+"a".repeat(36)]|looks like a credential' 'l.lanes[1].accounts=[" gh"+"p_"+"b".repeat(36)]|looks like a credential' 'l.lanes.push({name:"claude",vendor:"codex"})|duplicate lane claude'; do
+  'l.dispatch[0].every="hourly"|every must look like' 'l.lanes[1].accounts=["gh"+"p_"+"a".repeat(36)]|looks like a credential' 'l.lanes[1].accounts=[" gh"+"p_"+"b".repeat(36)]|looks like a credential' 'l.lanes.push({name:"claude",vendor:"codex"})|duplicate lane claude' \
+  'l.revert={newIssueEvents:0}|revert.newIssueEvents must be a positive number' 'l.revert={eventFactor:5,window:30}|launcher.revert.window is not a launcher setting'; do
   out=$(lbad "${c%%|*}"); has "${c#*|}" "$out" && ! has ACCEPTED "$out" && ! has WROTE "$out" || why="$why; [${c%%|*}] $out"
 done
-# review.status needs org_admin.review_status (and the reverse): the pack stops checking only where the ruleset requires review
-node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.review={status:true};require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$T/half.json"
-d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; out=$(OVERLAY="$T/half.json" apply "$d" 2>&1) && why="$why; review.status without org_admin.review_status accepted"
-has "review.status and org_admin.review_status must match" "$out" || why="$why; [$out]"
-# a 0.3 overlay's codex.verdict is refused with the migration, not silently ignored
-node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.codex={verdict:"status"};require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$T/legacy.json"
-d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; out=$(OVERLAY="$T/legacy.json" apply "$d" 2>&1) && why="$why; legacy codex.verdict accepted"
-has "codex.verdict was replaced by review.status" "$out" || why="$why; [$out]"
+# dispatch when: only "drift"
+node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.launcher.dispatch[0].when="drift";o.launcher.revert={newIssueEvents:5,eventFactor:2.5};require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$T/drift.json"
+d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; out=$(OVERLAY="$T/drift.json" apply "$d" 2>&1) || why="$why; when=drift or revert refused: $out"
+out=$(lbad 'l.dispatch[0].when="always"'); has 'when must be "drift"' "$out" && ! has ACCEPTED "$out" || why="$why; [when=always] $out"
 if [ -z "$why" ]; then ok overlay-launcher-validated; else fail overlay-launcher-validated "$why"; fi
+
+# review-settings-removed: the conversation is not a required status any more; an overlay still naming it is refused
+# with the reason, before anything is written
+why=""
+for k in 'o.review={status:true}' 'Object.assign(o.org_admin ??= {}, {review_status:true})' 'o.codex={verdict:"status"}'; do
+  node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));(new Function("o",process.argv[3]))(o);require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$T/legacy.json" "$k"
+  d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; out=$(OVERLAY="$T/legacy.json" apply "$d" 2>&1) && why="$why; [$k] accepted"
+  has "is gone: gate checks code only" "$out" && [ -z "$(ls -A "$d" | grep -v '^.git$')" ] || why="$why; [$k] $out"
+done
+if [ -z "$why" ]; then ok review-settings-removed; else fail review-settings-removed "$why"; fi
 
 # CI rules in --check: one gate per head, job timeouts, schedules at most daily, quarantine with an issue and an expiry
 wf() { mkdir -p "$1/.github/workflows" && printf '%s\n' "$3" > "$1/.github/workflows/$2"; }
@@ -260,16 +267,54 @@ out=$(check "$R"); st=$?
 cls=$( (cd "$R" && echo "<i/>" >> src/components/Nav.svelte && node scripts/agent/gate.mjs classify HEAD) 2>&1)
 if [ $st -eq 0 ] && has "WARN: ui_paths is []" "$out" && has "src/components/Nav.svelte" "$out" && has "no UI paths changed" "$cls"; then ok ui-paths-empty-warns; else fail ui-paths-empty-warns "$out | $cls"; fi
 
-# ---- agent config (Tyler: repo-scoped model defaults; never read secrets, never force-push)
-R=$(mkrepo); a=$(node -e 'const s=require(process.argv[1]);console.log(s.model,s.env.CLAUDE_CODE_SUBAGENT_MODEL)' "$R/.claude/settings.json"); c=$(cat "$R/.codex/config.toml")
-# a repo's own model choice beats the engine default: --check accepts it and re-applying keeps it
-jset "$R/.claude/settings.json" 'o.model="sonnet"'
-sed -i.bak -e 's/^model = .*/model = "gpt-repo"/' -e 's/^default_subagent_model = .*/default_subagent_model = "gpt-repo-mini"/' "$R/.codex/config.toml" && rm "$R/.codex/config.toml.bak"
-apply "$R" >/dev/null; commit "$R"; b=$(check "$R"); sb=$?
-kept="$(node -e 'console.log(require(process.argv[1]).model)' "$R/.claude/settings.json") $(grep -cE '^(model = "gpt-repo"|default_subagent_model = "gpt-repo-mini")$' "$R/.codex/config.toml")"
+# codeowners-from-ui-paths: with ui_owners set, the managed CODEOWNERS block gives the repo's UI paths (standards.json,
+# else the engine defaults) to them and leaves ignored paths unowned; it goes after the repo's own lines, which stay;
+# --check guards it; no UI paths (or no ui_owners) means no block, and a glob CODEOWNERS cannot hold stops apply
+why=""
+node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.ui_owners=["@acme/design","@octocat"];require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$T/owners.json"
+R=$(OVERLAY="$T/owners.json" mkrepo); co=$(cat "$R/.github/CODEOWNERS" 2>&1)
+grep -qx '\*\*/\*.tsx @acme/design @octocat' <<<"$co" && grep -qx '/src/components/\*\* @acme/design @octocat' <<<"$co" && grep -qx '/tests/\*\*' <<<"$co" || why="$why; default block: $co"
+out=$(check "$R") || why="$why; check on a fresh block: $out"
+sed -i.bak 's#^/public/\*\* .*#/public/** @someone-else#' "$R/.github/CODEOWNERS" && rm "$R/.github/CODEOWNERS.bak" && commit "$R"
+out=$(check "$R") && why="$why; an edited block passed check"; has "the managed .github/CODEOWNERS block was edited" "$out" || why="$why; [$out]"
+git -C "$R" checkout -q HEAD~1 -- .github/CODEOWNERS; printf '/src/components/** @someone-else\n' >> "$R/.github/CODEOWNERS"; commit "$R"
+out=$(check "$R") && why="$why; a line after the block passed check"; has "has lines after the managed block" "$out" || why="$why; [$out]"
+printf '* @repo-owner\n' > "$R/.github/CODEOWNERS"; jset "$R/standards.json" 'o.ui_paths={include:["content/**"],ignore:["content/drafts/**"]}'
+OVERLAY="$T/owners.json" apply "$R" >/dev/null; commit "$R"; co=$(cat "$R/.github/CODEOWNERS")
+[ "$(head -1 <<<"$co")" = "* @repo-owner" ] && grep -qx '/content/\*\* @acme/design @octocat' <<<"$co" && grep -qx '/content/drafts/\*\*' <<<"$co" && [ "$(tail -1 <<<"$co")" = "# std:end" ] && ! grep -q tsx <<<"$co" || why="$why; repo override: $co"
+out=$(check "$R") || why="$why; check after override: $out"
+jset "$R/standards.json" 'o.ui_paths=[]'; OVERLAY="$T/owners.json" apply "$R" >/dev/null; [ "$(cat "$R/.github/CODEOWNERS")" = "* @repo-owner" ] || why="$why; no-UI left: $(cat "$R/.github/CODEOWNERS")"
+R=$(OVERLAY="$T/owners.json" mkrepo); jset "$R/standards.json" 'o.ui_paths=[]'; OVERLAY="$T/owners.json" apply "$R" >/dev/null; [ ! -e "$R/.github/CODEOWNERS" ] || why="$why; block-only file kept"
+R=$(mkrepo); [ ! -e "$R/.github/CODEOWNERS" ] || why="$why; a block without ui_owners"
+R=$(OVERLAY="$T/owners.json" mkrepo); jset "$R/standards.json" 'o.ui_paths=["content/[ab]/**"]'; before=$(git -C "$R" status --porcelain)
+out=$(OVERLAY="$T/owners.json" apply "$R" 2>&1) && why="$why; an unwritable glob applied"
+has "cannot be written to CODEOWNERS" "$out" && [ "$(git -C "$R" status --porcelain)" = "$before" ] || why="$why; [$out]"
+if [ -z "$why" ]; then ok codeowners-from-ui-paths; else fail codeowners-from-ui-paths "$why"; fi
+
+# agents-review-guidelines: the managed block tells the reviewer to leave pack-managed paths to the engine repo
+blk=$(node bin/repo-standards.mjs block --overlay "$OV" --profile internal)
+if grep -qx "## Review guidelines" <<<"$blk" && grep -q 'Skip pack-managed paths (`scripts/agent/`, `.claude/`, `.codex/`, `std-\*`)' <<<"$blk" && [ "$(tail -1 <<<"$blk")" = "<!-- std:end -->" ]
+then ok agents-review-guidelines; else fail agents-review-guidelines "$blk"; fi
+
+# ---- agent config: the pack pins no model; never read secrets, never force-push
+# models-unpinned: repositories never pin a model or effort. A fresh repo gets none; re-applying removes every pin
+# (any value, both files, profiles and a table left empty) and keeps other keys; --check fails on any pin left.
+R=$(mkrepo); fresh=$(node -e 'const s=require(process.argv[1]);console.log(s.model??"-",s.env?.CLAUDE_CODE_SUBAGENT_MODEL??"-")' "$R/.claude/settings.json"); c=$(cat "$R/.codex/config.toml")
+jset "$R/.claude/settings.json" 'o.model="sonnet";o.effortLevel="high";o.env={ANTHROPIC_MODEL:"x",CLAUDE_CODE_SUBAGENT_MODEL:"opus",CLAUDE_CODE_EFFORT_LEVEL:"max",KEEP_ME:"1"}'
+printf 'model = "gpt-repo"\nmodel_reasoning_effort = "high"\n%s\n\n[agents]\ndefault_subagent_model = "gpt-6-sol"\nmax_threads = 2\n\n[profiles.fast]\nmodel = "gpt-mini"\n\n[profiles."deep"]\nmodel_reasoning_effort = "xhigh"\napproval_policy = "never"\n\n[profiles."a.b"]\nmodel = "q"\n\n[notes]\ntext = """\nmodel = "prose, not a key"\n"""\n' "$c" > "$R/.codex/config.toml"
+commit "$R"; pinned=$(check "$R"); sp=$?
+apply "$R" >/dev/null; commit "$R"; uc=$(cat "$R/.codex/config.toml")
+up=$(node -e 'const s=require(process.argv[1]);console.log(JSON.stringify([s.model,s.effortLevel,s.env]))' "$R/.claude/settings.json")
 w=$(ANTHROPIC_MODEL=haiku check "$R"); sw=$?
-if [ "$a" = "opus opus" ] && has 'model = "gpt-6-sol"' "$c" && has 'default_subagent_model = "gpt-6-sol"' "$c" && [ $sb -eq 0 ] && [ "$kept" = "sonnet 2" ] && [ $sw -eq 0 ] && has "WARN: shell sets ANTHROPIC_MODEL" "$w"
-then ok model-defaults-repo-scoped; else fail model-defaults-repo-scoped "$a | $sb $b | kept=$kept | $sw"; fi
+if [ "$fresh" = "- -" ] && ! grep -qE 'model|\[agents\]' <<<"$c" && [ $sp -eq 1 ] \
+  && has ".claude/settings.json model, .claude/settings.json effortLevel, .claude/settings.json env.ANTHROPIC_MODEL, .claude/settings.json env.CLAUDE_CODE_SUBAGENT_MODEL, .claude/settings.json env.CLAUDE_CODE_EFFORT_LEVEL, .codex/config.toml model, .codex/config.toml model_reasoning_effort, .codex/config.toml agents.default_subagent_model, .codex/config.toml profiles.fast.model, .codex/config.toml profiles.deep.model_reasoning_effort, .codex/config.toml profiles.a.b.model)" "$pinned" \
+  && [ "$up" = '[null,null,{"KEEP_ME":"1"}]' ] && [ "$(grep -cE 'model|profiles\.fast' <<<"$uc")" = 1 ] && grep -qx 'max_threads = 2' <<<"$uc" && grep -qx '\[profiles."deep"\]' <<<"$uc" && ! grep -q 'profiles."a.b"' <<<"$uc" && grep -qx 'model = "prose, not a key"' <<<"$uc" \
+  && [ $sw -eq 0 ] && ! grep -qi model <<<"$w"
+then ok models-unpinned; else fail models-unpinned "fresh=$fresh | pinned=$sp $pinned | upgraded=$up | $uc | check=$sw $w"; fi
+# a pin inside an inline table: apply leaves the line (it holds other keys) and --check still fails naming it
+R=$(mkrepo); printf '%s\n[profiles]\nquick = { model = "z", approval_policy = "never" }\n' "$(cat "$R/.codex/config.toml")" > "$R/.codex/config.toml"
+apply "$R" >/dev/null; commit "$R"; out=$(check "$R"); st=$?
+if [ $st -eq 1 ] && has ".codex/config.toml profiles.quick (inline table)" "$out" && grep -q 'quick = { model = "z"' "$R/.codex/config.toml"; then ok models-unpinned; else fail models-unpinned "inline: $st $out"; fi
 
 R=$(mktemp -d "$T/r.XXXXXX"); git -C "$R" init -q -b main; mkdir -p "$R/.claude" "$R/.codex"
 echo '{"permissions":{"deny":["Read(./secrets.txt)"]}}' > "$R/.claude/settings.json"; printf '[agents]\nmax_threads = 2\n' > "$R/.codex/config.toml"

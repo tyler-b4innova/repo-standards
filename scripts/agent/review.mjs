@@ -1,28 +1,25 @@
-// The `review` verdict for a pull request: everything that lives in its conversation, not its code. Gate checks the
-// code; this checks the Codex verdict and its threads, the evidence comment for UI changes, and a promotion's design
-// sign-off. It only reads, through the caller's GitHub API function, so the org launcher (every tick), an org's merge
-// helper and scripts/agent/verdict-recheck share one rule (a pack-sync PR gets no exemption: a person fixes it on
-// their own branch, or it is reviewed like any other):
+// The review rule for a pull request: everything that lives in its conversation, not its code. Gate checks the code;
+// this checks the Codex verdict and its threads, the evidence comment for UI changes, and a promotion's design
+// sign-off. It only reads, through the caller's GitHub API function, so a launcher or merge helper can ask it before
+// merging (a pack-sync PR gets no exemption: a person fixes it on their own branch, or it is reviewed like any other):
 //   reviewStatus({ api, owner, repo, pr }) -> null | { state: "success"|"failure"|"pending", description, sha, base, base_sha, target_url, details }
 // api(method, path, body?) resolves parsed JSON, null for a 404, and throws on any other failure. Paths are from the
 // API root ("/repos/o/r/pulls/7"); GraphQL is api("POST", "/graphql", { query, variables }).
-// null: not an engine-managed repository, a draft, or the base branch's pack leaves review to gate (review_status off).
-// postReviews (below) is the posting loop both the launcher and scripts/agent/verdict-recheck run.
+// null: not an engine-managed repository, or a draft.
 
 const b64 = (f) => (f?.content ? JSON.parse(Buffer.from(f.content, "base64").toString("utf8")) : null);
 const glob = (g) => new RegExp("^" + g.replace(/[.+^$()|[\]\\]/g, "\\$&").replace(/\{([^}]+)\}/g, (_, a) => `(${a.split(",").join("|")})`)
   .replace(/\*\*\//g, "\0").replace(/\*\*/g, "\x01").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]").replace(/\0/g, "(.*/)?").replace(/\x01/g, ".*") + "$");
 const short = (s) => s.slice(0, 7);
 
-// files: optional { pack, std } already read (gate passes its checkout's); otherwise read on the PR's base branch.
-// pull: the PR as the caller already read it (postReviews passes its read, so the verdict is for exactly that state).
-export async function reviewStatus({ api, owner, repo, pr: n, pull, files, now = Date.now(), serverUrl = "https://github.com", force = false }) {
+// pull: the PR as the caller already read it (so the verdict is for exactly that state); read here when omitted.
+export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.now(), serverUrl = "https://github.com" }) {
   const R = `/repos/${owner}/${repo}`;
   const all = async (path) => { const out = []; for (let p = 1; ; p++) { const b = (await api("GET", `${path}${path.includes("?") ? "&" : "?"}per_page=100&page=${p}`)) ?? []; out.push(...b); if (b.length < 100) return out; } };
   const pr = pull ?? (await api("GET", `${R}/pulls/${n}`));
   if (!pr || (pr.state ?? "open") !== "open" || pr.draft) return null;
   const head = pr.head.sha;
-  // The rule and whether the org posts it come from the base branch (the org's current pack and the repository's
+  // The rule comes from the base branch (the org's current pack and the repository's
   // settings there), so a pull request cut before a pack release is judged like any other, and cannot relax its own review.
   // A promotion (the default branch into another) is judged by the default branch's pack: that is where sync lands a
   // release, and the production branch only gets it through this very promotion.
@@ -37,10 +34,9 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, files, now =
   if (pr.base?.ref && !baseHead) throw new Error(`cannot resolve current base branch ${pr.base.ref}`);
   const cfgRef = baseHead ?? "";
   const read = async (f) => b64(await api("GET", `${R}/contents/${f}?ref=${encodeURIComponent(cfgRef)}`));
-  const pack = files?.pack ?? (await read("scripts/agent/pack.json")), std = files?.std ?? (await read("standards.json")) ?? {};
+  const pack = await read("scripts/agent/pack.json"), std = (await read("standards.json")) ?? {};
   if (!pack) return null;
-  if (!pack.review_status && !force) return null; // gate's own steps still enforce this for the org
-  // base, base_sha: what was judged against (the pack is read at that commit); a poster re-reads the PR and posts only
+  // base, base_sha: what was judged against (the pack is read at that commit); a caller re-reads the PR and acts only
   // if its head and base (ref and commit) are unchanged.
   const verdict = (state, description, details = []) => ({ state, description: description.slice(0, 140), sha: head, base: pr.base?.ref ?? null, base_sha: baseHead ?? null, target_url: pr.html_url, details });
 
@@ -180,97 +176,4 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, files, now =
     if (mins < 20) return { state: "pending", description: `awaiting a Codex verdict for ${short(head)} (${mins} min)` };
     return { state: "failure", description: `no Codex verdict for ${short(head)} after ${mins} min; request a review` };
   }
-}
-
-// Judge and post `review` for pull requests (the launcher's tick, verdict-recheck). A status belongs to a commit, so
-// every open ready PR on the head is read and judged in three full passes; only when all three agree is the worst
-// verdict of the last one posted. Anything that moved meanwhile (head, base ref or commit, state, draft, verdict)
-// or could not be judged gets `pending` on every head involved, so an earlier success never stands for a state that
-// was not judged. Callers run one pass at a time (the launcher's tick).
-//   postReviews({ api, owner, repo, prs | all: true, dryRun, force, serverUrl, log }) -> { posted, failed }
-export async function postReviews({ api, owner, repo, prs = [], all = false, dryRun = false, force = false, serverUrl = "https://github.com", log = console.log }) {
-  const R = `/repos/${owner}/${repo}`;
-  const listOpen = async () => { const out = []; for (let p = 1; ; p++) { const b = (await api("GET", `${R}/pulls?state=open&per_page=100&page=${p}`)) ?? []; out.push(...b); if (b.length < 100) return out; } };
-  const rank = { failure: 2, pending: 1, success: 0 }, done = new Map(); // head -> the PRs its posted verdict covered
-  let failed = 0, posted = 0;
-  const post = async (sha, state, description, target_url) => {
-    if (dryRun || force) { log(`${sha.slice(0, 7)}: would post review=${state} (${description}); ${force ? "--force only evaluates" : "dry run"}`); return false; }
-    try { await api("POST", `${R}/statuses/${sha}`, { state, context: "review", description: description.slice(0, 140), target_url }); posted++; log(`${sha.slice(0, 7)}: posted review=${state} (${description.slice(0, 140)})`); return true; }
-    catch (e) { failed++; log(`could not post review on ${sha.slice(0, 7)} (${e.message}); GH_TOKEN must be the org App's token with statuses: write`); return false; }
-  };
-  const ready = (p) => Boolean(p) && (p.state ?? "open") === "open" && !p.draft;
-  const shape = (p) => JSON.stringify([p?.head?.sha ?? null, p?.base?.ref ?? null, p?.base?.sha ?? null, ready(p)]);
-  // Every open ready PR on `sha`: the PR as read and its verdict (null where review does not apply).
-  let seen = new Set(); // every head observed for the current target, so an error can pend all of them
-  const pass = async (sha) => {
-    const out = new Map();
-    for (const l of (await listOpen()).filter((p) => !p.draft && p.head?.sha === sha)) {
-      const pr = await api("GET", `${R}/pulls/${l.number}`);
-      if (ready(pr)) seen.add(pr.head.sha);
-      const v = await reviewStatus({ api, owner, repo, pr: l.number, pull: pr, force, serverUrl }); // judged on that very read
-      out.set(l.number, { pr, v, sig: shape(pr) + JSON.stringify([v?.sha ?? null, v?.base ?? null, v?.base_sha ?? null, v?.state ?? null, v?.description ?? null]) });
-    }
-    return out;
-  };
-  // A failed listing does not stop named PRs: they are read directly (and pended on their head if that fails too).
-  let listed = [];
-  try { listed = await listOpen(); }
-  catch (e) { failed++; log(`could not list open pull requests (${e.message})`); if (all) return { posted, failed }; }
-  // Draft invalidation must precede ready verdicts when they share a commit status.
-  const targets = (all ? listed.map((p) => p.number) : [...prs]).sort((a, b) =>
-    Number(!listed.find((p) => p.number === a)?.draft) - Number(!listed.find((p) => p.number === b)?.draft));
-  for (const n of targets) {
-    let sha = listed.find((p) => p.number === n)?.head?.sha; // known from the listing, so an error below can still pend it (--all or not)
-    seen = new Set(sha ? [sha] : []);
-    try {
-      const pr = await api("GET", `${R}/pulls/${n}`);
-      if (pr?.head?.sha) seen.add(pr.head.sha);
-      // A draft is not judged. Invalidate a success on its commit so it cannot survive a draft-to-ready transition.
-      if (pr?.draft && (pr.state ?? "open") === "open") {
-        const latest = ((await api("GET", `${R}/commits/${pr.head.sha}/status`))?.statuses ?? []).find((x) => x.context === "review");
-        if (latest?.state === "success") await post(pr.head.sha, "pending", `#${n} is a draft; review runs when it is ready`, pr.html_url);
-        else log(`#${n}: a draft; nothing to post`);
-        continue;
-      }
-      if (!ready(pr)) { log(`#${n}: nothing to post (closed)`); continue; }
-      sha = pr.head.sha;
-      if (done.get(sha)?.has(n)) continue; // already judged with this head's other PRs
-      done.set(sha, new Set([n])); // a PR that joins a head judged earlier in this run has it judged again, with them
-      // Three full passes (each PR read and judged again); the verdict posted is the last one, and only if all agree.
-      const passes = [await pass(sha), await pass(sha), await pass(sha)], last = passes[2];
-      for (const k of last.keys()) done.get(sha).add(k);
-      const nums = new Set([n, ...passes.flatMap((x) => [...x.keys()])]);
-      const heads = new Set([...seen, sha, ...passes.flatMap((x) => [...x.values()].filter((y) => ready(y.pr)).map((y) => y.pr.head.sha))]);
-      let moved = !last.has(n) ? n : [...nums].find((k) => passes.some((x) => x.has(k) !== last.has(k) || (x.has(k) && x.get(k).sig !== last.get(k).sig))) ?? 0;
-      // a read (or its verdict) on another head than the one being judged, even if the listing lags, is a move
-      moved ||= [...nums].find((k) => passes.some((x) => x.has(k) && (x.get(k).pr?.head?.sha !== sha || (x.get(k).v && x.get(k).v.sha !== sha)))) ?? 0;
-      if (moved) {
-        for (const k of nums) { const now = await api("GET", `${R}/pulls/${k}`); if (ready(now)) heads.add(now.head.sha); } // where each PR is now
-        for (const h of heads) await post(h, "pending", `#${moved} changed while being judged; re-judging`, pr.html_url);
-        continue;
-      }
-      const b = last;
-      const judged = [...b].filter(([, x]) => x.v).sort(([, x], [, y]) => rank[y.v.state] - rank[x.v.state]);
-      if (!judged.length) { log(`#${n}: nothing to post (not engine-managed, or review is off on its base)`); continue; }
-      const [from, { v }] = judged[0];
-      for (const d of v.details ?? []) log(`#${from} ${sha.slice(0, 7)}: ${d}`);
-      await post(sha, v.state, from === n ? v.description : `#${from}: ${v.description}`, v.target_url);
-    } catch (e) {
-      failed++;
-      log(`#${n}: review could not be evaluated (${e.message})`);
-      for (const h of seen) await post(h, "pending", `#${n}: review could not be evaluated; retrying`, "");
-    }
-  }
-  return { posted, failed };
-}
-
-// A GitHub REST caller for scripts: token from the environment, 404 as null, any other failure thrown.
-export function restApi({ token, base = process.env.GITHUB_API_URL || "https://api.github.com", graphql = process.env.GITHUB_GRAPHQL_URL }) {
-  const root = base.replace(/\/$/, ""), gql = graphql || (root.endsWith("/api/v3") ? root.replace(/\/v3$/, "/graphql") : `${root}/graphql`);
-  return async (method, path, body) => {
-    const r = await fetch(path === "/graphql" ? gql : `${root}${path}`, { method, headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json", ...(body && { "Content-Type": "application/json" }) }, body: body && JSON.stringify(body) });
-    if (r.status === 404) return null;
-    if (!r.ok) throw new Error(`${method} ${path}: ${r.status} ${(await r.text()).slice(0, 200)}`);
-    return r.status === 204 ? {} : r.json();
-  };
 }

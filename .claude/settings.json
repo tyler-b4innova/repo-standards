@@ -13,10 +13,6 @@
       }
     ]
   },
-  "model": "opus",
-  "env": {
-    "CLAUDE_CODE_SUBAGENT_MODEL": "opus"
-  },
   "permissions": {
     "allow": [
       "Bash(scripts/agent/pr.sh:*)",

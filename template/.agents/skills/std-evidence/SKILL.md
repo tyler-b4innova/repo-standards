@@ -1,6 +1,6 @@
 ---
 name: std-evidence
-description: Capture visual proof for a PR - before/after screenshots of a changed page, component or layout at phone and desktop widths, page images of a changed .docx or .pptx, video for motion. Use when a UI path changed or the review status (or gate) says evidence is missing.
+description: Capture visual proof for a PR - before/after screenshots of a changed page, component or layout at phone and desktop widths, page images of a changed .docx or .pptx, video for motion. Use when a UI path changed or the review rule says evidence is missing.
 ---
 
 # Evidence

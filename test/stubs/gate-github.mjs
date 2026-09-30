@@ -2,7 +2,7 @@
 // GitHub REST stand-in for the review rule's evidence part. Re-reads the fixture on every request, logs requests as JSON lines.
 //   node test/stubs/gate-github.mjs <port-file> <log-file> <fixture.json>
 // fixture: { "repo": "o/r", "files": { "<pr>": [path...] }, "comments": { "<pr>": [comment...] }, "contents": ["<sha>:<path>"],
-//            "head": "<sha>", "gitDir": "<clone>" } — pulls/<n>, compare and commits are answered from gitDir.
+//            "head": "<sha>", "gitDir": "<clone>" } — pulls/<n>, compare, commits and the policy files are answered from gitDir.
 import { execFileSync } from "node:child_process";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -33,6 +33,10 @@ const server = createServer((req, res) => {
   if ((m = rest.match(/^commits\/([0-9a-f]{40})$/))) return send(200, { sha: m[1], files: (git("diff", "--name-only", `${m[1]}^1`, m[1]) ?? "").split("\n").filter(Boolean).map((filename) => ({ filename })) });
   if ((m = rest.match(/^pulls\/(\d+)\/files$/))) return page((fx.files[m[1]] ?? []).map((filename) => ({ filename, status: "modified" })));
   if ((m = rest.match(/^issues\/(\d+)\/comments$/))) return page(fx.comments?.[m[1]] ?? []);
+  // the repository's policy files come from gitDir's working tree (whatever ref is asked for)
+  if ((m = rest.match(/^contents\/(scripts\/agent\/pack\.json|standards\.json)$/))) {
+    try { return send(200, { path: m[1], content: readFileSync(`${fx.gitDir}/${m[1]}`).toString("base64") }); } catch { return send(404, { message: "Not Found" }); }
+  }
   if ((m = rest.match(/^contents\/(.+)$/))) {
     const ref = url.searchParams.get("ref"), have = (fx.contents ?? []).filter((c) => c.startsWith(`${ref}:`)).map((c) => c.slice(ref.length + 1));
     if (have.includes(m[1])) return send(200, { path: m[1] });

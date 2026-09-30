@@ -3,17 +3,20 @@
 <!-- std:begin example -->
 ## Example standards
 
-- Done = verified on GitHub: the PR exists, its required checks are green, evidence is posted. A text-only end of turn is a report. Never claim a PR, check or deploy you did not verify.
+- Done = verified on GitHub: `gate` green, review threads resolved, evidence posted. A text-only end of turn is a report. Never claim a PR, check or deploy you did not verify.
 - Stop and name the stop point: `human-decision` label, uncheckable criteria, missing secret or permission, destructive step, a rule here that fights the task. No remote (Codex cloud): commit and stop at "diff ready"; the launcher pushes and opens the PR.
-- Silo: everything is in this repo: no global config, plugins, MCP or personal memory; nothing crosses orgs.
+- Silo: no global config, plugins, MCP or personal memory; nothing crosses orgs.
 - One concern per PR; new scope from review becomes an issue.
 - Visual change (UI, .docx, .pptx): before/after captures you inspected (web 400/1280px, document pages), in chat and on the PR (`std-evidence`).
 - Tests: end-to-end through the real entry point; unit tests only for pure logic with a failure history. Never mock what you own; every test must be able to fail. Run the smallest proof; `gate` runs the rest.
-- Answer every bot finding: fix it or reply why.
-- Never commit plans, notes, scratch, decision records, secrets, `.mcp.json` (outside `allow_paths`), `.env`, `.dev.vars`, `*.pem` or `.evidence/` on main.
-- Managed paths change only upstream (`scripts/agent/setup.sh --check` names drift; `scripts/agent/gate.local.sh` is yours). Cloud setup calls `scripts/agent/setup.sh`; a missing path there breaks cloud tasks.
+- Answer every bot finding (fix it or reply why), then resolve the thread.
+- Never commit plans, notes, scratch, decision records, secrets, `.mcp.json`, `.env`, `.dev.vars`, `*.pem` or `.evidence/` on main.
+- Managed paths change only upstream (`setup.sh --check` names drift; `scripts/agent/gate.local.sh` is yours). Cloud setup calls `scripts/agent/setup.sh`; a missing path there breaks cloud tasks.
 - AGENTS.md ≤4 KB. Add a line only for a failure that happened.
 - Deploys run from the org's CI builds, never from a personal token.
+## Review guidelines
+
+- Skip pack-managed paths (`scripts/agent/`, `.claude/`, `.codex/`, `std-*`); they change in repo-standards.
 <!-- std:end -->
 
 ## Repo rules

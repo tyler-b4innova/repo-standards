@@ -47,8 +47,8 @@ createServer((req, res) => {
       return send(200, pr(x));
     }
     if ((m = p.match(/^\/repos\/acme\/demo\/commits\/([0-9a-f]{40})\/check-runs$/))) return send(200, { check_runs: S.checks[m[1]] ?? [] });
-    if ((m = p.match(/^\/repos\/acme\/demo\/commits\/([0-9a-f]{40})\/status$/))) return send(200, { statuses: (S.statuses ?? {})[m[1]] ?? [] });
-    if (p === "/repos/acme/demo/contents/scripts/agent/pack.json" && S.basePack) return send(200, { content: Buffer.from(JSON.stringify(S.basePack)).toString("base64") });
+    // review threads: S.threads (default none); S.threadsFail: the query errors
+    if (p === "/graphql") return S.threadsFail ? send(200, { errors: [{ message: "stub: no access" }] }) : send(200, { data: { repository: { pullRequest: { reviewThreads: { totalCount: (S.threads ?? []).length, nodes: S.threads ?? [] } } } } });
     if ((m = p.match(/^\/repos\/acme\/demo\/commits\/([0-9a-f]{40})$/))) {
       const date = git("show", "-s", "--format=%cI", m[1]);
       return date ? send(200, { sha: m[1], commit: { committer: { date: new Date(date).toISOString().replace(/\.000Z$/, "Z") } } }) : send(404, {});

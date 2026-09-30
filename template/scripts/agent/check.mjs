@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { claudePins, codexPins } from "./pins.mjs";
 
 if (process.argv.includes("--help")) {
   console.log("usage: node scripts/agent/check.mjs   (offline standards self-check; exit 1 on failure)");
@@ -63,6 +64,12 @@ else {
         const lines = (agents ?? "").split("\n"), i = lines.indexOf(begin), j = lines.indexOf(end, i);
         if (i < 0 || j < 0 || sha(lines.slice(i, j + 1).join("\n") + "\n") !== want)
           fail("the managed AGENTS.md block was edited or removed", `restore it from: git show ${pin}:AGENTS.md`);
+      } else if (path.endsWith("#std")) { // the managed CODEOWNERS block (UI paths' code owners)
+        const file = path.slice(0, -4), lines = (read(file) ?? "").split("\n"), i = lines.findIndex((l) => l.startsWith(`# std:begin ${pack.pack} `)), j = lines.indexOf("# std:end", i);
+        if (i < 0 || j < 0 || sha(lines.slice(i, j + 1).join("\n") + "\n") !== want)
+          fail(`the managed ${file} block was edited or removed`, `restore it from: git show ${pin}:${file}   (UI paths come from standards.json ui_paths)`);
+        else if (lines.slice(j + 1).some((l) => l.trim() && !l.trim().startsWith("#")))
+          fail(`${file} has lines after the managed block, which override it (the last match wins)`, "move them above the `# std:begin` line");
       } else if (!existsSync(path)) fail(`managed file missing: ${path}`, restore(path));
       else if (sha(readFileSync(path)) !== want) fail(`managed file changed: ${path}`, `${restore(path)}   (change it upstream)`);
     }
@@ -86,9 +93,12 @@ else {
   const on = (m) => ["", "*"].includes(m ?? "") || ["startup", "resume"].every((e) => m.split("|").includes(e));
   if (!s?.hooks?.SessionStart?.some((m) => on(m.matcher) && m.hooks?.some((h) => h.command === '"$CLAUDE_PROJECT_DIR"/scripts/agent/setup.sh --check')))
     fail(".claude/settings.json lacks the SessionStart setup.sh --check hook for startup and resume", restore(".claude/settings.json"));
-  // Model keys are repo defaults (a repo may choose its own); the deny set and Codex bypass keys are engine-owned.
+  // The deny set and the Codex bypass keys are engine-owned; the pack pins no model.
   if (s && JSON.stringify(s.permissions?.deny) !== JSON.stringify(pack.permissions_deny))
     fail(".claude/settings.json deny set changed", restore(".claude/settings.json"));
+  // Repositories never pin a model or effort: each person's app (or the org launcher) chooses.
+  const pinned = [...claudePins(s).map((k) => `.claude/settings.json ${k}`), ...codexPins(read(".codex/config.toml")).map((p) => `.codex/config.toml ${p.key}`)];
+  if (pinned.length) fail(`the repo pins a model or effort (${pinned.join(", ")})`, "delete those keys (or re-apply the pack): model and effort belong to each person's app or the launcher");
   const [top] = (read(".codex/config.toml") ?? "").split(/^(?=\s*\[)/m);
   if (!Object.entries(pack.codex_top).every(([k, v]) => new RegExp(`^\\s*${k}\\s*=\\s*"${v}"\\s*(#.*)?$`, "m").test(top)))
     fail(".codex/config.toml engine keys changed", restore(".codex/config.toml"));
@@ -185,28 +195,18 @@ else {
     if (ui.length) warn(`ui_paths is [] so gate needs no evidence, but these match the default UI globs: ${ui.slice(0, 10).join(", ")}`);
   }
 
-  // Local overrides that shadow the repo's model defaults (warnings only)
-  const shadow = "overrides the repo's model/effort defaults";
-  for (const v of ["ANTHROPIC_MODEL", "CLAUDE_CODE_EFFORT_LEVEL"]) if (process.env[v]) warn(`shell sets ${v}; it ${shadow}`);
   const userClaude = join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "settings.json"), uc = json(userClaude);
   if (existsSync(dirname(userClaude)) && uc?.permissions?.defaultMode !== "bypassPermissions" && !uc?.skipDangerousModePermissionPrompt)
     warn(`Claude: bypass is not on for you, so agents will prompt | fix (once per person): set permissions.defaultMode "bypassPermissions" in ${userClaude}, or run claude --dangerously-skip-permissions once and accept`);
-  for (const [f, c] of [[userClaude, json(userClaude)], [".claude/settings.local.json", json(".claude/settings.local.json")]]) {
-    const keys = ["modelSettings", ...(f === userClaude ? [] : ["model"]), "env.ANTHROPIC_MODEL", "env.CLAUDE_CODE_EFFORT_LEVEL"]
-      .filter((k) => c && (k.startsWith("env.") ? c.env?.[k.slice(4)] : k in c));
-    if (keys.length) warn(`${f} sets ${keys.join(", ")}; it ${shadow}`);
-  }
   const codexFile = join(process.env.CODEX_HOME || join(homedir(), ".codex"), "config.toml"), user = read(codexFile);
   if (user !== null) {
     const root = process.cwd(), esc = root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     if (!new RegExp(`^\\[projects\\."${esc}"\\]\\s*\\n(?:(?!\\[).*\\n)*?\\s*trust_level\\s*=\\s*"trusted"`, "m").test(user))
-      warn(`Codex: project not trusted, so the repo model, bypass and rules in .codex/ are inactive | fix: trust the folder when codex asks, or add [projects."${root}"] trust_level = "trusted" to ${codexFile}`);
+      warn(`Codex: project not trusted, so the repo's bypass and rules in .codex/ are inactive | fix: trust the folder when codex asks, or add [projects."${root}"] trust_level = "trusted" to ${codexFile}`);
     let ver = "";
     try { ver = execFileSync("codex", ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 1500 }).match(/(\d+)\.(\d+)/)?.slice(1).join(".") ?? ""; } catch {}
     const [maj, min] = ver.split(".").map(Number);
     if (ver && (maj === 0 && min < 155)) warn(`Codex CLI ${ver} is older than 0.155, which the repo's .codex/config.toml targets | fix: update codex`);
-    const effort = user.match(/^\s*(model_reasoning_effort|default_subagent_reasoning_effort)\s*=.*/gm);
-    if (effort) warn(`${codexFile} sets ${effort.map((l) => l.trim()).join(", ")}; it ${shadow}`);
   }
   if (!fails) out.push(`standards ok: ${pack.pack} v${std.version} ${std.profile} (engine ${pack.engine}) dispatch=${std.dispatch}`);
 }

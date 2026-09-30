@@ -1,16 +1,15 @@
 #!/usr/bin/env node
 // Steps of the `gate` job (std-gate.yml), also runnable locally:
-//   plan | classify [base] | install | run <script>... | preview | e2e | review | secrets | syntax
+//   plan | classify [base] | install | run <script>... | preview | e2e | secrets | syntax
 // UI paths: pack.json defaults; standards.json "ui_paths" as a list replaces the include globs,
 // as {include, ignore} replaces include and adds ignore. e2e: none fails unless "e2e": false.
-// evidence: PR UI changes need a comment by the author or an app whose .evidence/ images exist at a pinned SHA.
 import { execFileSync as ex, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync as has, mkdtempSync, readdirSync as ls, readFileSync as rd, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
-const SUBS = ["plan", "classify", "install", "run", "preview", "e2e", "review", "secrets", "syntax"], ok = SUBS.includes(cmd);
+const SUBS = ["plan", "classify", "install", "run", "preview", "e2e", "secrets", "syntax"], ok = SUBS.includes(cmd);
 if (!ok || args.includes("--help")) {
   console.log(rd(new URL(import.meta.url), "utf8").split("\n").slice(1, 6).map((l) => l.slice(3)).join("\n"));
   process.exit(ok || cmd === "--help" ? 0 : 2);
@@ -161,34 +160,6 @@ if (cmd === "plan") {
   else if (std.e2e === false) console.log('::warning::no e2e suite; standards.json sets "e2e": false (docs and static repos only)');
   else fail("no e2e suite (test:e2e or e2e script; tests/e2e/ or e2e/ with playwright.config.* or *.test.*js)",
     'add an end-to-end suite through the real entry point; docs/static repos only: "e2e": false in standards.json');
-} else if (cmd === "review") {
-  // The pull request's conversation (Codex verdict and threads, evidence, a promotion's design sign-off) is the org
-  // App's `review` status once the org turns it on (pack.json review_status); until then gate evaluates the same rule.
-  if (!prNumber) { console.log("review: not a pull request"); process.exit(0); }
-  const { reviewStatus, restApi } = await import(new URL("./review.mjs", import.meta.url));
-  let token = env.GH_TOKEN || env.GITHUB_TOKEN;
-  try { token ||= ex("gh", ["auth", "token"], { encoding: "utf8", stdio: "pipe" }).trim(); } catch {}
-  const [owner, name] = (env.GITHUB_REPOSITORY ?? "").split("/"), api = restApi({ token });
-  // The switch and the rule come from the base branch (a pull request cannot turn its own review off); the checkout's
-  // copies only stand in where the base has none.
-  let base = {};
-  try {
-    const pr = await api("GET", `/repos/${owner}/${name}/pulls/${prNumber}`), info = (await api("GET", `/repos/${owner}/${name}`)) ?? {};
-    // a promotion is judged by the default branch's pack (review.mjs does the same)
-    const promotion = Boolean(info.default_branch) && pr?.head?.repo?.full_name === `${owner}/${name}` && pr?.head?.ref === info.default_branch && pr?.base?.ref !== info.default_branch;
-    const at = (f) => api("GET", `/repos/${owner}/${name}/contents/${f}?ref=${encodeURIComponent(promotion ? pr.head.sha : pr?.base?.ref ?? "")}`);
-    const b64 = (f) => (f?.content ? JSON.parse(Buffer.from(f.content, "base64").toString("utf8")) : null);
-    base = { pack: b64(await at("scripts/agent/pack.json")), std: b64(await at("standards.json")) };
-  } catch (e) { fail(`review: ${e.message}`, "grant the job actions, checks, pull-requests and issues read, then re-run"); }
-  const files = { pack: base.pack ?? pack, std: base.std ?? std };
-  if (files.pack.review_status) { console.log("review: the org App posts the `review` status (scripts/agent/review.mjs); gate checks the code only"); process.exit(0); }
-  let r;
-  try { r = await reviewStatus({ api, owner, repo: name, pr: prNumber, files, force: true, serverUrl: env.GITHUB_SERVER_URL || "https://github.com" }); }
-  catch (e) { fail(`review: ${e.message}`, "grant the job actions, checks, pull-requests and issues read, then re-run"); }
-  if (!r) { console.log("review: draft or closed; not evaluated"); process.exit(0); }
-  for (const d of r.details ?? []) console.log(`review: ${d}`);
-  if (r.state === "success") { console.log(`review: ${r.description}`); process.exit(0); }
-  fail(`review: ${r.description}`, r.state === "pending" ? "the Codex review is still running; re-run gate (or push) once it has answered" : "fix it in the pull request (evidence: scripts/agent/pr.sh evidence; findings: fix or reply, then resolve), then re-run gate or push");
 } else if (cmd === "secrets") {
   const V = "8.30.1", SUM = "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb", local = env.GATE_GITLEAKS_ARCHIVE;
   const linux = process.platform === "linux" && process.arch === "x64";
