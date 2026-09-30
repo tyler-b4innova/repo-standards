@@ -102,6 +102,7 @@ for c in 'l.lane=[]|launcher.lane is not a launcher setting' 'l.lanes[0].vendor=
   'l.dispatch[0].every="hourly"|every must look like' 'l.lanes[1].accounts=["gh"+"p_"+"a".repeat(36)]|looks like a credential' 'l.lanes[1].accounts=[" gh"+"p_"+"b".repeat(36)]|looks like a credential' 'l.lanes.push({name:"claude",vendor:"codex"})|duplicate lane claude' \
   'l.revert={newIssueEvents:0}|revert.newIssueEvents must be a positive number' 'l.revert={eventFactor:5,window:30}|launcher.revert.window is not a launcher setting' \
   'l.lanes[0].runner="cloud"|runner must be t3, claude-cloud, codex-cloud' 'l.lanes[0].runner="codex-cloud"|runner codex-cloud needs vendor codex, not claude' 'l.lanes[0].model="m"|model is for a t3 lane' \
+  'l.dispatch[0].ref=""|dispatch[0].ref must be a non-empty string' 'l.lanes[0].runner="claude-cloud";l.lanes[0].vendor="gpt"|vendor must be claude or codex' \
   'l.lanes[0]={name:"t",runner:"t3",provider:"gpt",model:"m"};l.review={provider:"codex",model:"m"}|provider must be claudeAgent or codex on a t3 lane' \
   'l.lanes[0]={name:"t",runner:"t3",provider:"codex"};l.review={provider:"claudeAgent",model:"m"}|model must be a non-empty string on a t3 lane' \
   'l.lanes[0]={name:"t",runner:"t3",provider:"codex",model:"m",vendor:"codex"};l.review={provider:"claudeAgent",model:"m"}|vendor must be omitted on a t3 lane' \
@@ -118,7 +119,7 @@ node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8
 d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; out=$(OVERLAY="$T/drift.json" apply "$d" 2>&1) || why="$why; when=drift or revert refused: $out"
 out=$(lbad 'l.dispatch[0].when="always"'); has 'when must be "drift"' "$out" && ! has ACCEPTED "$out" || why="$why; [when=always] $out"
 # t3 lanes: provider and model, any effort string, a review from another provider; cloud lanes with a matching runner; both kinds together
-node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.launcher.lanes=[{name:"t3-main",runner:"t3",provider:"claudeAgent",model:"model-x",effort:"any-effort-string",slots:2},{name:"cloud",runner:"codex-cloud",vendor:"codex"},{name:"legacy",vendor:"claude"}];o.launcher.review={provider:"codex",model:"model-y"};o.launcher.unassigned=["cloud"];require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$T/t3.json"
+node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.launcher.lanes=[{name:"t3-main",runner:"t3",provider:"claudeAgent",model:"model-x",effort:"any-effort-string",slots:2},{name:"cloud",runner:"codex-cloud",vendor:"codex"},{name:"implied",runner:"claude-cloud"},{name:"legacy",vendor:"claude"}];o.launcher.dispatch[0].ref="main";o.launcher.review={provider:"codex",model:"model-y"};o.launcher.unassigned=["cloud"];require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$T/t3.json"
 d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; out=$(OVERLAY="$T/t3.json" apply "$d" 2>&1) || why="$why; a t3 lane with its review, or cloud lanes, refused: $out"
 if [ -z "$why" ]; then ok overlay-launcher-validated; else fail overlay-launcher-validated "$why"; fi
 
