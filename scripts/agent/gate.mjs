@@ -51,6 +51,40 @@ function ui(files) {
   return files.filter((f) => inc.some((r) => r.test(f)) && !ign.some((r) => r.test(f)));
 }
 
+// The Cloudflare bot's comment body -> the preview URL for `head` ("" when there is none). A table is read by its header
+// row: the "Preview URL" (or "Deployment URL") cell of the row whose "Latest Commit" (or "Commit") is the head, in a
+// markdown table or an HTML one. Failing that, the "Preview URL: <url> (commit <sha>)" line when it names the head.
+// Never a link to the Cloudflare dashboard (the build's "View logs" and dashboard links); "No Preview URL" and a missing
+// column mean there is none.
+const cfUrl = (text) => [...text.matchAll(/https:\/\/[^\s<>()"'|\][,]+/g)].map((m) => m[0])
+  .find((u) => { try { return !/(^|\.)dash\.cloudflare\.com$/i.test(new URL(u).hostname); } catch { return false; } }) ?? "";
+const previewUrl = (body, head) => {
+  const plain = (c) => c.replace(/<[^>]*>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
+  const sameCommit = (c) => { const x = plain(c).toLowerCase(); return /^[0-9a-f]{7,40}$/.test(x) && head.startsWith(x); };
+  const cols = (cells) => ({ url: cells.findIndex((c) => /^(preview|deployment) url$/i.test(plain(c))), commit: cells.findIndex((c) => /^(latest )?commit$/i.test(plain(c))) });
+  const fromRow = (cells, map) => (map && map.url >= 0 && map.commit >= 0 && sameCommit(cells[map.commit] ?? "") && !/no preview url/i.test(cells[map.url] ?? "") ? cfUrl(cells[map.url] ?? "") : "");
+  let map = null, found = "";
+  for (const line of body.split("\n")) {
+    if (!/^\s*\|/.test(line)) { map = null; continue; }
+    const cells = line.trim().replace(/^\||\|$/g, "").split("|");
+    if (cells.every((c) => /^\s*:?-+:?\s*$/.test(c))) continue;
+    const m = cols(cells);
+    if (m.url >= 0 || m.commit >= 0) map = m; else found ||= fromRow(cells, map);
+  }
+  for (const tr of body.split(/<\/tr>/i)) {
+    const cells = [...tr.matchAll(/<t([hd])\b[^>]*>([\s\S]*?)<\/t\1>/gi)];
+    if (!cells.length) continue;
+    const text = cells.map((c) => c[2]);
+    if (cells.every((c) => c[1].toLowerCase() === "h")) map = cols(text); else found ||= fromRow(text, map);
+  }
+  if (found) return found;
+  for (const line of body.split("\n")) {
+    const c = line.match(/preview url:.*\bcommit\s+([0-9a-f]{7,40})\b/i);
+    if (c && head.startsWith(c[1].toLowerCase()) && !/no preview url/i.test(line)) found ||= cfUrl(line);
+  }
+  return found;
+};
+
 if (cmd === "plan") {
   // full: build and test this head. cheap: a draft (the check, the secret scan and a syntax pass); the full gate
   // runs from ready_for_review.
@@ -86,7 +120,7 @@ if (cmd === "plan") {
   // build's preview URL (from the Cloudflare bot's PR comment for this commit), never locally; no URL fails too.
   // Cloudflare skipping the commit (build watch paths) is the one exception: there is no build, so e2e runs locally.
   // A repo without Workers Builds, or with "e2e": {"preview": false}, runs e2e locally.
-  if (!prNumber || e2eCfg.preview === false) { console.log("preview: none (not a pull request, or e2e.preview is false)"); output("url", ""); process.exit(0); }
+  if (!prNumber || std.e2e === false || e2eCfg.preview === false) { console.log('preview: none (not a pull request, or standards.json has "e2e": false or e2e.preview false)'); output("url", ""); process.exit(0); }
   const get = ghApi(), pr = await get(`/pulls/${prNumber}`), head = pr.head.sha, short = head.slice(0, 7);
   const name = pack.preview?.check_name ?? "Workers Builds", author = pack.preview?.comment_author ?? "cloudflare-workers-and-pages[bot]";
   const builds = async (sha) => ((await get(`/commits/${sha}/check-runs?per_page=100`))?.check_runs ?? []).filter((c) => c.name?.startsWith(name));
@@ -111,8 +145,7 @@ if (cmd === "plan") {
   const findUrl = async () => {
     const comments = [];
     for (let page = 1; ; page++) { const b = (await get(`/issues/${prNumber}/comments?per_page=100&page=${page}`)) ?? []; comments.push(...b); if (b.length < 100) break; }
-    return comments.filter((c) => c.user?.login === author).reverse().flatMap((c) => c.body.split("\n"))
-      .filter((l) => l.includes(short) && /https:\/\//.test(l)).map((l) => l.match(/https:\/\/[^\s,<>)"'|]+/)[0])[0] ?? "";
+    return comments.filter((c) => c.user?.login === author).reverse().map((c) => previewUrl(c.body ?? "", head)).find(Boolean) ?? "";
   };
   let url = await findUrl();
   while (!url && Date.now() - start < wait) { await new Promise((r) => setTimeout(r, 15000)); url = await findUrl(); }
@@ -147,6 +180,8 @@ if (cmd === "plan") {
   if (!s) console.log(`notice: no ${args.join(" or ")} script in package.json; skipped`);
   else { console.log(`run: ${pm} run ${s}`); must(pm, ["run", s]); }
 } else if (cmd === "e2e") {
+  // "e2e": false skips this step and the preview step (docs and static repos, and repos whose Workers Builds run on every PR without an e2e suite).
+  if (std.e2e === false) { console.log('::warning::e2e skipped; standards.json sets "e2e": false'); process.exit(0); }
   // standards.json "e2e": "<command>" names the suite; else a script, a tests/e2e or e2e dir, or a root Playwright config.
   const script = ["test:e2e", "e2e"].find((s) => pkg?.scripts?.[s]), dir = ["tests/e2e", "e2e"].find(has);
   const rootPw = ls(".").some((f) => /^playwright\.config\.[cm]?[jt]s$/.test(f)), pw = rootPw || (dir && ls(dir).some((f) => /^playwright\.config\.[cm]?[jt]s$/.test(f)));
@@ -175,9 +210,8 @@ if (cmd === "plan") {
     if (r.error?.code === "ETIMEDOUT" || r.signal) fail(`e2e exceeded its ${mins}-minute budget`, "make the slow tests faster (fewer navigations, the preview URL), then move the slow tail to promotion PRs; do not shard");
     if (r.status) process.exit(r.status);
   }
-  else if (std.e2e === false) console.log('::warning::no e2e suite; standards.json sets "e2e": false (docs and static repos only)');
   else fail("no e2e suite (test:e2e or e2e script; tests/e2e/ or e2e/ with playwright.config.* or *.test.*js)",
-    'add an end-to-end suite through the real entry point; docs/static repos only: "e2e": false in standards.json');
+    'add an end-to-end suite through the real entry point; docs/static repos (or Builds-only repos) only: "e2e": false in standards.json');
 } else if (cmd === "secrets") {
   const V = "8.30.1", SUM = "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb", local = env.GATE_GITLEAKS_ARCHIVE;
   const linux = process.platform === "linux" && process.arch === "x64";

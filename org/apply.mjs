@@ -26,8 +26,9 @@ export function render(overlay) {
   // Removed settings: `gate` is the only required check, and every PR ruleset requires resolved review threads.
   for (const k of ["codex_verdict_status", "review_status", "review_thread_resolution"])
     if (oa[k] !== undefined) throw new Error(`overlay org_admin.${k} is gone (gate is the only required check and review threads must always be resolved); remove it before running org-apply`);
-  for (const k of ["require_extra_approval_for_unattributed_changes", "push_app_bypass"])
-    if (oa[k] !== undefined && typeof oa[k] !== "boolean") throw new Error(`overlay org_admin.${k} must be true or false when set`);
+  if (oa.push_app_bypass !== undefined) throw new Error("overlay org_admin.push_app_bypass is gone (the App never bypasses push hygiene: a pack landing adds no secret or large file); remove it before running org-apply");
+  if (oa.require_extra_approval_for_unattributed_changes !== undefined && typeof oa.require_extra_approval_for_unattributed_changes !== "boolean")
+    throw new Error("overlay org_admin.require_extra_approval_for_unattributed_changes must be true or false when set");
   const vars = {
     strict_status_checks: oa.strict_status_checks === true,
     gate_integration_id: oa.gate_integration_id ?? null, // null: `gate` is accepted from any source
@@ -51,10 +52,11 @@ export function render(overlay) {
   const when = (r) => ({ ...r, rules: r.rules.filter((x) => !x.$when || vars[x.$when] === true).map(({ $when, ...x }) => x) });
   // Org admins bypass only through a PR (break-glass merge): local agent sessions run on an admin's
   // gh login, and "always" would let them push or force-push to protected branches. Push rulesets
-  // refuse the pull_request mode, so there only the App can bypass, and only when the overlay opts in.
+  // refuse the pull_request mode, so they have no bypass at all: the App bypasses the branch rulesets so pack
+  // landings can commit onto default branches, and a pack never adds a secret or a large file.
   const app = { actor_id: oa.app.id, actor_type: "Integration", bypass_mode: "always" };
   const admin = { actor_id: null, actor_type: "OrganizationAdmin", bypass_mode: "pull_request" };
-  const bypass = (r) => (r.target === "push" ? (oa.push_app_bypass === true ? [app] : []) : [app, admin]);
+  const bypass = (r) => (r.target === "push" ? [] : [app, admin]);
   // Unset, extra approval for unattributed changes keeps each live ruleset's value (plan fills it in).
   const prDefaults = { required_review_thread_resolution: true,
     ...(oa.require_extra_approval_for_unattributed_changes !== undefined && { require_extra_approval_for_unattributed_changes: oa.require_extra_approval_for_unattributed_changes }) };

@@ -46,10 +46,13 @@ else fail gate-fails-without-e2e "none=$st dir-without-runner=$st2 node-test=$st
 R=$(mkrepo)
 jset "$R/standards.json" 'o.e2e=false' && commit "$R"
 out=$(G "$R" e2e); st=$?
+# the step is skipped outright, even where a suite exists (it would fail here)
+echo '{"name":"app","private":true,"scripts":{"test:e2e":"exit 1"}}' > "$R/package.json"; out2=$(G "$R" e2e); st2=$?
+chk=$(cd "$R" && scripts/agent/setup.sh --check 2>&1); cst=$?
 node "$ENGINE/bin/repo-standards.mjs" apply --target "$R" --overlay "$ENGINE/examples/overlay.json" --version 0.2.0 >/dev/null
 kept=$(node -e 'const s=require(process.argv[1]);console.log(s.e2e===false&&s.version==="0.2.0")' "$R/standards.json")
-if [ $st -eq 0 ] && has '::warning::no e2e suite' "$out" && [ "$kept" = true ]; then ok e2e-opt-out-honoured
-else fail e2e-opt-out-honoured "exit=$st kept=$kept: $out"; fi
+if [ $st -eq 0 ] && has '::warning::e2e skipped' "$out" && [ $st2 -eq 0 ] && has '::warning::e2e skipped' "$out2" && ! has "e2e:" "$out2" && [ $cst -eq 0 ] && [ "$kept" = true ]; then ok e2e-opt-out-honoured
+else fail e2e-opt-out-honoured "exit=$st suite-present=$st2 check=$cst kept=$kept: $out | $out2 | $chk"; fi
 
 # ---- setup installs the repo's own Playwright browser (npm 6's npx once ran /usr/bin/install instead; nothing was installed)
 R=$(mkrepo); P=$T/setup-bin; mkpath "$P"; shim "$P" curl 'exit 0'; shim "$P" npm 'echo "npm $*" >> "$SETUP_LOG"'
