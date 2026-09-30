@@ -14,7 +14,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { sep } from "node:path";
 
-const git = (...a) => execFileSync("git", a, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+const git = (...a) => execFileSync("git", a, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], maxBuffer: 1 << 26 });
 const tryGit = (...a) => { try { return git(...a); } catch { return null; } };
 const real = (p) => { try { return realpathSync(p); } catch { return p; } };
 const within = (p, root) => p === root || p.startsWith(root.endsWith(sep) ? root : root + sep);
@@ -79,8 +79,9 @@ async function main() {
     if (tree) {
       if (tree.path === mainTree || tree.locked || session.some((s) => within(s, tree.path)) || appManaged(tree.path)) continue;
       if (tree.prunable) continue; // its directory is missing (perhaps unmounted): leave it
-      // Every change, untracked file and ignored path; an ignored path passes only inside a regenerable directory.
-      const status = tryGit("-C", tree.path, "status", "--porcelain", "--untracked-files=all", "--ignored");
+      // Every change, untracked path and ignored path (a wholly ignored directory is one line, so node_modules stays
+      // small); an ignored path passes only inside a regenerable directory.
+      const status = tryGit("-C", tree.path, "status", "--porcelain", "--untracked-files=normal", "--ignored");
       if (status === null || status.split("\n").filter(Boolean).some((l) => !(l.startsWith("!! ") && l.slice(3).split("/").some((seg) => REGEN.has(seg))))) continue;
       if (tryGit("worktree", "remove", tree.path) === null) continue; // refuses a dirty tree itself too
       removed.push(`${b} (worktree ${tree.path})`);

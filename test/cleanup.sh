@@ -33,7 +33,8 @@ br open; br forked; merged forked "$(tip forked)" someone/demo
 # worktrees on merged branches: clean -> removed; only regenerable ignored dirs (node_modules, dist) -> removed;
 # an ignored secret or local state (.dev.vars, .wrangler/state), dirty, untracked, locked, app-managed -> kept
 for b in wclean wregen wsecret wstate wdirty wuntracked wlocked wapp; do br $b; merged $b "$(tip $b)"; done
-wt wclean "$T/wt-clean"; wt wregen "$T/wt-regen"; mkdir -p "$T/wt-regen/node_modules/x" "$T/wt-regen/dist"; echo x > "$T/wt-regen/node_modules/x/i.js"; echo x > "$T/wt-regen/dist/a.log"
+wt wclean "$T/wt-clean"; wt wregen "$T/wt-regen"; mkdir -p "$T/wt-regen/node_modules/x" "$T/wt-regen/dist"; echo x > "$T/wt-regen/dist/a.log"
+node -e 'const fs=require("fs"),d=process.argv[1];for(let i=0;i<200;i++){fs.mkdirSync(`${d}/p${i}`,{recursive:true});for(let j=0;j<100;j++)fs.writeFileSync(`${d}/p${i}/f${j}.js`,"x")}' "$T/wt-regen/node_modules" # 20,000 files: a real dependency tree
 wt wsecret "$T/wt-secret"; echo "TOKEN=keep" > "$T/wt-secret/.dev.vars"
 wt wstate "$T/wt-state"; mkdir -p "$T/wt-state/.wrangler/state/d1"; echo db > "$T/wt-state/.wrangler/state/d1/db.sqlite"
 wt wdirty "$T/wt-dirty"; echo change >> "$T/wt-dirty/wdirty.txt"
@@ -46,7 +47,7 @@ want=" sq=no anc=no ahead=yes open=yes forked=yes wclean=no wregen=no wsecret=ye
 calls=$(grep -c POST "$T/log")
 line=$(grep -c '^cleanup: removed merged' <<<"$out")
 if [ $st -eq 0 ] && [ "$got" = "$want" ] && [ ! -d "$T/wt-clean" ] && [ ! -d "$T/wt-regen" ] && grep -q keep "$T/wt-secret/.dev.vars" && [ -f "$T/wt-state/.wrangler/state/d1/db.sqlite" ] && [ -f "$T/wt-dirty/wdirty.txt" ] && [ -d "$T/wt-untracked" ] \
-  && [ "$calls" = 1 ] && [ "$line" = 1 ] && has "sq" "$out" && [ $dt -le 3 ]
+  && [ "$calls" = 1 ] && [ "$line" = 1 ] && has "sq" "$out" && [ $dt -le 20 ] # deleting a 20,000-file node_modules takes a few seconds
 then ok cleanup-merged-work; else fail cleanup-merged-work "st=$st calls=$calls t=${dt}s got:$got :: $out"; fi
 [ "$(exists wsecret) $(exists wstate)" = "yes yes" ] && grep -q keep "$T/wt-secret/.dev.vars" && [ -f "$T/wt-state/.wrangler/state/d1/db.sqlite" ] && [ "$(exists wregen)" = no ] \
   && ok cleanup-ignored-data-survives || fail cleanup-ignored-data-survives "secret=$(exists wsecret) state=$(exists wstate) regen=$(exists wregen)"
