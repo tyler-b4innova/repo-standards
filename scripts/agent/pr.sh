@@ -75,7 +75,7 @@ status() {
   req GET "commits/$(js 'd.head.sha' <<<"$p")/check-runs?per_page=100"; runs=$R
   # The org rulesets also require every review thread resolved (answer or fix each, then resolve it).
   q=$(node -e 'const [o, n, pr] = process.argv.slice(1); console.log(JSON.stringify({ query: "query($o:String!,$n:String!,$pr:Int!){repository(owner:$o,name:$n){pullRequest(number:$pr){reviewThreads(first:100){totalCount nodes{isResolved comments(first:1){nodes{url}}}}}}}", variables: { o, n, pr: +pr } }))' -- "${REPO%%/*}" "${REPO#*/}" "$1")
-  case $API in */api/v3) req POST "${API%/v3}/graphql" "$q" ;; *) req POST /graphql "$q" ;; esac; threads=$R
+  req POST /graphql "$q"; threads=$R
   node -e '
     const [p, { check_runs: runs = [] }, t] = process.argv.slice(1, 4).map(JSON.parse), why = [];
     const closes = new RegExp(process.argv[4], "i").test(p.body || ""), gate = runs.filter((c) => c.name === "gate");
