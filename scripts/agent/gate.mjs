@@ -81,11 +81,11 @@ if (cmd === "plan") {
   if (bad.length) fail(`syntax errors:\n  ${bad.join("\n  ")}`, "fix them; managed files come from the pack (setup.sh --check names the restore)");
   console.log("syntax: scripts and workflows parse");
 } else if (cmd === "preview") {
-  // The head's Workers Builds preview must pass where the repo has Workers Builds (its base branch tip carries the
-  // check): gate waits for the head's build within GATE_PREVIEW_WAIT_S (default 8 minutes) and fails on a failed,
-  // missing or unfinished one; Cloudflare skipping the commit (build watch paths) passes without a preview. A repo
-  // without Workers Builds, or with "e2e": {"preview": false}, is unaffected. The URL comes from the Cloudflare bot's
-  // PR comment for this commit.
+  // Where the repo has Workers Builds (its base branch tip carries the check), gate waits for the head's build within
+  // GATE_PREVIEW_WAIT_S (default 8 minutes), fails on a failed, missing or unfinished one, and e2e runs against that
+  // build's preview URL (from the Cloudflare bot's PR comment for this commit), never locally; no URL fails too.
+  // Cloudflare skipping the commit (build watch paths) is the one exception: there is no build, so e2e runs locally.
+  // A repo without Workers Builds, or with "e2e": {"preview": false}, runs e2e locally.
   if (!prNumber || e2eCfg.preview === false) { console.log("preview: none (not a pull request, or e2e.preview is false)"); output("url", ""); process.exit(0); }
   const get = ghApi(), pr = await get(`/pulls/${prNumber}`), head = pr.head.sha, short = head.slice(0, 7);
   const name = pack.preview?.check_name ?? "Workers Builds", author = pack.preview?.comment_author ?? "cloudflare-workers-and-pages[bot]";
@@ -106,11 +106,19 @@ if (cmd === "plan") {
     await new Promise((r) => setTimeout(r, 15000));
   }
   if (skipped) { console.log(`preview: Cloudflare skipped the build for ${short} (build watch paths); e2e runs locally`); output("url", ""); process.exit(0); }
-  const comments = [];
-  for (let page = 1; ; page++) { const b = (await get(`/issues/${prNumber}/comments?per_page=100&page=${page}`)) ?? []; comments.push(...b); if (b.length < 100) break; }
-  const url = comments.filter((c) => c.user?.login === author).reverse().flatMap((c) => c.body.split("\n"))
-    .filter((l) => l.includes(short) && /https:\/\//.test(l)).map((l) => l.match(/https:\/\/[^\s,<>)"'|]+/)[0])[0] ?? "";
-  console.log(url ? `preview: ${url} (${short})` : `preview: no preview URL for ${short} in the Cloudflare comment; e2e runs locally`);
+  // A passed build must give e2e its preview: the URL for this commit in the Cloudflare comment (which can trail the
+  // check a little). Never a local run where the repo has Workers Builds.
+  const findUrl = async () => {
+    const comments = [];
+    for (let page = 1; ; page++) { const b = (await get(`/issues/${prNumber}/comments?per_page=100&page=${page}`)) ?? []; comments.push(...b); if (b.length < 100) break; }
+    return comments.filter((c) => c.user?.login === author).reverse().flatMap((c) => c.body.split("\n"))
+      .filter((l) => l.includes(short) && /https:\/\//.test(l)).map((l) => l.match(/https:\/\/[^\s,<>)"'|]+/)[0])[0] ?? "";
+  };
+  let url = await findUrl();
+  while (!url && Date.now() - start < wait) { await new Promise((r) => setTimeout(r, 15000)); url = await findUrl(); }
+  if (!url) fail(`the Cloudflare build for ${short} passed, but no preview URL for ${short} is in the ${author} comment`,
+    "turn on the Worker's preview URLs (Workers Builds) so each build comments its URL, then re-run gate; or set standards.json e2e.preview to false");
+  console.log(`preview: ${url} (${short})`);
   output("url", url);
 } else if (cmd === "classify") {
   // Codex cloud has no origin: fall back to a local default branch, then to HEAD itself (uncommitted and untracked
