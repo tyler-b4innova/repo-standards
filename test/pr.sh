@@ -50,7 +50,8 @@ done
 [ "$(state 'S.pulls.length+":"+S.pulls[0].draft+":"+S.pulls[0].title')" = "1:true:Add x (2)" ] || why="$why; state $(state 'JSON.stringify(S.pulls)')"
 if [ -z "$why" ]; then ok pr-open-verified; else fail pr-open-verified "$why"; fi
 
-# pr-status-done: DONE only when open or merged, the body closes an issue, and gate is green on the head SHA.
+# pr-status-done: DONE only when open or merged, the body closes an issue, gate is green on the head SHA, and no review
+# thread is open.
 HEAD_SHA=$(git rev-parse HEAD) MAIN_SHA=$(git rev-parse main)
 green='[{"name":"gate","status":"completed","conclusion":"success"},{"name":"lint","status":"completed","conclusion":"failure"}]'
 why=""
@@ -68,15 +69,13 @@ mut "S.checks={'$HEAD_SHA':$green};S.pulls[0].state='closed'"; expect "closed un
 mut "S.pulls[0].merged=true"; expect "merged" 0 DONE
 mut "S.pulls[0].state='open';S.pulls[0].merged=false;S.pulls[0].body='no link'"; expect "no closes" 1 "body lacks Closes #N"
 mut "S.pulls[0].body='Fixes #3'"
-# with the org App posting `review`, DONE also needs review=success on the head
-cp scripts/agent/pack.json "$T/pack.bak"; node -e 'const f=process.argv[1],p=require(f);p.review_status=true;require("fs").writeFileSync(f,JSON.stringify(p))' "$PWD/scripts/agent/pack.json"
-mut "S.checks={'$HEAD_SHA':$green};S.statuses={}"; expect "review missing" 1 "no review status on the head SHA yet"
-mut "S.statuses={'$HEAD_SHA':[{context:'review',state:'failure',description:'1 unresolved Codex thread(s)'}]}"; expect "review red" 1 "review failure: 1 unresolved Codex thread(s)"
-mut "S.statuses={'$HEAD_SHA':[{context:'review',state:'success',description:'ok'}]}"; expect "review green" 0 DONE
-cp "$T/pack.bak" scripts/agent/pack.json
-# the base branch decides: a branch cut before the release (no review_status locally) still needs review
-mut "S.statuses={};S.basePack={review_status:true}"; expect "base requires review" 1 "no review status on the head SHA yet"
-mut "S.basePack=null"
+# the org rulesets require resolved review threads, so DONE does too
+mut "S.checks={'$HEAD_SHA':$green};S.threads=[{isResolved:false,comments:{nodes:[{url:'https://github.com/acme/demo/pull/1#r9'}]}},{isResolved:true,comments:{nodes:[{url:'u'}]}}]"
+expect "open thread" 1 "1 unresolved review thread(s)"
+case "$("$PR" status 1 2>&1)" in *"unresolved: https://github.com/acme/demo/pull/1#r9"*) ;; *) why="$why; open thread not named" ;; esac
+mut "S.threads[0].isResolved=true"; expect "threads resolved" 0 DONE
+mut "S.threadsFail=true"; expect "threads unreadable" 1 "could not read review threads"
+mut "S.threadsFail=false"
 if [ -z "$why" ]; then ok pr-status-done; else fail pr-status-done "$why"; fi
 
 # evidence-images-pinned-resolving (posting side): two posts leave one marked comment whose image URLs carry the 40-hex SHA.

@@ -16,16 +16,6 @@
     "**/*.md",
     ".github/**"
   ],
-  "models": {
-    "claude": {
-      "model": "opus",
-      "subagent": "opus"
-    },
-    "codex": {
-      "model": "gpt-6-sol",
-      "subagent": "gpt-6-sol"
-    }
-  },
   "permissions_allow": [],
   "forbidden_files": [
     "CONTEXT.md",

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Promotion PRs (staged flow: default branch -> main) through the review rule (gate's review step), against a GitHub stand-in.
+# Promotion PRs (staged flow: default branch -> main) through the review rule (the package export a launcher calls),
+# against a GitHub stand-in.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 . test/lib.sh
@@ -12,10 +13,9 @@ state() { # state <files-json> <reviews-json> [head]
   printf '{"pr":{"number":7,"head":{"ref":"staging","sha":"%s","repo":{"full_name":"acme/demo"}},"base":{"ref":"main"},"user":{"login":"launcher[bot]","type":"Bot"}},"files":%s,"reviews":%s,"perms":{"alice":"write","reader":"read","review-bot":"write"}}' "${3:-$HEAD2}" "$1" "$2" > "$T/state.json"
 }
 state '[]' '[]'
-node test/stubs/promote-github.mjs "$T/port" "$T/state.json" & STUB=$!
+node test/stubs/promote-github.mjs "$T/port" "$T/state.json" "$R" & STUB=$!
 for i in $(seq 50); do [ -s "$T/port" ] && break; sleep 0.1; done
-echo '{"pull_request":{"number":7,"head":{"ref":"staging","sha":"'$HEAD2'"},"base":{"ref":"main"},"user":{"login":"launcher[bot]"}}}' > "$T/event.json"
-gate() { (cd "$R" && GITHUB_API_URL="http://127.0.0.1:$(cat "$T/port")" GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_EVENT_PATH="$T/event.json" GITHUB_EVENT_NAME=pull_request node scripts/agent/gate.mjs review) 2>&1; }
+gate() { GITHUB_API_URL="http://127.0.0.1:$(cat "$T/port")" GITHUB_REPOSITORY=acme/demo node test/review-run.mjs 7 2>&1; }
 rev() { printf '{"user":{"login":"%s","type":"%s"},"state":"%s","commit_id":"%s"}' "$1" "$2" "$3" "$4"; }
 has() { case "$2" in *"$1"*) return 0 ;; esac; return 1; }
 
@@ -30,8 +30,8 @@ state "$UI" "[$(rev alice User APPROVED "$HEAD2")]"; d=$(gate); sd=$?
 if [ $sa -eq 1 ] && has "needs a person's approval" "$a" && [ $sb -eq 1 ] && [ $sc -eq 1 ] && [ $sd -eq 0 ] && has "approved by @alice" "$d"; then ok promote-ui-needs-human-approval
 else fail promote-ui-needs-human-approval "none=$sa bot=$sb read=$sc write=$sd: $a"; fi
 
-# An approval turns the review verdict green on the same head, with no push: the org App's `review` status is
-# re-evaluated each launcher tick, and no workflow listens for reviews.
+# An approval turns the review verdict green on the same head, with no push: the rule is asked again before merging,
+# and no workflow listens for reviews.
 state "$UI" '[]'; before=$(gate); s1=$?
 state "$UI" "[$(rev alice User APPROVED "$HEAD2")]"; after=$(gate); s2=$?
 trig=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");console.log(!/pull_request_review/.test(y))' "$R/.github/workflows/std-gate.yml")

@@ -1,7 +1,2 @@
 approval_policy = "never"
 sandbox_mode = "danger-full-access"
-
-model = "gpt-6-sol"
-
-[agents]
-default_subagent_model = "gpt-6-sol"

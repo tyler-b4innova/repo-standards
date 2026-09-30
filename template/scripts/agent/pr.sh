@@ -2,7 +2,7 @@
 # PR helper over the GitHub REST API only. Auth: GH_TOKEN, GITHUB_TOKEN, else `gh auth token`.
 # Repo: GH_REPO, else the origin remote. API: GITHUB_API_URL (default https://api.github.com).
 #   pr.sh open [--base B] [--dry-run] [--] "<title>" <body-file>  draft PR (reused if open for this head and base); push first
-#   pr.sh status <pr>                     checks on the head SHA, then DONE or NOT DONE: <reasons>
+#   pr.sh status <pr>                     checks on the head SHA and open review threads, then DONE or NOT DONE: <reasons>
 #   pr.sh evidence <pr> <file>...         post SHA-pinned evidence; .evidence/ never stays on the branch tip
 #   pr.sh feedback <pr>                   comments and reviews newer than the last push, with ids
 #   pr.sh reply <pr> <comment-id> "<text>"  reply on the review thread, else as a PR comment
@@ -70,23 +70,14 @@ open_pr() {
 }
 
 status() {
-  local p runs st='{}' top review
+  local p runs threads q
   req GET "pulls/$1"; p=$R
   req GET "commits/$(js 'd.head.sha' <<<"$p")/check-runs?per_page=100"; runs=$R
-  # With the org App posting `review` (the base branch's pack.json review_status), DONE also needs that status green
-  # on the head. The base decides: a branch cut before the release carries an older pack.
-  top=$(git rev-parse --show-toplevel)
-  # A promotion (this repo's default branch into another) goes by its head's pack, as the review rule does.
-  api GET ""; local ref
-  ref=$(js 'a[0]&&d.head?.repo?.full_name===a[1]&&d.head.ref===a[0]&&d.base.ref!==a[0]?d.head.sha:d.base.ref' "$( [ "$ST" = 200 ] && js 'd.default_branch' <<<"$R")" "$REPO" <<<"$p")
-  api GET "contents/scripts/agent/pack.json?ref=$(enc "$ref")"
-  if [ "$ST" = 200 ]; then review=$(js 'String(!!JSON.parse(Buffer.from(d.content,"base64").toString()).review_status)' <<<"$R")
-  elif [ "$ST" = 404 ]; then review=$(node -p 'try { !!require(process.argv[1]).review_status } catch { false }' "$top/scripts/agent/pack.json")
-  else die "reading the base branch's pack.json -> HTTP $ST; cannot tell whether review is required"; fi
-  if [ "$review" = true ]; then req GET "commits/$(js 'd.head.sha' <<<"$p")/status"; st=$R; fi
-  R=$runs
+  # The org rulesets also require every review thread resolved (answer or fix each, then resolve it).
+  q=$(node -e 'const [o, n, pr] = process.argv.slice(1); console.log(JSON.stringify({ query: "query($o:String!,$n:String!,$pr:Int!){repository(owner:$o,name:$n){pullRequest(number:$pr){reviewThreads(first:100){totalCount nodes{isResolved comments(first:1){nodes{url}}}}}}}", variables: { o, n, pr: +pr } }))' -- "${REPO%%/*}" "${REPO#*/}" "$1")
+  case $API in */api/v3) req POST "${API%/v3}/graphql" "$q" ;; *) req POST /graphql "$q" ;; esac; threads=$R
   node -e '
-    const [p, { check_runs: runs = [] }, { statuses = [] }] = process.argv.slice(1, 4).map(JSON.parse), why = [], need = process.argv[5] === "true";
+    const [p, { check_runs: runs = [] }, t] = process.argv.slice(1, 4).map(JSON.parse), why = [];
     const closes = new RegExp(process.argv[4], "i").test(p.body || ""), gate = runs.filter((c) => c.name === "gate");
     console.log(`${p.html_url}\nstate=${p.merged ? "merged" : p.state} head=${p.head.sha.slice(0, 7)} closes=${closes}`);
     for (const c of runs) console.log(`  ${c.name}: ${c.conclusion || c.status}`);
@@ -94,14 +85,19 @@ status() {
     if (!closes) why.push("body lacks Closes #N");
     if (!gate.length) why.push("no gate check on the head SHA");
     else if (!gate.every((c) => c.conclusion === "success")) why.push("gate " + gate.map((c) => c.conclusion || c.status).join(","));
-    const review = statuses.find((x) => x.context === "review"); // newest first
-    if (need) console.log(`  review: ${review ? `${review.state} (${review.description})` : "not posted"}`);
-    if (need && review?.state !== "success") why.push(review ? `review ${review.state}: ${review.description}` : "no review status on the head SHA yet (the org App posts it)");
+    const rt = t?.data?.repository?.pullRequest?.reviewThreads;
+    if (!rt) why.push("could not read review threads: " + JSON.stringify(t?.errors ?? t).slice(0, 200));
+    else {
+      const open = rt.nodes.filter((x) => !x.isResolved);
+      for (const x of open) console.log(`  unresolved: ${x.comments.nodes[0]?.url ?? "(no comment)"}`);
+      if (open.length) why.push(`${open.length} unresolved review thread(s): fix or reply, then resolve`);
+      if (rt.totalCount > rt.nodes.length) why.push(`${rt.totalCount} review threads; only the first ${rt.nodes.length} were read`);
+    }
     const red = runs.filter((c) => c.name !== "gate" && /^(failure|timed_out|cancelled|action_required)$/.test(c.conclusion || ""));
     if (red.length) console.log(`also failing (not required for DONE; fix or explain): ${red.map((c) => c.name).join(", ")}`);
     console.log(why.length ? "NOT DONE: " + why.join("; ") : "DONE");
     process.exitCode = why.length ? 1 : 0;
-  ' "$p" "$runs" "$st" "$CLOSES" "$review"
+  ' "$p" "$runs" "$threads" "$CLOSES"
 }
 
 evidence() {
@@ -137,7 +133,7 @@ evidence() {
   id=$(js 'String((d.find(c=>a[0]&&c.user?.login===a[0]&&(c.body||"").includes("<!-- std:evidence -->"))||{}).id||"")' "$me" <<<"$R")
   if [ -n "$id" ]; then req PATCH "issues/comments/$id" "$body"; else req POST "issues/$pr/comments" "$body"; fi
   js 'd.html_url' <<<"$R"
-  echo "pr.sh: the review status reads this evidence on the org's next check (gate reads it on the next push)" >&2
+  echo "pr.sh: the review rule reads this evidence when the PR is next checked for merge" >&2
 }
 
 feedback() {

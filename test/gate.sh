@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Gate and evidence cases through the real gate steps, against a GitHub REST stand-in. No network.
+# Gate cases through the real gate steps, and evidence cases through the review export, against a GitHub REST stand-in. No network.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 . test/lib.sh
@@ -106,7 +106,7 @@ for (const f of fs.readdirSync(dir)) {
   if (f==="std-gate.yml") {
     if (jobs.join()!=="gate") out.push("jobs: "+jobs.join());
     const runs=L.slice(j+1).join("\n");
-    for (const s of ["scripts/agent/setup.sh --check","gate.mjs review","gate.mjs secrets","gate.mjs install","gate.mjs run typecheck","gate.mjs run build","gate.mjs e2e","scripts/agent/gate.local.sh"])
+    for (const s of ["scripts/agent/setup.sh --check","gate.mjs secrets","gate.mjs install","gate.mjs run typecheck","gate.mjs run build","gate.mjs e2e","scripts/agent/gate.local.sh"])
       if (!runs.includes(s)) out.push("missing step: "+s);
     for (const m of runs.matchAll(/gate\.mjs (\w+)/g)) if (require("child_process").spawnSync("node",["scripts/agent/gate.mjs",m[1],"--help"]).status!==0) out.push("unknown subcommand "+m[1]);
   }
@@ -115,7 +115,7 @@ if (gates!==1) out.push(gates+" jobs named gate");
 console.log(out.join("; ")||"ok")')
 if [ "$shape" = ok ]; then ok gate-fails-without-e2e; else fail gate-fails-without-e2e "$shape"; fi
 
-# ---- evidence: .evidence/ never tracked (the standards check); the comment rule through gate's review step
+# ---- evidence: .evidence/ never tracked (the standards check); the comment rule through the review export
 R=$(mkrepo)
 out1=$(cd "$R" && scripts/agent/setup.sh --check 2>&1); s1=$?
 mkdir -p "$R/.evidence" && printf 'png' > "$R/.evidence/after-home-400.png" && commit "$R"
@@ -134,11 +134,11 @@ PORT=$(wait_port "$T/port") || { fail stub-start "gate-github stub did not start
 fx() { node -e 'const S=process.env.SHA,U="https://github.com/acme/demo/blob/"+S+"/.evidence/",img=(u)=>"![shot]("+u+")",
 c=(id,login,body,app)=>({id,html_url:"https://github.com/acme/demo/pull/9#issuecomment-"+id,user:{login},performed_via_github_app:app?{slug:"evidence-app"}:null,body});
 require("fs").writeFileSync(process.env.FX,JSON.stringify({repo:"acme/demo",files:{},comments:{},contents:["before","after"].flatMap((b)=>[S+":.evidence/"+b+"-home-400.png",S+":.evidence/"+b+"-home-1280.png"]),...eval("("+process.argv[1]+")")}))' "$1"; }
-# ev <repo> <pr>: the evidence step on a pull_request event
-# ev <repo> <pr>: gate's review step (review.mjs) on a pull_request event; the stand-in answers commits and compares from <repo>
-ev() { printf '{"pull_request":{"number":%s}}\n' "$2" > "$T/event.json"
+# ev <repo> <pr>: the review rule (repo-standards/review, as a launcher calls it); the stand-in answers commits,
+# compares and the policy files from <repo>
+ev() {
   node -e 'const f=process.env.FX,x=JSON.parse(require("fs").readFileSync(f,"utf8"));x.head=process.argv[1];x.gitDir=process.argv[2];require("fs").writeFileSync(f,JSON.stringify(x))' "$(git -C "$1" rev-parse HEAD)" "$1"
-  (cd "$1" && GITHUB_EVENT_PATH="$T/event.json" GITHUB_EVENT_NAME=pull_request GITHUB_API_URL="http://127.0.0.1:$PORT" GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=stub-token node scripts/agent/gate.mjs review) 2>&1; }
+  GITHUB_API_URL="http://127.0.0.1:$PORT" GITHUB_REPOSITORY=acme/demo node "$ENGINE/test/review-run.mjs" "$2" 2>&1; }
 GOOD='["before","after"].flatMap((b)=>[img(U+b+"-home-400.png?raw=true"),img(U+b+"-home-1280.png?raw=true")]).join("\n")'
 
 R=$(mkev)
