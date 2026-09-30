@@ -56,6 +56,22 @@ out=$(run); rs=$?
 node -e 'const f=process.argv[1],s=JSON.parse(require("fs").readFileSync(f,"utf8"));delete s.advance;require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json"
 if [ $rs -eq 0 ] && [ "$(exists race)" = yes ] && [ "$(git -C "$R" log -1 --format=%s race)" = "work landed meanwhile" ] && [ -d "$T/wt-race" ]; then ok cleanup-race-safe; else fail cleanup-race-safe "st=$rs race=$(exists race) :: $out"; fi
 
+# cleanup-busy-work-kept: a merged branch in a paused rebase or bisect (HEAD detached) stays; a worktree that another
+# session switches to an unmerged branch while GitHub answers stays; a merged branch whose worktree directory is
+# missing stays, and no other worktree's metadata is pruned
+br reb; merged reb "$(tip reb)"; wt reb "$T/wt-reb"
+( cd "$T/wt-reb" && git -c user.name=t -c user.email=t@t rebase -q --exec false HEAD~1 >/dev/null 2>&1 ) # stops at the exec: rebase in progress
+br bis; merged bis "$(tip bis)"; wt bis "$T/wt-bis"; ( cd "$T/wt-bis" && git bisect start -q HEAD HEAD~1 >/dev/null 2>&1 )
+br swa; merged swa "$(tip swa)"; br other; wt swa "$T/wt-swa"
+br gone; merged gone "$(tip gone)"; wt gone "$T/wt-gone"; br away; wt away "$T/wt-away"; rm -rf "$T/wt-gone" "$T/wt-away"
+node -e 'const f=process.argv[1],s=JSON.parse(require("fs").readFileSync(f,"utf8"));s.switch={worktree:process.argv[2],to:"other"};require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json" "$T/wt-swa"
+out=$(run); bs=$?
+node -e 'const f=process.argv[1],s=JSON.parse(require("fs").readFileSync(f,"utf8"));delete s.switch;require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json"
+meta=$(git -C "$R" worktree list --porcelain | grep -c '^worktree .*wt-\(gone\|away\)$')
+got="reb=$(exists reb) bis=$(exists bis) swa=$(exists swa) gone=$(exists gone) swa-dir=$([ -d "$T/wt-swa" ] && echo yes || echo no) meta=$meta"
+if [ $bs -eq 0 ] && [ "$got" = "reb=yes bis=yes swa=yes gone=yes swa-dir=yes meta=2" ]; then ok cleanup-busy-work-kept; else fail cleanup-busy-work-kept "st=$bs $got :: $out"; fi
+( cd "$T/wt-reb" && git rebase --abort >/dev/null 2>&1 ); ( cd "$T/wt-bis" && git bisect reset -q >/dev/null 2>&1 )
+
 # the session's own worktree survives, even merged and clean
 br sess; merged sess "$(tip sess)"; wt sess "$T/wt-sess"; out=$(run "$T/wt-sess"); s1=$?
 # a hanging GitHub never blocks the session: nothing removed, the check's status kept, within the budget

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // GitHub GraphQL stand-in for the session-start clean-up. State is re-read from <state.json> on every request:
 //   { "merged": { "<branch>": [{ "oid": "<sha>", "repo": "acme/demo" }] }, "hang": false,
-//     "advance": { "repo": "<path>", "branch": "<name>" } }   advance: a commit lands on that branch before the answer
+//     "advance": { "repo": "<path>", "branch": "<name>" },   advance: a commit lands on that branch before the answer
+//     "switch": { "worktree": "<path>", "to": "<branch>" } }  switch: that worktree checks out another branch first
 // Logs one line per request to <log>. Usage: node test/stubs/cleanup-github.mjs <port-file> <state.json> <log>
 import { execFileSync } from "node:child_process";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
@@ -15,6 +16,7 @@ const server = createServer((req, res) => {
     const st = JSON.parse(readFileSync(stateFile, "utf8"));
     appendFileSync(logFile, `${req.method} ${req.url}\n`);
     if (st.hang) return; // never answers
+    if (st.switch) execFileSync("git", ["-C", st.switch.worktree, "checkout", "-q", st.switch.to]);
     if (st.advance) {
       const git = (...a) => execFileSync("git", ["-C", st.advance.repo, ...a], { encoding: "utf8" }).trim(), ref = `refs/heads/${st.advance.branch}`;
       git("update-ref", ref, git("commit-tree", `${ref}^{tree}`, "-p", ref, "-m", "work landed meanwhile"));
