@@ -39,8 +39,13 @@ jobs:
       - name: merge ref
         if: failure() && inputs.pr
         run: echo "::error::refs/pull/${{ inputs.pr }}/merge is missing, so the pull request conflicts with its new base; resolve the conflict and push"
-      - id: pm
-        run: if [ -f package-lock.json ]; then echo cache=npm >>"$GITHUB_OUTPUT"; fi
+      - name: package manager
+        id: pm
+        # the lockfile's package manager caches (pnpm and yarn run through corepack; no cache if that fails)
+        run: |
+          if [ -f pnpm-lock.yaml ]; then if corepack enable && pnpm --version >/dev/null; then echo cache=pnpm >>"$GITHUB_OUTPUT"; fi
+          elif [ -f yarn.lock ]; then if corepack enable && yarn --version >/dev/null; then echo cache=yarn >>"$GITHUB_OUTPUT"; fi
+          elif [ -f package-lock.json ]; then echo cache=npm >>"$GITHUB_OUTPUT"; fi
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24

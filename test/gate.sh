@@ -115,6 +115,21 @@ if (gates!==1) out.push(gates+" jobs named gate");
 console.log(out.join("; ")||"ok")')
 if [ "$shape" = ok ]; then ok gate-fails-without-e2e; else fail gate-fails-without-e2e "$shape"; fi
 
+# dependency-cache-by-lockfile: gate and the warm-up cache the lockfile's package manager (npm, pnpm, yarn); pnpm and
+# yarn come through corepack, and when that fails there is no cache rather than a failed setup step; both workflows
+# run the same step, and the warm-up fires on any of the three lockfiles
+why=""; CW=$ENGINE/template/.github/workflows
+for wf in std-gate.yml std-cache-warm.yml; do [ "$(step_run "$CW/$wf" "package manager")" = "$(step_run "$CW/std-gate.yml" "package manager")" ] || why="$why; $wf step differs"; done
+grep -q 'cache: ${{ steps.pm.outputs.cache }}' "$CW/std-cache-warm.yml" && grep -q 'paths: \[package-lock.json, pnpm-lock.yaml, yarn.lock\]' "$CW/std-cache-warm.yml" || why="$why; warm-up trigger or cache"
+pmrun() { # pmrun <lockfile> <corepack exit>: the step in a scratch dir with stub corepack/pnpm/yarn; prints its output
+  local d; d=$(mktemp -d "$T/pm.XXXXXX"); mkdir "$d/bin"; : > "$d/$1"
+  shim "$d/bin" corepack "exit $2"; shim "$d/bin" pnpm "echo 10.0.0"; shim "$d/bin" yarn "echo 1.22.0"
+  (cd "$d" && GITHUB_OUTPUT="$d/out" PATH="$d/bin:$PATH" bash -e -c "$(step_run "$CW/std-gate.yml" "package manager")") >/dev/null 2>&1 || echo "step-failed"
+  cat "$d/out" 2>/dev/null; }
+got="$(pmrun package-lock.json 0)|$(pmrun pnpm-lock.yaml 0)|$(pmrun yarn.lock 0)|$(pmrun pnpm-lock.yaml 1)|$(pmrun none.txt 0)"
+[ "$got" = "cache=npm|cache=pnpm|cache=yarn||" ] || why="$why; outputs: $got"
+if [ -z "$why" ]; then ok dependency-cache-by-lockfile; else fail dependency-cache-by-lockfile "$why"; fi
+
 # ---- evidence: .evidence/ never tracked (the standards check); the comment rule through the review export
 R=$(mkrepo)
 out1=$(cd "$R" && scripts/agent/setup.sh --check 2>&1); s1=$?
@@ -151,9 +166,9 @@ if [ $s1 -eq 1 ] && has "src/components/Button.tsx" "$out1" && has "no accepted 
 else fail ui-paths-evidence-required "no-comment=$s1 accepted=$s2: $out1 $out2"; fi
 
 bad=""
-for f in docs/report.docx deck/q3.pptx src/styles/site.scss index.html src/components/Nav.astro public/logo.svg; do
+for f in docs/report.docx deck/q3.pptx src/styles/site.scss index.html src/components/Nav.astro public/logo.svg "public/hero.png=>archive/hero.png"; do
   fx "{files:{2:[\"$f\"]}}"; out=$(ev "$R" 2); st=$?
-  { [ $st -eq 1 ] && has "$f" "$out"; } || bad="$bad $f=$st"
+  { [ $st -eq 1 ] && has "${f%%=>*}" "$out"; } || bad="$bad $f=$st"
 done
 echo "<p>x</p>" > "$R/site.css" && commit "$R" && echo "<p>y</p>" > "$R/site.css" && mkdir -p "$R/docs" && printf 'x' > "$R/docs/brief.docx" && echo x > "$R/lib.mjs"
 cls=$(G "$R" classify HEAD); cs=$?

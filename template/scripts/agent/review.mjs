@@ -43,7 +43,9 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.n
   const uiOpt = std.ui_paths, inc = (Array.isArray(uiOpt) ? uiOpt : uiOpt?.include ?? pack.ui_paths ?? []).map(glob);
   const ign = [...(pack.ui_ignore ?? []), ...(uiOpt?.ignore ?? [])].map(glob);
   const ui = (fs) => fs.filter((f) => inc.some((r) => r.test(f)) && !ign.some((r) => r.test(f)));
-  const listedFiles = await all(`${R}/pulls/${n}/files`), changed = ui(listedFiles.map((f) => f.filename));
+  // A rename counts by both paths: moving a UI file out of a UI path is a UI change too.
+  const paths = (fs) => fs.flatMap((f) => [f.filename, f.previous_filename].filter(Boolean));
+  const listedFiles = await all(`${R}/pulls/${n}/files`), changed = [...new Set(ui(paths(listedFiles)))];
   // GitHub lists at most 3,000 files; a larger diff cannot be judged, so it fails closed.
   if (pr.changed_files > listedFiles.length)
     return verdict("failure", `GitHub lists ${listedFiles.length} of ${pr.changed_files} changed files, so UI changes cannot be judged; split the PR`);
@@ -118,7 +120,7 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.n
         const commits = (cmp.commits ?? []).length < 100 ? cmp.commits ?? [] : await paged(`${R}/compare/${s}...${head}`, "commits");
         for (const k of commits) {
           const all3k = await paged(`${R}/commits/${k.sha}`, "files"); // GitHub lists at most 3,000: treat a capped commit as a UI change
-          const files = all3k.map((f) => f.filename).filter((f) => !f.startsWith(".evidence/"));
+          const files = paths(all3k).filter((f) => !f.startsWith(".evidence/"));
           if (all3k.length >= 3000 || ui(files).length) { stale = k.sha; break; }
         }
         if (stale) break;

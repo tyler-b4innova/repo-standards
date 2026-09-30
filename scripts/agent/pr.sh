@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# PR helper over the GitHub REST API only. Auth: GH_TOKEN, GITHUB_TOKEN, else `gh auth token`.
+# PR helper over the GitHub REST API (GraphQL only for review threads: status, resolve). Auth: GH_TOKEN, GITHUB_TOKEN, else `gh auth token`.
 # Repo: GH_REPO, else the origin remote. API: GITHUB_API_URL (default https://api.github.com).
 #   pr.sh open [--base B] [--dry-run] [--] "<title>" <body-file>  draft PR (reused if open for this head and base); push first
 #   pr.sh status <pr>                     checks on the head SHA and open review threads, then DONE or NOT DONE: <reasons>
 #   pr.sh evidence <pr> <file>...         post SHA-pinned evidence; .evidence/ never stays on the branch tip
 #   pr.sh feedback <pr>                   comments and reviews newer than the last push, with ids
 #   pr.sh reply <pr> <comment-id> "<text>"  reply on the review thread, else as a PR comment
+#   pr.sh resolve <pr> <comment-id>       resolve the review thread holding that comment (after fixing or answering it)
 set -euo pipefail
-usage() { sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; }
 die() { echo "pr.sh: $*" >&2; exit 1; }
 API=${GITHUB_API_URL:-https://api.github.com}
 REPO=${GH_REPO:-$(git remote get-url origin 2>/dev/null | sed -E 's#/+$##; s#\.git$##; s#.*[:/]([^/:]+/[^/:]+)$#\1#' || true)}
@@ -159,12 +160,50 @@ reply() {
   js 'd.html_url' <<<"$R"
 }
 
+resolve() {
+  [ $# -eq 2 ] || die 'usage: pr.sh resolve <pr> <comment-id>'
+  [ -n "$TOKEN" ] || TOKEN=${GH_TOKEN:-${GITHUB_TOKEN:-}}
+  [ -n "$TOKEN" ] || TOKEN=$(gh auth token 2>/dev/null) || die "set GH_TOKEN or run gh auth login"
+  local t
+  # Every thread and every comment in it, page by page; REST ids (fullDatabaseId) can exceed GraphQL's Int.
+  t=$(TOKEN=$TOKEN API=$API node -e '
+    const [owner, name, pr, id] = process.argv.slice(1), url = process.env.API.replace(/\/$/, "") + "/graphql";
+    const gql = async (query, variables) => {
+      const r = await fetch(url, { method: "POST", headers: { Authorization: `Bearer ${process.env.TOKEN}`, "Content-Type": "application/json" }, body: JSON.stringify({ query, variables }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || j.errors) { console.error(`graphql: ${r.status} ${JSON.stringify(j.errors ?? j).slice(0, 300)}`); process.exit(2); }
+      return j.data;
+    };
+    const C = "comments(first: 100, after: $c) { pageInfo { hasNextPage endCursor } nodes { fullDatabaseId } }";
+    (async () => {
+      for (let after = null; ;) {
+        const d = await gql(`query($o: String!, $n: String!, $pr: Int!, $a: String, $c: String) { repository(owner: $o, name: $n) { pullRequest(number: $pr) { reviewThreads(first: 100, after: $a) { pageInfo { hasNextPage endCursor } nodes { id ${C} } } } } }`, { o: owner, n: name, pr: +pr, a: after, c: null });
+        const page = d.repository.pullRequest.reviewThreads;
+        for (const th of page.nodes) {
+          let cs = th.comments;
+          for (;;) {
+            if (cs.nodes.some((c) => String(c.fullDatabaseId) === id)) { console.log(th.id); return; }
+            if (!cs.pageInfo.hasNextPage) break;
+            cs = (await gql(`query($t: ID!, $c: String) { node(id: $t) { ... on PullRequestReviewThread { ${C} } } }`, { t: th.id, c: cs.pageInfo.endCursor })).node.comments;
+          }
+        }
+        if (!page.pageInfo.hasNextPage) return;
+        after = page.pageInfo.endCursor;
+      }
+    })();
+  ' -- "${REPO%%/*}" "${REPO#*/}" "$1" "$2") || die "could not read the review threads of #$1"
+  [ -n "$t" ] || die "no review thread on #$1 holds comment $2 (pr.sh feedback lists the ids)"
+  req POST /graphql "$(node -e 'console.log(JSON.stringify({ query: "mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}", variables: { t: process.argv[1] } }))' -- "$t")"
+  [ "$(js 'String(d.data?.resolveReviewThread?.thread?.isResolved)' <<<"$R")" = true ] || die "resolving the thread failed: ${R:0:300}"
+  echo "resolved the thread holding comment $2"
+}
+
 cmd=${1:-}
 shift || true
 case "$cmd" in
   open) open_pr "$@" ;;
   status | feedback) [ $# -eq 1 ] || die "usage: pr.sh $cmd <pr>"; "$cmd" "$1" ;;
-  evidence | reply) "$cmd" "$@" ;;
+  evidence | reply | resolve) "$cmd" "$@" ;;
   -h | --help) usage ;;
   *) usage >&2; exit 2 ;;
 esac

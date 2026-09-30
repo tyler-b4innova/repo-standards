@@ -48,6 +48,20 @@ createServer((req, res) => {
     }
     if ((m = p.match(/^\/repos\/acme\/demo\/commits\/([0-9a-f]{40})\/check-runs$/))) return send(200, { check_runs: S.checks[m[1]] ?? [] });
     // review threads: S.threads (default none); S.threadsFail: the query errors
+    if (p === "/graphql" && body?.query?.includes("resolveReviewThread")) {
+      const t = (S.threads ?? []).find((x) => x.id === body.variables.t);
+      if (!t) return send(200, { errors: [{ message: "stub: no such thread" }] });
+      t.isResolved = true; return send(200, { data: { resolveReviewThread: { thread: { isResolved: true } } } });
+    }
+    // resolve's lookup, paged like GitHub: S.threadPage threads and S.commentPage comments per page (default 100)
+    if (p === "/graphql" && body?.query?.includes("fullDatabaseId")) {
+      const tp = S.threadPage ?? 100, cp = S.commentPage ?? 100, v = body.variables;
+      const comments = (t, after) => { const all = t.comments.nodes, i = after ? Number(after) : 0;
+        return { pageInfo: { hasNextPage: i + cp < all.length, endCursor: String(i + cp) }, nodes: all.slice(i, i + cp).map((c) => ({ fullDatabaseId: String(c.fullDatabaseId ?? c.databaseId) })) }; };
+      if (body.query.includes("node(id:")) return send(200, { data: { node: { comments: comments((S.threads ?? []).find((t) => t.id === v.t), v.c) } } });
+      const all = S.threads ?? [], i = v.a ? Number(v.a) : 0;
+      return send(200, { data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: i + tp < all.length, endCursor: String(i + tp) }, nodes: all.slice(i, i + tp).map((t) => ({ id: t.id, comments: comments(t, null) })) } } } } });
+    }
     if (p === "/graphql") return S.threadsFail ? send(200, { errors: [{ message: "stub: no access" }] }) : send(200, { data: { repository: { pullRequest: { reviewThreads: { totalCount: (S.threads ?? []).length, nodes: S.threads ?? [] } } } } });
     if ((m = p.match(/^\/repos\/acme\/demo\/commits\/([0-9a-f]{40})$/))) {
       const date = git("show", "-s", "--format=%cI", m[1]);

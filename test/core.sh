@@ -174,6 +174,17 @@ jobs:
     timeout-minutes: 5
     steps:
       - run: echo weekly'; out=$(cr "$R") || why="$why; a weekly schedule failed: $out"
+# a push trigger limited to other branches is read where it stands, even when `on:` is not the first line
+R=$(mkrepo); wf "$R" release.yml 'name: release checks
+on:
+  push:
+    branches: ["release/**"]
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - run: npm ci && npm test'; out=$(cr "$R") || why="$why; a push-to-release test workflow was rejected: $out"
 if [ -z "$why" ]; then ok no-duplicate-gate-workflows; else fail no-duplicate-gate-workflows "$why"; fi
 # A named duplicate check can stay only while its reviewed bytes and rationale match. Other workflow rules still apply.
 why=""
@@ -290,6 +301,36 @@ R=$(OVERLAY="$T/owners.json" mkrepo); jset "$R/standards.json" 'o.ui_paths=["con
 out=$(OVERLAY="$T/owners.json" apply "$R" 2>&1) && why="$why; an unwritable glob applied"
 has "cannot be written to CODEOWNERS" "$out" && [ "$(git -C "$R" status --porcelain)" = "$before" ] || why="$why; [$out]"
 if [ -z "$why" ]; then ok codeowners-from-ui-paths; else fail codeowners-from-ui-paths "$why"; fi
+
+# codeowners-risk-paths: the overlay's risk_owners own the risky paths (standards.json risk_paths, else the defaults)
+# through the same block, after the UI lines, so a risky path under an ignored UI path (workflows) is still owned;
+# risk_paths [] drops them; risk owners alone still write a block
+why=""
+node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.ui_owners=["@acme/design"];o.risk_owners=["@acme/leads"];require("fs").writeFileSync(process.argv[2],JSON.stringify(o));delete o.ui_owners;require("fs").writeFileSync(process.argv[3],JSON.stringify(o))' "$OV" "$T/risk.json" "$T/riskonly.json"
+R=$(OVERLAY="$T/risk.json" mkrepo); co=$(cat "$R/.github/CODEOWNERS")
+ig=$(grep -nx '/.github/\*\*' <<<"$co" | cut -d: -f1); wfl=$(grep -nx '/.github/workflows/\*\* @acme/leads' <<<"$co" | cut -d: -f1)
+{ [ -n "$ig" ] && [ -n "$wfl" ] && [ "$wfl" -gt "$ig" ] && grep -qx '\*\*/migrations/\*\* @acme/leads' <<<"$co" && grep -qx '\*\*/wrangler.jsonc @acme/leads' <<<"$co" && grep -qx '/CODEOWNERS @acme/leads' <<<"$co" && grep -qx '\*\*/\*.tsx @acme/design' <<<"$co"; } || why="$why; both: $co"
+out=$(check "$R") || why="$why; check: $out"
+jset "$R/standards.json" 'o.risk_paths=["db/**"]'; OVERLAY="$T/risk.json" apply "$R" >/dev/null; co=$(cat "$R/.github/CODEOWNERS")
+{ grep -qx '/db/\*\* @acme/leads' <<<"$co" && ! grep -q migrations <<<"$co"; } || why="$why; override: $co"
+jset "$R/standards.json" 'o.risk_paths=[]'; OVERLAY="$T/risk.json" apply "$R" >/dev/null; ! grep -q '@acme/leads' "$R/.github/CODEOWNERS" || why="$why; [] kept risk lines"
+R=$(OVERLAY="$T/riskonly.json" mkrepo); co=$(cat "$R/.github/CODEOWNERS" 2>&1)
+{ grep -qx '/.github/workflows/\*\* @acme/leads' <<<"$co" && ! grep -q 'tsx' <<<"$co"; } || why="$why; risk only: $co"
+jset "$R/standards.json" 'o.risk_paths="db/**"'; commit "$R"; out=$(check "$R") && why="$why; a string risk_paths passed"; has "risk_paths must be a glob list" "$out" || why="$why; [$out]"
+if [ -z "$why" ]; then ok codeowners-risk-paths; else fail codeowners-risk-paths "$why"; fi
+
+# production-urls-validated: standards.json production_urls (the launcher's post-deploy smoke test) must be absolute https URLs
+R=$(mkrepo); jset "$R/standards.json" 'o.production_urls=["https://example.com/"]'; commit "$R"; a=$(check "$R"); sa=$?
+jset "$R/standards.json" 'o.production_urls=["http://example.com/","/relative"]'; commit "$R"; b=$(check "$R"); sb=$?
+if [ $sa -eq 0 ] && [ $sb -eq 1 ] && has "standards.json production_urls is" "$b"; then ok production-urls-validated; else fail production-urls-validated "$sa $a | $sb $b"; fi
+
+# setup-returns-check-status: cloud setup (`setup.sh`, no arguments) keeps failed installs non-fatal but returns the
+# check's status, so a broken pack is not reported as a ready environment (offline here: curl fails, installs skip)
+R=$(mkrepo); mkdir -p "$T/offline"; printf '#!/bin/sh\nexit 7\n' > "$T/offline/curl"; chmod +x "$T/offline/curl"
+a=$(cd "$R" && PATH="$T/offline:$PATH" CI=1 scripts/agent/setup.sh 2>&1); sa=$?
+echo "// edit" >> "$R/scripts/agent/pr.sh"; commit "$R"
+b=$(cd "$R" && PATH="$T/offline:$PATH" CI=1 scripts/agent/setup.sh 2>&1); sb=$?
+if [ $sa -eq 0 ] && has "offline: skipping installs" "$a" && [ $sb -eq 1 ] && has "managed file changed: scripts/agent/pr.sh" "$b"; then ok setup-returns-check-status; else fail setup-returns-check-status "$sa $a | $sb $b"; fi
 
 # agents-review-guidelines: the managed block tells the reviewer to leave pack-managed paths to the engine repo
 blk=$(node bin/repo-standards.mjs block --overlay "$OV" --profile internal)

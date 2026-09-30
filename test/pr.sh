@@ -76,6 +76,18 @@ case "$("$PR" status 1 2>&1)" in *"unresolved: https://github.com/acme/demo/pull
 mut "S.threads[0].isResolved=true"; expect "threads resolved" 0 DONE
 mut "S.threadsFail=true"; expect "threads unreadable" 1 "could not read review threads"
 mut "S.threadsFail=false"
+# pr-resolve-thread: resolve finds the thread holding a comment id and resolves only that one; an unknown id fails
+mut "S.threads=[{id:'T1',isResolved:false,comments:{nodes:[{databaseId:11,url:'u1'},{databaseId:12,url:'u2'}]}},{id:'T2',isResolved:false,comments:{nodes:[{databaseId:21,url:'u3'}]}}]"
+r1=$("$PR" resolve 1 12 2>&1); rs1=$?; r2=$("$PR" resolve 1 99 2>&1); rs2=$?
+got=$(state "S.threads.map(t=>t.id+'='+t.isResolved).join(' ')")
+# a REST id past GraphQL's Int, in the third thread's second comment page (pages of 2 threads, 1 comment)
+mut "S.threadPage=2;S.commentPage=1;S.threads=[{id:'T1',isResolved:false,comments:{nodes:[{databaseId:11}]}},{id:'T2',isResolved:false,comments:{nodes:[{databaseId:21}]}},{id:'T3',isResolved:false,comments:{nodes:[{fullDatabaseId:'4114745646'},{fullDatabaseId:'4114745647'}]}}]"
+r3=$("$PR" resolve 1 4114745647 2>&1); rs3=$?; got3=$(state "S.threads.map(t=>t.id+'='+t.isResolved).join(' ')")
+mut "S.threadPage=100;S.commentPage=100"
+if [ $rs1 -eq 0 ] && [ $rs2 -ne 0 ] && [ "$got" = "T1=true T2=false" ] && case "$r2" in *"no review thread on #1 holds comment 99"*) true ;; *) false ;; esac \
+  && [ $rs3 -eq 0 ] && [ "$got3" = "T1=false T2=false T3=true" ]
+then ok pr-resolve-thread; else fail pr-resolve-thread "$rs1 $r1 | $rs2 $r2 | $got | $rs3 $r3 | $got3"; fi
+mut "S.threads=[]"
 if [ -z "$why" ]; then ok pr-status-done; else fail pr-status-done "$why"; fi
 
 # evidence-images-pinned-resolving (posting side): two posts leave one marked comment whose image URLs carry the 40-hex SHA.

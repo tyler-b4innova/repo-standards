@@ -16,6 +16,22 @@
     "**/*.md",
     ".github/**"
   ],
+  "risk_paths": [
+    ".github/workflows/**",
+    "**/{auth,oauth,session,sessions}/**",
+    "**/auth.{ts,js,mjs}",
+    "**/{payments,billing,stripe}/**",
+    "**/.env.example",
+    "**/.dev.vars.example",
+    "**/secrets/**",
+    "**/env.{ts,js,mjs}",
+    "**/migrations/**",
+    "**/wrangler.{toml,json,jsonc}",
+    "infra/**",
+    ".github/CODEOWNERS",
+    "CODEOWNERS",
+    "docs/CODEOWNERS"
+  ],
   "permissions_allow": [],
   "forbidden_files": [
     "CONTEXT.md",
