@@ -61,7 +61,12 @@ async function main() {
     const heads = (data[`b${i}`]?.nodes ?? []).filter((p) => p.headRepository?.nameWithOwner?.toLowerCase() === `${owner}/${name}`.toLowerCase()).map((p) => p.headRefOid);
     // the tip is a merged head, or an ancestor of one we have locally
     if (!heads.some((h) => h === tip || (tryGit("cat-file", "-e", `${h}^{commit}`) !== null && tryGit("merge-base", "--is-ancestor", tip, h) !== null))) continue;
-    const tree = trees.find((t) => t.branch === b);
+    // Work may have moved while GitHub answered: the branch must still be at the verified tip, and a branch that is
+    // now checked out elsewhere stays. The ref is then deleted only if it is still at that tip (compare-and-delete).
+    const now = trees.find((t) => t.branch === b), checkedOut = new Set(git("worktree", "list", "--porcelain").split("\n")
+      .filter((l) => l.startsWith("branch ")).map((l) => l.slice(7).replace(/^refs\/heads\//, "")));
+    if (tryGit("rev-parse", "-q", "--verify", `refs/heads/${b}`)?.trim() !== tip || (checkedOut.has(b) && !now)) continue;
+    const tree = now;
     if (tree) {
       if (tree.path === mainTree || tree.locked || session.some((s) => within(s, tree.path)) || appManaged(tree.path)) continue;
       if (!tree.prunable) {
@@ -71,7 +76,7 @@ async function main() {
       } else tryGit("worktree", "prune");
       removed.push(`${b} (worktree ${tree.path})`);
     } else removed.push(b);
-    if (tryGit("branch", "-D", b) === null) removed.pop();
+    if (tryGit("update-ref", "-d", `refs/heads/${b}`, tip) === null) removed.pop();
   }
   if (removed.length) console.log(`cleanup: removed merged ${removed.join(", ")}`);
 }

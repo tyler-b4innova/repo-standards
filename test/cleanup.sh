@@ -49,6 +49,13 @@ then ok cleanup-merged-work; else fail cleanup-merged-work "st=$st calls=$calls 
 [ "$(exists sq)" = no ] && ok cleanup-squash-merged-removed || fail cleanup-squash-merged-removed "sq=$(exists sq)"
 [ "$(exists wdirty)" = yes ] && grep -q change "$T/wt-dirty/wdirty.txt" && ok cleanup-dirty-worktree-survives || fail cleanup-dirty-worktree-survives "wdirty=$(exists wdirty)"
 
+# cleanup-race-safe: a commit that lands on a merged branch while GitHub answers keeps the branch (and its worktree)
+br race; merged race "$(tip race)"; wt race "$T/wt-race"
+node -e 'const f=process.argv[1],s=JSON.parse(require("fs").readFileSync(f,"utf8"));s.advance={repo:process.argv[2],branch:"race"};require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json" "$R"
+out=$(run); rs=$?
+node -e 'const f=process.argv[1],s=JSON.parse(require("fs").readFileSync(f,"utf8"));delete s.advance;require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json"
+if [ $rs -eq 0 ] && [ "$(exists race)" = yes ] && [ "$(git -C "$R" log -1 --format=%s race)" = "work landed meanwhile" ] && [ -d "$T/wt-race" ]; then ok cleanup-race-safe; else fail cleanup-race-safe "st=$rs race=$(exists race) :: $out"; fi
+
 # the session's own worktree survives, even merged and clean
 br sess; merged sess "$(tip sess)"; wt sess "$T/wt-sess"; out=$(run "$T/wt-sess"); s1=$?
 # a hanging GitHub never blocks the session: nothing removed, the check's status kept, within the budget

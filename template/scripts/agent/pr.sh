@@ -162,10 +162,36 @@ reply() {
 
 resolve() {
   [ $# -eq 2 ] || die 'usage: pr.sh resolve <pr> <comment-id>'
-  local q t
-  q=$(node -e 'const [o, n, pr] = process.argv.slice(1); console.log(JSON.stringify({ query: "query($o:String!,$n:String!,$pr:Int!){repository(owner:$o,name:$n){pullRequest(number:$pr){reviewThreads(first:100){nodes{id isResolved comments(first:100){nodes{databaseId}}}}}}}", variables: { o, n, pr: +pr } }))' -- "${REPO%%/*}" "${REPO#*/}" "$1")
-  req POST /graphql "$q"
-  t=$(js '((d.data?.repository?.pullRequest?.reviewThreads?.nodes??[]).find(x=>x.comments.nodes.some(c=>String(c.databaseId)===a[0]))||{}).id||""' "$2" <<<"$R")
+  [ -n "$TOKEN" ] || TOKEN=${GH_TOKEN:-${GITHUB_TOKEN:-}}
+  [ -n "$TOKEN" ] || TOKEN=$(gh auth token 2>/dev/null) || die "set GH_TOKEN or run gh auth login"
+  local t
+  # Every thread and every comment in it, page by page; REST ids (fullDatabaseId) can exceed GraphQL's Int.
+  t=$(TOKEN=$TOKEN API=$API node -e '
+    const [owner, name, pr, id] = process.argv.slice(1), url = process.env.API.replace(/\/$/, "") + "/graphql";
+    const gql = async (query, variables) => {
+      const r = await fetch(url, { method: "POST", headers: { Authorization: `Bearer ${process.env.TOKEN}`, "Content-Type": "application/json" }, body: JSON.stringify({ query, variables }) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || j.errors) { console.error(`graphql: ${r.status} ${JSON.stringify(j.errors ?? j).slice(0, 300)}`); process.exit(2); }
+      return j.data;
+    };
+    const C = "comments(first: 100, after: $c) { pageInfo { hasNextPage endCursor } nodes { fullDatabaseId } }";
+    (async () => {
+      for (let after = null; ;) {
+        const d = await gql(`query($o: String!, $n: String!, $pr: Int!, $a: String, $c: String) { repository(owner: $o, name: $n) { pullRequest(number: $pr) { reviewThreads(first: 100, after: $a) { pageInfo { hasNextPage endCursor } nodes { id ${C} } } } } }`, { o: owner, n: name, pr: +pr, a: after, c: null });
+        const page = d.repository.pullRequest.reviewThreads;
+        for (const th of page.nodes) {
+          let cs = th.comments;
+          for (;;) {
+            if (cs.nodes.some((c) => String(c.fullDatabaseId) === id)) { console.log(th.id); return; }
+            if (!cs.pageInfo.hasNextPage) break;
+            cs = (await gql(`query($t: ID!, $c: String) { node(id: $t) { ... on PullRequestReviewThread { ${C} } } }`, { t: th.id, c: cs.pageInfo.endCursor })).node.comments;
+          }
+        }
+        if (!page.pageInfo.hasNextPage) return;
+        after = page.pageInfo.endCursor;
+      }
+    })();
+  ' -- "${REPO%%/*}" "${REPO#*/}" "$1" "$2") || die "could not read the review threads of #$1"
   [ -n "$t" ] || die "no review thread on #$1 holds comment $2 (pr.sh feedback lists the ids)"
   req POST /graphql "$(node -e 'console.log(JSON.stringify({ query: "mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}", variables: { t: process.argv[1] } }))' -- "$t")"
   [ "$(js 'String(d.data?.resolveReviewThread?.thread?.isResolved)' <<<"$R")" = true ] || die "resolving the thread failed: ${R:0:300}"
