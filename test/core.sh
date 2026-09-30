@@ -324,6 +324,14 @@ R=$(mkrepo); jset "$R/standards.json" 'o.production_urls=["https://example.com/"
 jset "$R/standards.json" 'o.production_urls=["http://example.com/","/relative"]'; commit "$R"; b=$(check "$R"); sb=$?
 if [ $sa -eq 0 ] && [ $sb -eq 1 ] && has "standards.json production_urls is" "$b"; then ok production-urls-validated; else fail production-urls-validated "$sa $a | $sb $b"; fi
 
+# setup-returns-check-status: cloud setup (`setup.sh`, no arguments) keeps failed installs non-fatal but returns the
+# check's status, so a broken pack is not reported as a ready environment (offline here: curl fails, installs skip)
+R=$(mkrepo); mkdir -p "$T/offline"; printf '#!/bin/sh\nexit 7\n' > "$T/offline/curl"; chmod +x "$T/offline/curl"
+a=$(cd "$R" && PATH="$T/offline:$PATH" CI=1 scripts/agent/setup.sh 2>&1); sa=$?
+echo "// edit" >> "$R/scripts/agent/pr.sh"; commit "$R"
+b=$(cd "$R" && PATH="$T/offline:$PATH" CI=1 scripts/agent/setup.sh 2>&1); sb=$?
+if [ $sa -eq 0 ] && has "offline: skipping installs" "$a" && [ $sb -eq 1 ] && has "managed file changed: scripts/agent/pr.sh" "$b"; then ok setup-returns-check-status; else fail setup-returns-check-status "$sa $a | $sb $b"; fi
+
 # agents-review-guidelines: the managed block tells the reviewer to leave pack-managed paths to the engine repo
 blk=$(node bin/repo-standards.mjs block --overlay "$OV" --profile internal)
 if grep -qx "## Review guidelines" <<<"$blk" && grep -q 'Skip pack-managed paths (`scripts/agent/`, `.claude/`, `.codex/`, `std-\*`)' <<<"$blk" && [ "$(tail -1 <<<"$blk")" = "<!-- std:end -->" ]

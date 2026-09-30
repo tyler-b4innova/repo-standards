@@ -18,7 +18,7 @@ Every key is optional except a lane's `name` and `vendor` (`claude` or `codex`).
 
 ## Consumer repositories
 
-Every managed file is committed, so offline cloud sessions and sandboxes have everything: the managed `AGENTS.md` block, `.agents/skills/std-*` (+ `.claude/skills` link), `scripts/agent/` (`setup.sh`, `check.mjs`, `gate.mjs`, `review.mjs`, `pr.sh`, `evidence.mjs`, `pack.json`), `.github/workflows/std-gate.yml` (the one required check, `gate`), PR/issue templates, `.claude/settings.json`, `.codex/config.toml`, `.codex/rules/std.rules`, the managed CODEOWNERS block (with `ui_owners`), and `standards.json` (repo-owned; states the pack version) + `standards.lock` (sha256 per managed path, engine version). Consumers never fetch the engine; only the org's sync job does:
+Every managed file is committed, so offline cloud sessions and sandboxes have everything: the managed `AGENTS.md` block, `.agents/skills/std-*` (+ `.claude/skills` link), `scripts/agent/` (`setup.sh`, `check.mjs`, `cleanup.mjs`, `pins.mjs`, `gate.mjs`, `review.mjs`, `pr.sh`, `evidence.mjs`, `pack.json`), `.github/workflows/std-gate.yml` (the one required check, `gate`), PR/issue templates, `.claude/settings.json`, `.codex/config.toml`, `.codex/rules/std.rules`, the managed CODEOWNERS block (with `ui_owners`), and `standards.json` (repo-owned; states the pack version) + `standards.lock` (sha256 per managed path, engine version). Consumers never fetch the engine; only the org's sync job does:
 
 ```sh
 npx -y github:tyler-b4innova/repo-standards#vX.Y.Z sync --overlay org.json --version <org release>   # GH_TOKEN = org App token
@@ -43,6 +43,10 @@ npx -y github:tyler-b4innova/repo-standards#vX.Y.Z apply --target <repo> --overl
 - **Promotions** (flow `staged`: default branch into another branch) need no evidence comment; one that changes UI paths needs an APPROVED review on the current head by a person with write access.
 
 The managed AGENTS.md block carries a `## Review guidelines` line telling Codex review to skip pack-managed paths: findings on those belong in this repository.
+
+## Session start
+
+The SessionStart hook runs `scripts/agent/setup.sh --check`: the offline check, then (never in CI) `cleanup.mjs`, which removes local branches and worktrees of merged work. One batched GitHub call asks which branches' pull requests merged (squash merges look unmerged to git); a branch goes, with its worktree, only when its PR merged in this repository at its local tip or a later commit and the worktree is clean (ignored files allowed), unlocked, not the main one or the session's own, and not under `~/.codex/worktrees`, `~/.t3/worktrees` or `.claude/worktrees`. Anything unsure stays; a network or auth failure removes nothing within a 1.5-second timeout; one line names what went. Cloud setup (`setup.sh` with no arguments) installs tools and dependencies best-effort and exits with the check's status.
 
 ## One-time, per person
 

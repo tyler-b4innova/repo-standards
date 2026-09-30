@@ -26,7 +26,7 @@ JSON
 # Today's org: one hand-made main ruleset (admin bypass, rebase allowed), one stray ruleset, no flow property.
 cat >"$T/state.json" <<'JSON'
 { "org": "acme",
-  "repos": [{"name":"app","allow_merge_commit":false},{"name":"site","allow_merge_commit":false},{"name":"gone","archived":true}],
+  "repos": [{"name":"app","allow_merge_commit":false},{"name":"site","allow_merge_commit":false,"delete_branch_on_merge":false},{"name":"gone","archived":true}],
   "property": null, "values": {},
   "rulesets": [
     { "name": "hand-made main", "target": "branch", "enforcement": "active",
@@ -100,7 +100,7 @@ out=$(node --input-type=module -e '
 if [ "$behind" = yes ] && [ "$out" = "false false true true" ]; then ok promotion-not-strict; else fail promotion-not-strict "behind=$behind strict(staged main, staged main with default main, staging, direct main)=$out"; fi
 
 # engine-org-dry-run-diff: a dry run names each change (field diffs for a matched ruleset, its old name, creates,
-# the stray delete, the property, a staged repo's missing merge-commit setting, the repo flows) and sends only GETs.
+# the stray delete, the property, a staged repo's missing merge-commit setting and a repo keeping merged branches, the repo flows) and sends only GETs.
 start "$T/state.json"
 out=$(run --dry-run)
 # the live ruleset's extra approval for unattributed changes is kept unless the overlay sets it
@@ -108,7 +108,7 @@ node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8
 ua=$(node org/apply.mjs --overlay "$T/org.json.ua" --dry-run 2>&1)
 if ! grep -q unattributed <<<"$out" && grep -q 'rules.pull_request.require_extra_approval_for_unattributed_changes: true -> false' <<<"$ua" && [ "$(writes)" = 0 ] && grep -q 'update (was "hand-made main")' <<<"$out" && grep -q 'rules.pull_request.allowed_merge_methods: \["merge","rebase","squash"\] -> \["merge","squash"\]' <<<"$out" \
   && grep -q 'bypass_actors: .*OrganizationAdmin.* -> \[{"actor_id":4242' <<<"$out" && grep -q '"stray" #[0-9]*: delete' <<<"$out" \
-  && grep -q 'repo site: enable allow_merge_commit' <<<"$out" && ! grep -q 'repo app:' <<<"$out" && grep -q 'property flow: create' <<<"$out" && grep -q 'flow=staged: site' <<<"$out" && grep -q 'flow=direct: app$' <<<"$out" && ! grep -q gone <<<"$out"; then
+  && grep -q 'repo site: enable delete_branch_on_merge, allow_merge_commit' <<<"$out" && ! grep -q 'repo app:' <<<"$out" && grep -q 'property flow: create' <<<"$out" && grep -q 'flow=staged: site' <<<"$out" && grep -q 'flow=direct: app$' <<<"$out" && ! grep -q gone <<<"$out"; then
   ok engine-org-dry-run-diff
 else fail engine-org-dry-run-diff "$out :: $ua"; fi
 
