@@ -19,6 +19,4 @@ Title: Conventional Commit in plain language. Body (file outside the repo), per 
 1. Commit locally. Write the title on the first line of `.evidence/pr.md`, then the body; leave it uncommitted for the launcher.
 2. End with "diff ready", the branch name and the commit SHA. Never say a PR was opened.
 
-If you close a PR without merging, delete its branch.
-
 Never mark ready, merge or enable auto-merge yourself.
