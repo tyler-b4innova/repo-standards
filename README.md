@@ -22,7 +22,7 @@ Every key is optional except a lane's `name` and, per lane kind, the keys below.
 
 ## Consumer repositories
 
-Every managed file is committed, so offline cloud sessions and sandboxes have everything: the managed `AGENTS.md` block, `.agents/skills/std-*` (+ `.claude/skills` link), `scripts/agent/` (`setup.sh`, `check.mjs`, `cleanup.mjs`, `pins.mjs`, `gate.mjs`, `review.mjs`, `pr.sh`, `evidence.mjs`, `pack.json`), `.github/workflows/std-gate.yml` (the one required check, `gate`), PR/issue templates, `.claude/settings.json`, `.codex/config.toml`, `.codex/rules/std.rules`, the managed CODEOWNERS block (with `ui_owners`), and `standards.json` (repo-owned; states the pack version) + `standards.lock` (sha256 per managed path, engine version). Consumers never fetch the engine; only the org's sync job does:
+Every managed file is committed, so offline cloud sessions and sandboxes have everything: the managed `AGENTS.md` block, `.agents/skills/std-*` (+ `.claude/skills` link), `scripts/agent/` (`setup.sh`, `check.mjs`, `cleanup.mjs`, `pins.mjs`, `gate.mjs`, `review.mjs`, `pr.sh`, `evidence.mjs`, `secret`, `pack.json`), `.github/workflows/std-gate.yml` (the one required check, `gate`), PR/issue templates, `.claude/settings.json`, `.codex/config.toml`, `.codex/rules/std.rules`, the managed CODEOWNERS block (with `ui_owners`), and `standards.json` (repo-owned; states the pack version) + `standards.lock` (sha256 per managed path, engine version). Consumers never fetch the engine; only the org's sync job does:
 
 ```sh
 npx -y github:tyler-b4innova/repo-standards#vX.Y.Z sync --overlay org.json --version <org release>   # GH_TOKEN = org App token
@@ -52,11 +52,25 @@ The managed AGENTS.md block carries a `## Review guidelines` line telling Codex 
 
 The SessionStart hook runs `scripts/agent/setup.sh --check`: the offline check, then (only after it passes, never in CI) `cleanup.mjs`, which removes local branches and worktrees of merged work. One batched GitHub call asks which branches' pull requests merged (squash merges look unmerged to git); a branch goes, with its worktree, only when its PR merged in this repository at its local tip or a later commit and the worktree has no changes, untracked or ignored files (ignored ones only inside regenerable directories: `node_modules`, `dist`, `build`, `.next`, `.turbo`, `.cache`, `coverage`, `test-results`, `playwright-report`), is unlocked, not the main one or the session's own, and not under `~/.codex/worktrees`, `~/.t3/worktrees` or `.claude/worktrees`. Anything unsure stays; a network or auth failure removes nothing within a 1.5-second timeout; one line names what went. Cloud setup (`setup.sh` with no arguments) installs tools and dependencies best-effort and exits with the check's status.
 
+## Secrets
+
+Bare `op` stays denied (it falls back to the desktop app and prompts for a fingerprint), and so does reading `~/.config`. `scripts/agent/secret` is the sanctioned reader: it runs `op` with the org's read-only service-account token and the desktop app switched off, so a missing token fails instead of prompting. It has no verb that prints a value:
+
+```sh
+scripts/agent/secret pipe op://<vault>/<item>/<field> -- <command> [args...]            # the secret on the command's stdin
+scripts/agent/secret env NAME=op://<vault>/<item>/<field> [NAME2=...] -- <command> ...  # those environment variables set
+scripts/agent/secret list [--vault <vault>]        # item titles
+scripts/agent/secret fields <item> [--vault <vault>]   # field labels
+scripts/agent/secret check op://<vault>/<item>/<field>   # exit 0 if it resolves; prints nothing
+```
+
+The command gets neither the token nor any `OP_` variable, and the exact secret value in its output is masked as `***`. Only the vaults the overlay names are read; any other is refused before `op` runs. Overlay `accounts.secrets` (data only; a literal token is refused): `{ "kind": "1password", "vault_id": "<vault name or id>", "vaults": ["<more>"], "token_env": "OP_SERVICE_ACCOUNT_TOKEN", "token_file": "~/.config/<org>/op-sa.env" }`. `token_file` holds one `<token_env>=<token>` line on each person's machine, read by the script and never by an agent; without the file the script uses `<token_env>` from the environment (a cloud session). A pack with no `kind: "1password"` vault gets a one-line refusal. It keeps values out of transcripts and logs; it is not a sandbox against a command written to leak what it is given.
+
 ## One-time, per person
 
 - Claude: bypass cannot be set from a repository. Set `permissions.defaultMode: "bypassPermissions"` in `~/.claude/settings.json` (or run `claude --dangerously-skip-permissions` once and accept the dialog). `setup.sh --check` warns while it is off.
 - Codex: trust each repository (accept the prompt, or add `[projects."<path>"] trust_level = "trusted"`). Until then Codex ignores the repo's bypass and rules; `setup.sh --check` warns with the fix.
-- Deny rules bind even under bypass: agents cannot read secret files or run `op`, and cannot force-push. Repo scripts that need a secret (for example `sentry-setup`) read it themselves.
+- Deny rules bind even under bypass: agents cannot read secret files or run `op`, and cannot force-push. Repo scripts that need a secret (for example `sentry-setup`) read it themselves; an agent reads one through `scripts/agent/secret` (below).
 
 Models: repositories never pin a model or effort; each person's app (or the org launcher) decides. Apply removes any pin from the root `.claude/settings.json` and `.codex/config.toml` (`scripts/agent/pins.mjs` lists the keys), and `--check` fails on one.
 

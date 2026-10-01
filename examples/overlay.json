@@ -12,7 +12,10 @@
   "accounts": {
     "cloudflare_account_id": "none",
     "secrets": {
-      "kind": "none"
+      "kind": "1password",
+      "vault_id": "Example Vault",
+      "token_env": "OP_SERVICE_ACCOUNT_TOKEN",
+      "token_file": "~/.config/example-org/op-sa.env"
     },
     "error_tracker": {
       "kind": "none"

@@ -75,6 +75,14 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 - **`session-hook-single`**: apply keeps the repository's own SessionStart hooks and leaves exactly one `setup.sh --check` hook under matcher `startup|resume`; `--check` fails when the hook sits under another matcher (apply once dropped a repo's hooks with the old group).
 - **`agent-deny-secrets-and-force-push`**: apply writes the deny set (secret reads, `op`, force-push) replacing any repo list, the Codex bypass keys above the first table, and Codex rules that forbid `op` and force-push but allow `--force-with-lease`; a repository that ignores `.codex/` in any form still commits the engine's Codex files.
 
+## Agent secrets (`scripts/agent/secret`, through a stand-in `op`)
+
+- **`secret-reads-through-service-account`**: `pipe` hands the command exactly the value on stdin and prints nothing itself; `env` sets the named variables; the command's exit status is kept; `check` exits 0 printing nothing, and 1 for a reference that does not resolve. `op` always gets the org token (from the token file, else the named variable, whatever the environment holds) with the desktop app switched off (the stand-in fails as the desktop prompt would); the command inherits no `OP_` variable.
+- **`secret-never-prints-values`**: there is no `read`, `get`, `item` or bare-reference verb (all refused before `op` runs), `pipe` and `env` need a command after `--`, the token variable cannot be set by `env`; a command that prints what it was given shows `***` on either stream, even split across writes; `list` prints item titles and `fields` field labels, never a value.
+- **`secret-vault-allowlist`**: a reference, `--vault` or item path in a vault the overlay does not name (or via `.` or `..` segments) is refused before `op` runs, for every verb.
+- **`secret-token-never-echoed`**: a missing token file is explained (path and variable, nothing run), as is a file without the token line and a pack with no vault; an `op` that puts the token in its error text is scrubbed; neither the token nor a secret value appears in any output.
+- **`agent-secret-permissions`**: apply allows `Bash(scripts/agent/secret:*)` while bare `Bash(op *)` and `Read(~/.config/**)` stay denied and the Codex rule still forbids `op`; the script is executable and the offline check passes with it; an overlay `accounts.secrets` with a relative `token_file`, a non-list `vaults`, a bad `token_env` or a credential-looking value is refused.
+
 ## Pull requests and sync
 
 - **`pr-open-verified`**: the PR helper sends nothing on a dry run, refuses a branch that is not on GitHub, reuses the open PR, and prints a URL only after reading the PR back.

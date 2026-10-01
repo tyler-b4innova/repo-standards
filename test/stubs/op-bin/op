@@ -1,0 +1,23 @@
+#!/usr/bin/env node
+// Stand-in `op` for scripts/agent/secret: `op read --no-newline <ref>`, `op item list|get --vault V --format json`.
+// $FAKE_OP_STATE (JSON): { token, vaults: { <vault>: { <item>: { <field>: <value> } } }, leak? }; every call is logged to
+// $FAKE_OP_LOG. Like the real CLI it needs the service-account token, and fails (as the desktop prompt would) when the
+// desktop app is not switched off. `leak` puts the token in error text, to prove the caller scrubs it.
+import { appendFileSync, readFileSync } from "node:fs";
+const a = process.argv.slice(2), st = JSON.parse(readFileSync(process.env.FAKE_OP_STATE, "utf8")), e = process.env;
+appendFileSync(process.env.FAKE_OP_LOG, `${JSON.stringify(a)}\n`);
+const err = (m) => { process.stderr.write(`[ERROR] 2026/10/01 00:00:00 ${st.leak ? `${st.token} ` : ""}${m}\n`); process.exit(1); };
+if (e.OP_SERVICE_ACCOUNT_TOKEN !== st.token) err("desktop app authorization prompt (no service-account token)");
+if (e.OP_BIOMETRIC_UNLOCK_ENABLED !== "false") err("desktop app authorization prompt (biometric unlock left on)");
+const vault = (v) => st.vaults[v] ?? err(`"${v}" isn't a vault in this account`);
+if (a[0] === "read" && a[1] === "--no-newline") {
+  const [v, item, field] = a[2].replace("op://", "").split("/");
+  const value = vault(v)[item]?.[field];
+  if (value === undefined) err(`"${a[2]}" isn't an item in the "${v}" vault`);
+  process.stdout.write(value);
+} else if (a[0] === "item" && a[1] === "list" && a[2] === "--vault") {
+  console.log(JSON.stringify(Object.keys(vault(a[3])).map((title) => ({ id: title.toLowerCase(), title, vault: { name: a[3] } }))));
+} else if (a[0] === "item" && a[1] === "get" && a[3] === "--vault") {
+  const fields = vault(a[4])[a[2]] ?? err(`"${a[2]}" isn't an item in the "${a[4]}" vault`);
+  console.log(JSON.stringify({ title: a[2], fields: Object.entries(fields).map(([label, value]) => ({ label, value, type: "CONCEALED" })) }));
+} else err(`unsupported: op ${a.join(" ")}`);
