@@ -39,7 +39,9 @@
     ".agents/skills/std-*/**",
     "standards.json"
   ],
-  "permissions_allow": [],
+  "permissions_allow": [
+    "Bash(scripts/agent/secret:*)"
+  ],
   "forbidden_files": [
     "CONTEXT.md",
     ".mcp.json"

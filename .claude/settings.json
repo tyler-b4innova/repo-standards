@@ -16,7 +16,8 @@
   "permissions": {
     "allow": [
       "Bash(scripts/agent/pr.sh:*)",
-      "Bash(node scripts/agent/evidence.mjs:*)"
+      "Bash(node scripts/agent/evidence.mjs:*)",
+      "Bash(scripts/agent/secret:*)"
     ],
     "deny": [
       "Read(~/.ssh/**)",

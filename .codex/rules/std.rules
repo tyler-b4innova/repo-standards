@@ -2,7 +2,7 @@
 prefix_rule(
     pattern=["op"],
     decision="forbidden",
-    justification="Secrets are read by the repo scripts that need them, never with bare op.",
+    justification="Never bare op (it prompts the desktop app). Read secrets with scripts/agent/secret; repo scripts read their own.",
 )
 prefix_rule(
     pattern=["git", "push", ["--force", "-f"]],
