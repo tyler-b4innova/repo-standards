@@ -99,6 +99,25 @@ out=$(node --input-type=module -e '
 # mergeable = not (strict and behind)
 if [ "$behind" = yes ] && [ "$out" = "false false true true" ]; then ok promotion-not-strict; else fail promotion-not-strict "behind=$behind strict(staged main, staged main with default main, staging, direct main)=$out"; fi
 
+# gate-required-either-strict: `gate` is a required check on every ruleset that covers a default branch or main, direct
+# repos' and staged repos' shapes alike, with strict on or off; strict only changes the flag, and only where ordinary PRs land
+# (staging, direct repos). Incident: strict off dropped the direct repos' required_status_checks rule, so org-apply would
+# have removed `gate` from every direct repo's default branch.
+out=$(node --input-type=module -e '
+  import { render } from "./org/apply.mjs";
+  import { readFileSync } from "node:fs";
+  const o = JSON.parse(readFileSync(process.argv[1], "utf8"));
+  const shape = (strict) => {
+    o.org_admin.strict_status_checks = strict;
+    return render(o).rulesets.filter((r) => r.rules.pull_request).map((r) => {
+      const c = r.rules.required_status_checks;
+      return `${r.name}=${c ? c.required_status_checks.map((x) => x.context).join("+") + ":" + c.strict_required_status_checks_policy : "MISSING"}`;
+    });
+  };
+  console.log(JSON.stringify([false, true].map(shape)));' "$T/org.json" 2>&1)
+want='[["org: default branch and main (PR + gate)=gate:false","org: direct repos squash-merge=gate:false","org: staged main takes promotions (merge commit)=gate:false","org: staging (PR + gate, squash)=gate:false"],["org: default branch and main (PR + gate)=gate:false","org: direct repos squash-merge=gate:true","org: staged main takes promotions (merge commit)=gate:false","org: staging (PR + gate, squash)=gate:true"]]'
+[ "$out" = "$want" ] && ok gate-required-either-strict || fail gate-required-either-strict "$out"
+
 # engine-org-dry-run-diff: a dry run names each change (field diffs for a matched ruleset, its old name, creates,
 # the stray delete, the property, a staged repo's missing merge-commit setting and a repo keeping merged branches, the repo flows) and sends only GETs.
 start "$T/state.json"

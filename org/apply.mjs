@@ -48,8 +48,6 @@ export function render(overlay) {
     if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, fill(x)]));
     return v;
   };
-  // A rule marked "$when": "<var>" is present only while that overlay value is on (and never carries the marker).
-  const when = (r) => ({ ...r, rules: r.rules.filter((x) => !x.$when || vars[x.$when] === true).map(({ $when, ...x }) => x) });
   // Org admins bypass only through a PR (break-glass merge): local agent sessions run on an admin's
   // gh login, and "always" would let them push or force-push to protected branches. Push rulesets
   // refuse the pull_request mode, so they have no bypass at all: the App bypasses the branch rulesets so pack
@@ -65,7 +63,7 @@ export function render(overlay) {
   return {
     property: DEF.property,
     external,
-    rulesets: DEF.rulesets.filter((r) => !(external && r.target === "push")).map((r) => canon({ ...fill(when(r)), enforcement: "active", bypass_actors: bypass(r) }, prDefaults)),
+    rulesets: DEF.rulesets.filter((r) => !(external && r.target === "push")).map((r) => canon({ ...fill(r), enforcement: "active", bypass_actors: bypass(r) }, prDefaults)),
   };
 }
 
