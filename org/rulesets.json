@@ -1,5 +1,5 @@
 {
-  "$comment": "Org-level rulesets every org gets. `org/apply.mjs` renders them with the overlay's `org_admin` (App bypass, strict checks, extra checks per ruleset, extra restricted and ignored push paths, max file size, an external push ruleset) and owns every organization-level ruleset: names not listed here are deleted on apply. `$`-prefixed strings are overlay placeholders. Every PR ruleset requires resolved review threads; code-owner review (the managed CODEOWNERS block for a repo's ui_paths) is required on main only: the direct repos' default branch and main, and staged repos' main. Strict status checks (`strict_status_checks`) apply only where ordinary PRs land: the direct repos' ruleset (a rule present only when strict is on, marked `$when`) and staging; never on a ruleset that covers staged repos' main, because promotions leave main ahead by merge commits staging never gets, so strict would hold every promotion BEHIND.",
+  "$comment": "Org-level rulesets every org gets. `org/apply.mjs` renders them with the overlay's `org_admin` (App bypass, strict checks, extra checks per ruleset, extra restricted and ignored push paths, max file size, an external push ruleset) and owns every organization-level ruleset: names not listed here are deleted on apply. `$`-prefixed strings are overlay placeholders. Every PR ruleset requires resolved review threads; code-owner review (the managed CODEOWNERS block for a repo's ui_paths) is required on main only: the direct repos' default branch and main, and staged repos' main. Strict status checks (`strict_status_checks`) apply only where ordinary PRs land: the direct repos' ruleset and staging (their `gate` rule is always present; only its strict flag follows the overlay); never on a ruleset that covers staged repos' main, because promotions leave main ahead by merge commits staging never gets, so strict would hold every promotion BEHIND.",
   "property": {
     "property_name": "flow",
     "value_type": "single_select",
@@ -105,10 +105,9 @@
           }
         },
         {
-          "$when": "strict_status_checks",
           "type": "required_status_checks",
           "parameters": {
-            "strict_required_status_checks_policy": true,
+            "strict_required_status_checks_policy": "$strict_status_checks",
             "do_not_enforce_on_create": true,
             "required_status_checks": [
               {
