@@ -244,6 +244,15 @@ if (cmd === "plan") {
   if (e2eCfg.budget !== undefined && !(typeof e2eCfg.budget === "number" && e2eCfg.budget > 0)) fail(`standards.json e2e.budget is ${JSON.stringify(e2eCfg.budget)}`, "minutes above 0 (it may only tighten the org budget)");
   const mins = Math.min(e2eCfg.budget ?? Infinity, pack.gate_budget?.e2e ?? 5), ms = Math.round(mins * 60000);
   const url = env.GATE_PREVIEW_URL ?? "";
+  // A client site's preview must not be indexed: its home page says noindex (robots meta or X-Robots-Tag).
+  if (url && pack.profile === "client") {
+    let res = null, html = "";
+    try { res = await fetch(url, { redirect: "follow" }); html = await res.text(); } catch (e) { fail(`the preview at ${url} did not answer: ${e.cause?.code ?? e.message}`, "re-run gate once the preview is up"); }
+    const meta = [...html.matchAll(/<meta\b[^>]*>/gi)].some(([m]) => /name=["']?robots/i.test(m) && /noindex/i.test(m));
+    if (!meta && !/noindex/i.test(res.headers.get("x-robots-tag") ?? ""))
+      fail(`the preview at ${url} carries no noindex (robots meta or X-Robots-Tag)`, "previews must not be indexed: render <meta name=\"robots\" content=\"noindex\"> on every non-production host");
+    console.log(`preview noindex: ok (${url})`);
+  }
   if (run) {
     console.log(`e2e: ${run[0]} ${run[1].map((a) => (a.includes("*") ? `"${a}"` : a)).join(" ")}${url ? ` against ${url}` : ""} (budget ${mins} min)`);
     const r = spawnSync(run[0], run[1], { stdio: "inherit", timeout: ms, killSignal: "SIGKILL",
