@@ -238,8 +238,16 @@ else {
           fail(`${f}: html sets overflow-x`, "remove it; clip the overflowing element instead (overflow: clip)");
       }
     }
-    // Sentry: a site whose Worker runs code, on the Cloudflare SDK, reports from all four layers.
     const wrangler = ["wrangler.jsonc", "wrangler.json", "wrangler.toml"].map(read).find((t) => t !== null) ?? "";
+    // Mail: one seam sends it, and the seam checks the request host, so previews, workers.dev and localhost never mail
+    // the client. Senders: files naming a send_email binding from the wrangler config, or importing cloudflare:email.
+    const bindings = [...(wrangler.match(/send_email[\s\S]*?\]/)?.[0] ?? "").matchAll(/name["']?\s*[:=]\s*["']([A-Za-z_]\w*)["']/g)].map((m) => m[1]);
+    const senders = src.filter((f) => !/\.d\.ts$/.test(f) && (/from\s+["']cloudflare:email["']/.test(read(f) ?? "") || bindings.some((b) => new RegExp(`\\b${b}\\b`).test(read(f) ?? ""))));
+    const hostChecked = (f) => /\.host(name)?\b/.test(read(f) ?? ""), seam = senders.find(hostChecked) ?? senders[0];
+    for (const f of senders.filter((f) => f !== seam)) fail(`${f} sends mail outside the email seam (${seam})`, `send through ${seam}, the one place that reroutes non-production hosts`);
+    if (seam && !hostChecked(seam))
+      fail(`${seam} sends mail but never checks the request host`, "mail real recipients only from the production hosts; reroute every other host (previews, workers.dev, localhost) to a test inbox");
+    // Sentry: a site whose Worker runs code, on the Cloudflare SDK, reports from all four layers.
     const main = wrangler.match(/["']?main["']?\s*[:=]\s*["']([^"']+)["']/)?.[1]?.replace(/^\.\//, "");
     const deps = json("package.json") ?? {};
     if (main && { ...deps.dependencies, ...deps.devDependencies }["@sentry/cloudflare"]) {
