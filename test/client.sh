@@ -84,12 +84,16 @@ export async function sendFormEmail(request, mail) {
   await env.SEND_EMAIL.send({ ...mail, to: live ? mail.to : ["test@example.com"] });
 }'
 mail_site() { put "$1" wrangler.jsonc '{ "name": "site", "send_email": [{ "name": "SEND_EMAIL" }] }'; put "$1" src/env.d.ts 'interface Env { SEND_EMAIL: SendEmail }'; }
-G=$(mkrepo); mail_site "$G"; put "$G" src/lib/email.ts "$SEAM"; put "$G" src/pages/api/contact.ts 'import { sendFormEmail } from "../../lib/email"; export const POST = ({ request }) => sendFormEmail(request, {});'; commit "$G"
+G=$(mkrepo); mail_site "$G"; put "$G" src/lib/email.ts "$SEAM"; put "$G" src/pages/api/contact.ts 'import { sendFormEmail } from "../../lib/email"; export const POST = ({ request }) => sendFormEmail(request, {});'
+put "$G" tests/contact.test.mjs 'const env = { SEND_EMAIL: { send: async () => {} } };'; commit "$G" # a test's stand-in binding is not a sender
 B=$(mkrepo); mail_site "$B"; put "$B" src/lib/email.ts "$SEAM"; put "$B" src/pages/api/order.ts 'import { env } from "cloudflare:workers"; export const POST = () => env.SEND_EMAIL.send({ to: ["client@example.com"] });'; commit "$B"
 I=$(mkrepo internal); mail_site "$I"; put "$I" src/pages/api/contact.ts 'export const POST = () => env.SEND_EMAIL.send({});'; commit "$I"
 verdict client-mail-seam "$G" "$B" "src/pages/api/order.ts sends mail outside the email seam" "$I"
-B=$(mkrepo); mail_site "$B"; put "$B" src/pages/api/contact.ts 'import { EmailMessage } from "cloudflare:email"; export const POST = () => env.SEND_EMAIL.send(new EmailMessage("a", "client@example.com", ""));'; commit "$B"
-b=$(check "$B"); has "src/pages/api/contact.ts sends mail but never checks the request host" "$b" && ok client-mail-seam || fail client-mail-seam "no reroute: $b"
+# a same-origin check reads the host too, but routes nothing: the seam must compare the hostname with the production hosts
+B=$(mkrepo); mail_site "$B"; put "$B" src/pages/api/contact.ts 'import { EmailMessage } from "cloudflare:email";
+export const POST = ({ request }) => { if (new URL(request.headers.get("origin")).host !== new URL(request.url).host) return new Response(null, { status: 403 });
+  return env.SEND_EMAIL.send(new EmailMessage("a", "client@example.com", "")); };'; commit "$B"
+b=$(check "$B"); has "src/pages/api/contact.ts sends mail but never compares the request hostname with the production hosts" "$b" && ok client-mail-seam || fail client-mail-seam "no reroute: $b"
 
 # ---- built output: after the build, dist/ HTML has no HTML comments, no comments in inline scripts, and no
 # source-platform names (gate.mjs run build)
