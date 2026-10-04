@@ -27,8 +27,12 @@ expect_fail() {
 R=$(mkrepo); echo "Always use tabs." > "$R/CLAUDE.md" && commit "$R"; a=$(check "$R"); sa=$?
 echo "@AGENTS.md" > "$R/CLAUDE.md" && commit "$R"; b=$(check "$R"); sb=$?
 FO=$T/forbid.json; node -e 'const o=require(process.argv[1]);o.claude_md="forbid";require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$FO"
+# the shim may carry Claude-only lines below the import; the import must come first
+printf '@AGENTS.md\n\n- Claude only: x\n' > "$R/CLAUDE.md" && commit "$R"; d=$(check "$R"); sd=$?
+printf 'Always use tabs.\n@AGENTS.md\n' > "$R/CLAUDE.md" && commit "$R"; e=$(check "$R"); se=$?
+echo "@AGENTS.md" > "$R/CLAUDE.md" && commit "$R"
 OVERLAY=$FO apply "$R" >/dev/null && commit "$R"; c=$(check "$R"); sc=$?
-if [ $sa -eq 1 ] && has CLAUDE.md "$a" && [ $sb -eq 0 ] && [ $sc -eq 1 ] && has CLAUDE.md "$c"; then ok claude-md-no-own-content; else fail claude-md-no-own-content "$sa $sb $sc"; fi
+if [ $sa -eq 1 ] && has CLAUDE.md "$a" && [ $sb -eq 0 ] && [ $sd -eq 0 ] && [ $se -eq 1 ] && has CLAUDE.md "$e" && [ $sc -eq 1 ] && has CLAUDE.md "$c"; then ok claude-md-no-own-content; else fail claude-md-no-own-content "own=$sa shim=$sb shim+lines=$sd lines-first=$se forbid=$sc: $d $e"; fi
 
 # ---- offline check
 all=1; for p in internal client; do R=$(mkrepo $p); out=$(check "$R"); [ $? -eq 0 ] && has "standards ok: example v0.1.0 $p" "$out" || { all=0; echo "$out"; }; done
