@@ -242,11 +242,12 @@ else {
     // Mail: one seam sends it, and the seam checks the request host, so previews, workers.dev and localhost never mail
     // the client. Senders: files naming a send_email binding from the wrangler config, or importing cloudflare:email.
     const bindings = [...(wrangler.match(/send_email[\s\S]*?\]/)?.[0] ?? "").matchAll(/name["']?\s*[:=]\s*["']([A-Za-z_]\w*)["']/g)].map((m) => m[1]);
-    const senders = src.filter((f) => !/\.d\.ts$/.test(f) && (/from\s+["']cloudflare:email["']/.test(read(f) ?? "") || bindings.some((b) => new RegExp(`\\b${b}\\b`).test(read(f) ?? ""))));
-    const hostChecked = (f) => /\.host(name)?\b/.test(read(f) ?? ""), seam = senders.find(hostChecked) ?? senders[0];
+    const senders = src.filter((f) => !/\.d\.ts$/.test(f) && !/(^|\/)(tests?|e2e|__tests__)\/|\.(test|spec)\.[cm]?[jt]sx?$/.test(f) && (/from\s+["']cloudflare:email["']/.test(read(f) ?? "") || bindings.some((b) => new RegExp(`\\b${b}\\b`).test(read(f) ?? ""))));
+    // The seam compares the request hostname with quoted production hosts (a same-origin check reads the host too).
+    const hostChecked = (f) => /\.hostname\b/.test(read(f) ?? "") && /["'`](www\.)?[a-z0-9-]+(\.[a-z0-9-]+)+["'`]/i.test(read(f) ?? ""), seam = senders.find(hostChecked) ?? senders[0];
     for (const f of senders.filter((f) => f !== seam)) fail(`${f} sends mail outside the email seam (${seam})`, `send through ${seam}, the one place that reroutes non-production hosts`);
     if (seam && !hostChecked(seam))
-      fail(`${seam} sends mail but never checks the request host`, "mail real recipients only from the production hosts; reroute every other host (previews, workers.dev, localhost) to a test inbox");
+      fail(`${seam} sends mail but never compares the request hostname with the production hosts`, "mail real recipients only from the production hosts; reroute every other host (previews, workers.dev, localhost) to a test inbox");
     // Sentry: a site whose Worker runs code, on the Cloudflare SDK, reports from all four layers.
     const main = wrangler.match(/["']?main["']?\s*[:=]\s*["']([^"']+)["']/)?.[1]?.replace(/^\.\//, "");
     const deps = json("package.json") ?? {};
