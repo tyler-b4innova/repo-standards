@@ -226,6 +226,18 @@ else {
       for (const [u] of (read(f) ?? "").matchAll(/challenges\.cloudflare\.com\/turnstile\/[^\s"'`)<>]*/g))
         if (!/\/siteverify$/.test(u) && !/\/turnstile\/v0\/api\.js(\?.*)?$/.test(u))
           fail(`${f} loads Turnstile from ${u}, not the versioned script`, "use https://challenges.cloudflare.com/turnstile/v0/api.js");
+    // overflow: hidden on a block animated on a view()/scroll() timeline freezes the timeline; overflow-x on html breaks
+    // scrolling. Innermost CSS rules of stylesheets and components' <style> blocks (a reading of the stylelint rule).
+    for (const f of tracked.filter((f) => /\.(css|scss|astro|svelte|vue|html)$/.test(f) && !/^(node_modules|dist)\//.test(f))) {
+      const text = read(f) ?? "", css = /\.s?css$/.test(f) ? text : [...text.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map((m) => m[1]).join("\n");
+      for (const [, sel, body] of css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+        const name = sel.trim().replace(/\s+/g, " ");
+        if (/animation-timeline\s*:[^;]*\b(view|scroll)\(/.test(body) && /(^|[;\s])overflow(-[xy])?\s*:\s*hidden\b/.test(body))
+          fail(`${f}: ${name} is animated on a scroll timeline but sets overflow: hidden, which freezes the timeline`, "use overflow: clip");
+        if (name.split(",").some((x) => ["html", ":root"].includes(x.trim())) && /(^|[;\s])overflow-x\s*:/.test(body))
+          fail(`${f}: html sets overflow-x`, "remove it; clip the overflowing element instead (overflow: clip)");
+      }
+    }
   }
   for (const host of pack.shared_preview_hosts)
     for (const f of tracked.filter((f) => /(^|\/)wrangler\.(jsonc?|toml)$/.test(f)))
