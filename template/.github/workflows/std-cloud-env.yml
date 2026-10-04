@@ -1,15 +1,18 @@
 # Managed by the standards pack, shipped only to repositories with a cloud-env.json (and an org overlay that names the
-# cloud-env tool). Only a cloud-env.json change starts it, and it is not a required check. A pull request runs the
-# tool's offline check (schema and consistency) with no token. A push to the default branch applies the file with the
+# cloud-env action, rendered below). Not a required check. A cloud-env.json change on a pull request runs the offline
+# check (schema and consistency) with no token. A push to main, the production branch, applies the file with the
 # Cloudflare token read from the org's CI 1Password vault (the overlay's cloud_env.token_ref, through the org secret
-# OP_SERVICE_ACCOUNT_TOKEN); while that reference is unset it only posts a notice. Agents never hold this token.
+# OP_SERVICE_ACCOUNT_TOKEN); while that reference is unset it only posts a notice. A staged repository's integration
+# branch only checks: cloud changes go live through the promotion. A manual run checks, and on main also applies (a
+# cloud-env.json that predates this workflow is onboarded that way). Agents never hold this token.
 name: std-cloud-env
 on:
   pull_request:
     paths: [cloud-env.json]
   push:
-    branches: [main, staging]
+    branches: [main]
     paths: [cloud-env.json]
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
@@ -17,27 +20,22 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   cloud-env:
-    # a push to a branch that is not the default (a staged repository's promotion to main) starts no runner
-    if: github.event_name == 'pull_request' || github.ref_name == github.event.repository.default_branch
     runs-on: ${{ vars.STD_GATE_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
       - name: settings
         id: cfg
-        run: node -e 'const c=require("./scripts/agent/pack.json").cloud_env??{};console.log("package="+(c.package??"")+"\ntoken_ref="+(c.token_ref??""))' >>"$GITHUB_OUTPUT"
+        run: node -e 'console.log("token_ref="+(require("./scripts/agent/pack.json").cloud_env?.token_ref??""))' >>"$GITHUB_OUTPUT"
       - name: check
-        if: github.event_name == 'pull_request'
-        env:
-          PKG: ${{ steps.cfg.outputs.package }}
-        run: npx -y "$PKG" apply cloud-env.json --check --offline
+        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+        uses: {cloud_env_action}
+        with:
+          args: --check --offline
       - name: token
-        if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch && steps.cfg.outputs.token_ref != ''
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.cfg.outputs.token_ref != ''
         uses: 1password/load-secrets-action@70062d7a876d3eb6334754fa26efd2fbd90c32f2 # v5.0.1
         with:
           export-env: true
@@ -45,10 +43,8 @@ jobs:
           OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
           CLOUDFLARE_API_TOKEN: ${{ steps.cfg.outputs.token_ref }}
       - name: apply
-        if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch && steps.cfg.outputs.token_ref != ''
-        env:
-          PKG: ${{ steps.cfg.outputs.package }}
-        run: npx -y "$PKG" apply cloud-env.json
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.cfg.outputs.token_ref != ''
+        uses: {cloud_env_action}
       - name: inert
-        if: github.event_name == 'push' && steps.cfg.outputs.token_ref == ''
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && steps.cfg.outputs.token_ref == ''
         run: echo "::notice::cloud-env.json was not applied; the org overlay sets no cloud_env.token_ref yet"

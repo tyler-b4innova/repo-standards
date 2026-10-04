@@ -51,7 +51,7 @@ step_key "$R/$WF" apply args >/dev/null && why="$why; apply passes args"
 # pull requests and manual runs check with no secret in reach; only main applies, and only with a token reference
 c=$(step_if "$R/$WF" check); has "pull_request" "$c" && has "workflow_dispatch" "$c" || why="$why; check runs on: $c"
 grep -q 'secrets\.' <(sed -n '/- name: check/,/- name: /p' "$R/$WF" | sed '$d') && why="$why; the check step reads a secret"
-for s in token apply; do c=$(step_if "$R/$WF" "$s"); has "github.ref == 'refs/heads/main'" "$c" && has "steps.cfg.outputs.token_ref != ''" "$c" && ! has pull_request "$c" || why="$why; $s runs ungated: $c"; done
+for s in token apply; do c=$(step_if "$R/$WF" "$s"); has "github.ref == 'refs/heads/main'" "$c" && has "steps.cfg.outputs.token_ref != ''" "$c" && has "github.event_name != 'pull_request'" "$c" || why="$why; $s runs ungated: $c"; done
 c=$(step_if "$R/$WF" inert); has "steps.cfg.outputs.token_ref == ''" "$c" && has "refs/heads/main" "$c" || why="$why; no inert notice: $c"
 grep -q 'uses: 1password/load-secrets-action@[0-9a-f]\{40\}' "$R/$WF" && grep -q 'OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}' "$R/$WF" \
   && grep -q 'CLOUDFLARE_API_TOKEN: ${{ steps.cfg.outputs.token_ref }}' "$R/$WF" || why="$why; token not read through the pinned 1Password action"
