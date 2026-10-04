@@ -51,4 +51,29 @@ B=$(mkrepo); put "$B" src/styles/global.css 'html, body { margin: 0 }
 html { overflow-x: hidden; }'; commit "$B"
 b=$(check "$B"); has "src/styles/global.css: html sets overflow-x" "$b" && ok client-overflow-clip || fail client-overflow-clip "html overflow-x: $b"
 
+# ---- Sentry: a client site whose Worker runs code (wrangler main) with the Cloudflare SDK has all four layers: the
+# Worker wrapper, the middleware, the browser init and its same-origin tunnel route
+sentry_site() { # sentry_site <repo> [layer to leave out]
+  put "$1" package.json '{"name":"site","private":true,"dependencies":{"@sentry/cloudflare":"^10.0.0","@sentry/browser":"^10.0.0"}}'
+  put "$1" wrangler.jsonc '{ "name": "site", "main": "./sentry.server.config.ts" }'
+  [ "${2:-}" = wrapper ] || put "$1" sentry.server.config.ts 'export default Sentry.withSentry(() => ({}), handler);'
+  [ "${2:-}" = middleware ] || put "$1" src/middleware.ts 'export const onRequest = async (_c, next) => { try { return await next(); } catch (e) { Sentry.captureException(e); throw e; } };'
+  [ "${2:-}" = browser ] || put "$1" src/scripts/monitor.ts "import * as Sentry from '@sentry/browser';
+Sentry.init({ dsn: 'https://key@o1.ingest.example.com/1', tunnel: '/api/t/' });"
+  [ "${2:-}" = tunnel ] || put "$1" src/pages/api/t.ts 'export const POST = async () => new Response(null);'
+  commit "$1"
+}
+G=$(mkrepo); sentry_site "$G"
+I=$(mkrepo internal); put "$I" package.json '{"name":"x","dependencies":{"@sentry/cloudflare":"^10.0.0"}}'; put "$I" wrangler.jsonc '{ "main": "src/index.ts" }'; commit "$I"
+S=$(mkrepo); put "$S" wrangler.jsonc '{ "name": "static", "assets": { "directory": "./dist" } }'; commit "$S" # no Worker code: nothing to report from
+why=""
+check "$G" >/dev/null || why="complete site failed: $(check "$G")"
+check "$S" >/dev/null || why="$why; static site failed"
+check "$I" >/dev/null || why="$why; internal checked"
+for layer in wrapper middleware browser tunnel; do
+  B=$(mkrepo); sentry_site "$B" $layer; b=$(check "$B")
+  has "Sentry layer missing: $layer" "$b" || why="$why; no $layer: $b"
+done
+if [ -z "$why" ]; then ok client-sentry-four-layers; else fail client-sentry-four-layers "$why"; fi
+
 done_cases
