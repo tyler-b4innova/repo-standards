@@ -132,6 +132,13 @@ if [ $rc1 -eq 0 ] && [ "$gates" = 0 ] && [ "$(git --git-dir "$R/acme/alpha.git" 
   ok sync-lands-without-gate
 else fail sync-lands-without-gate "rc=$rc1 gates=$gates a0=$a0 a1=$a1 a2=$a2 moved=$moved rows: $alpha_row1 / $alpha_row2 / boot $boot_row1 out: $out1 $out2"; fi
 
+# sync-lists-off-fleet: a repository with no standards.json gets a row (and nothing written to it); excluded,
+# archived, other-pack and other-org repositories stay off the table.
+plain_row=$(row acme/plain) rest=$(for r in acme/skipme acme/old acme/other acme/standards rival/x; do row "$r"; done)
+plain_writes=$(between "$m1" "$e1" | grep -v '"method":"GET"' | grep -c '/repos/acme/plain/' || true)
+if [ "$plain_row" = "| acme/plain | - | none | not in fleet: no standards.json |" ] && [ -z "$rest" ] && [ "$plain_writes" = 0 ] && [ "$(sha acme/plain main)" = "$(git -C "$T/seed/acme/plain" rev-parse HEAD)" ]; then ok sync-lists-off-fleet
+else fail sync-lists-off-fleet "plain=$plain_row rest=$rest writes=$plain_writes"; fi
+
 # A staged repository whose default branch is main never takes a direct landing.
 g_row=$(q acme/standards 's.items.find(i => !i.pull && i.title === "Standards compliance")?.body' | grep '^| acme/gamma ')
 g_prs=$(q acme/gamma 's.items.filter(i => i.pull).length')
