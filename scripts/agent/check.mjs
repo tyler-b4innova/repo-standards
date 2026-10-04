@@ -95,7 +95,9 @@ else {
   // directory or above it; the user's own ~/.claude/CLAUDE.md does not count. Folders above the repository, up to $HOME.
   const real = (p) => { try { return realpathSync(p); } catch { return p; } };
   const home = real(homedir()), tilde = (p) => (p.startsWith(home + "/") ? "~" + p.slice(home.length) : p);
-  for (let d = dirname(process.cwd()), up = home !== process.cwd() && process.cwd().startsWith(home + "/"); up; d = dirname(d)) {
+  // A root CLAUDE.md that imports AGENTS.md still loads it, so ancestors cannot hide it then.
+  const imports = claude?.split("\n").find((l) => l.trim())?.trim() === "@AGENTS.md";
+  for (let d = dirname(process.cwd()), up = !imports && home !== process.cwd() && process.cwd().startsWith(home + "/"); up; d = dirname(d)) {
     for (const f of ["CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md"])
       if (!(d === home && f === ".claude/CLAUDE.md") && existsSync(join(d, f)))
         warn(`${tilde(join(d, f))} makes Claude skip AGENTS.md in this repository | fix: delete it (personal rules belong in ~/.claude/CLAUDE.md, which does not count)`);
