@@ -59,6 +59,11 @@ grep -q 'uses: 1password/load-secrets-action@[0-9a-f]\{40\}' "$R/$WF" && grep -q
 trig=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");console.log(y.slice(y.indexOf("\non:"),y.indexOf("\npermissions:")))' "$R/$WF")
 has "workflow_dispatch:" "$trig" && has "branches: [main]" "$trig" && [ "$(grep -c 'paths: \[cloud-env.json\]' <<<"$trig")" = 2 ] && ! has staging "$trig" || why="$why; triggers: $trig"
 
+# every run that can apply (a push or a manual run) shares one repository-wide group and is never cancelled;
+# pull request checks keep a per-ref group that a newer push cancels
+conc=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");const m=y.match(/\nconcurrency:\n  group: (.*)\n  cancel-in-progress: (.*)\n/);console.log(m?m[1]+"|"+m[2]:"none")' "$R/$WF")
+has "format('cloud-env-apply-{0}', github.repository)" "$conc" && has "github.event_name == 'pull_request'" "$conc" && ! has "github.event_name }}" "$conc" || why="$why; concurrency: $conc"
+
 # the overlay's cloud_env is validated before anything is written
 for bad in 'o["cloud_env"]={action:"x/y@v1",token_ref:"vault/item"}' 'o["cloud_env"]={action:"",token_ref:null}' 'o["cloud_env"]={action:"x/y",token_ref:null}' 'o["cloud_env"]={action:"x/y@v1",vault:"ci"}' 'o["cloud_env"]={action:"x/y@v1",token_ref:"ops_eyJhbGciOi"}'; do
   ov "$T/bad.json" "$bad"; out=$(node bin/repo-standards.mjs block --overlay "$T/bad.json" --profile internal 2>&1) && why="$why; accepted $bad"
