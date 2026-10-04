@@ -32,4 +32,23 @@ B=$(mkrepo); put "$B" src/components/Contact.astro '<script src="https://challen
 I=$(mkrepo internal); put "$I" src/components/Contact.astro '<script src="https://challenges.cloudflare.com/turnstile/api.js" async></script>'; commit "$I"
 verdict client-turnstile-versioned "$G" "$B" "src/components/Contact.astro loads Turnstile from" "$I"
 
+# ---- overflow: a block animated on a view()/scroll() timeline is never clipped with overflow: hidden (it freezes the
+# timeline), and html never sets overflow-x
+G=$(mkrepo); put "$G" src/styles/global.css '.card { overflow: hidden; }
+.reveal { animation: rise linear both; animation-timeline: view(); overflow: clip; }
+html { scroll-behavior: smooth; }'; commit "$G"
+B=$(mkrepo); put "$B" src/components/Hero.astro '<section class="hero"></section>
+<style>
+  .hero {
+    animation: rise linear both;
+    animation-timeline: view();
+    overflow: hidden;
+  }
+</style>'; commit "$B"
+I=$(mkrepo internal); put "$I" src/styles/global.css 'html { overflow-x: hidden; }'; commit "$I"
+verdict client-overflow-clip "$G" "$B" "src/components/Hero.astro: .hero is animated on a scroll timeline but sets overflow: hidden" "$I"
+B=$(mkrepo); put "$B" src/styles/global.css 'html, body { margin: 0 }
+html { overflow-x: hidden; }'; commit "$B"
+b=$(check "$B"); has "src/styles/global.css: html sets overflow-x" "$b" && ok client-overflow-clip || fail client-overflow-clip "html overflow-x: $b"
+
 done_cases
