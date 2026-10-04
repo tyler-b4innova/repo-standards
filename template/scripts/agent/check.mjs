@@ -3,7 +3,7 @@
 // One line per failure with its fix; warnings never fail. Exit 1 on any failure.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, readlinkSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { claudePins, codexPins } from "./pins.mjs";
@@ -91,6 +91,16 @@ else {
   if (claude !== null && (pack.claude_md === "forbid" || claude.split("\n").find((l) => l.trim())?.trim() !== "@AGENTS.md"))
     fail("CLAUDE.md holds its own content", pack.claude_md === "forbid" ? "git rm CLAUDE.md   (agents read AGENTS.md)" : "move it to AGENTS.md; CLAUDE.md starts with @AGENTS.md, then only Claude-specific lines");
   if (claude === null && existsSync("CLAUDE.local.md")) warn("CLAUDE.local.md without CLAUDE.md makes Claude skip AGENTS.md | fix: add a CLAUDE.md holding @AGENTS.md, or remove CLAUDE.local.md");
+  // Claude Code reads AGENTS.md only when no CLAUDE.md, .claude/CLAUDE.md or CLAUDE.local.md sits in the working
+  // directory or above it; the user's own ~/.claude/CLAUDE.md does not count. Folders above the repository, up to $HOME.
+  const real = (p) => { try { return realpathSync(p); } catch { return p; } };
+  const home = real(homedir()), tilde = (p) => (p.startsWith(home + "/") ? "~" + p.slice(home.length) : p);
+  for (let d = dirname(process.cwd()), up = home !== process.cwd() && process.cwd().startsWith(home + "/"); up; d = dirname(d)) {
+    for (const f of ["CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md"])
+      if (!(d === home && f === ".claude/CLAUDE.md") && existsSync(join(d, f)))
+        warn(`${tilde(join(d, f))} makes Claude skip AGENTS.md in this repository | fix: delete it (personal rules belong in ~/.claude/CLAUDE.md, which does not count)`);
+    if (d === home || d === dirname(d)) break;
+  }
   let link = null;
   try { link = readlinkSync(".claude/skills"); } catch {}
   if (link !== "../.agents/skills") fail(".claude/skills is not a link to ../.agents/skills", "rm -rf .claude/skills && ln -s ../.agents/skills .claude/skills");
