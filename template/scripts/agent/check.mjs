@@ -238,6 +238,21 @@ else {
           fail(`${f}: html sets overflow-x`, "remove it; clip the overflowing element instead (overflow: clip)");
       }
     }
+    // Sentry: a site whose Worker runs code, on the Cloudflare SDK, reports from all four layers.
+    const wrangler = ["wrangler.jsonc", "wrangler.json", "wrangler.toml"].map(read).find((t) => t !== null) ?? "";
+    const main = wrangler.match(/["']?main["']?\s*[:=]\s*["']([^"']+)["']/)?.[1]?.replace(/^\.\//, "");
+    const deps = json("package.json") ?? {};
+    if (main && { ...deps.dependencies, ...deps.devDependencies }["@sentry/cloudflare"]) {
+      const missing = (layer, fix) => fail(`Sentry layer missing: ${layer}`, fix);
+      if (!/\bwithSentry\b/.test(read(main) ?? "")) missing("wrapper", `wrap the Worker entry (${main}) in Sentry.withSentry`);
+      if (!tracked.some((f) => /^src\/middleware\.[cm]?[jt]s$/.test(f) && /captureException/.test(read(f) ?? "")))
+        missing("middleware", "add src/middleware.ts calling Sentry.captureException on a route error (the framework turns route errors into 500s the wrapper never sees)");
+      const browser = src.find((f) => /@sentry\/browser/.test(read(f) ?? "") && /\binit\s*\(/.test(read(f) ?? ""));
+      const tunnel = browser && (read(browser).match(/\btunnel\s*:\s*["'`](\/[^"'`]*)["'`]/)?.[1] ?? "").replace(/\/+$/, "");
+      if (!browser) missing("browser", "init @sentry/browser in a client script, with a same-origin tunnel");
+      else if (!tunnel || !tracked.some((f) => [`src/pages${tunnel}`, `src/pages${tunnel}/index`, `src/routes${tunnel}/+server`].some((b) => new RegExp(`^${b.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.[cm]?[jt]s$`).test(f))))
+        missing("tunnel", `serve the browser init's tunnel${tunnel ? ` (${tunnel})` : ""} from a same-origin route that forwards only this site's project`);
+    }
   }
   for (const host of pack.shared_preview_hosts)
     for (const f of tracked.filter((f) => /(^|\/)wrangler\.(jsonc?|toml)$/.test(f)))
