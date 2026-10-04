@@ -51,6 +51,23 @@ function ui(files) {
   return files.filter((f) => inc.some((r) => r.test(f)) && !ign.some((r) => r.test(f)));
 }
 
+// A pull request whose changed paths are all non-deployable (pack.json non_deploy_paths: docs, agent instructions and
+// config, templates) has nothing to preview or test end to end: its changed files, or null. The diff is the checked-out
+// merge commit (pull_request and re-gate runs) against its base parent, or the PR head against the event's base.
+function docOnly() {
+  if (!prNumber) return null;
+  let files;
+  try {
+    const head = git("rev-parse", "HEAD").trim(), parents = git("rev-list", "--parents", "-n", "1", "HEAD").trim().split(" ").slice(1);
+    const range = head !== event.pull_request?.head?.sha && parents.length === 2 ? [parents[0], "HEAD"] : event.pull_request?.base?.sha ? [`${event.pull_request.base.sha}...HEAD`] : null;
+    if (!range) return null;
+    files = git("diff", "--name-only", "--no-renames", "-z", ...range).split("\0").filter(Boolean);
+  } catch { return null; }
+  const paths = (pack.non_deploy_paths ?? []).map(glob);
+  return files.length && files.every((f) => paths.some((r) => r.test(f))) ? files : null;
+}
+const docSkip = (step, files) => console.log(`::notice::${step} skipped: only non-deployable paths changed (${files.join(", ")})`);
+
 // The Cloudflare bot's comment body -> the preview URL for `head` ("" when there is none). A table is read by its header
 // row: the "Preview URL" (or "Deployment URL") cell of the row whose "Latest Commit" (or "Commit") is the head, in a
 // markdown table or an HTML one. Failing that, the "Preview URL: <url> (commit <sha>)" line when it names the head.
@@ -121,6 +138,8 @@ if (cmd === "plan") {
   // Cloudflare skipping the commit (build watch paths) is the one exception: there is no build, so e2e runs locally.
   // A repo without Workers Builds, or with "e2e": {"preview": false}, runs e2e locally.
   if (!prNumber || std.e2e === false || e2eCfg.preview === false) { console.log('preview: none (not a pull request, or standards.json has "e2e": false or e2e.preview false)'); output("url", ""); process.exit(0); }
+  const docs = docOnly();
+  if (docs) { docSkip("preview", docs); output("url", ""); process.exit(0); }
   const get = ghApi(), pr = await get(`/pulls/${prNumber}`), head = pr.head.sha, short = head.slice(0, 7);
   const name = pack.preview?.check_name ?? "Workers Builds", author = pack.preview?.comment_author ?? "cloudflare-workers-and-pages[bot]";
   const builds = async (sha) => ((await get(`/commits/${sha}/check-runs?per_page=100`))?.check_runs ?? []).filter((c) => c.name?.startsWith(name));
@@ -182,6 +201,8 @@ if (cmd === "plan") {
 } else if (cmd === "e2e") {
   // "e2e": false skips this step and the preview step (docs and static repos, and repos whose Workers Builds run on every PR without an e2e suite).
   if (std.e2e === false) { console.log('::warning::e2e skipped; standards.json sets "e2e": false'); process.exit(0); }
+  const docs = docOnly();
+  if (docs) { docSkip("e2e", docs); process.exit(0); }
   // standards.json "e2e": "<command>" names the suite; else a script, a tests/e2e or e2e dir, or a root Playwright config.
   const script = ["test:e2e", "e2e"].find((s) => pkg?.scripts?.[s]), dir = ["tests/e2e", "e2e"].find(has);
   const rootPw = ls(".").some((f) => /^playwright\.config\.[cm]?[jt]s$/.test(f)), pw = rootPw || (dir && ls(dir).some((f) => /^playwright\.config\.[cm]?[jt]s$/.test(f)));

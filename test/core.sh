@@ -326,6 +326,10 @@ out=$(HOME=$H check "$R"); st=$?; why=""
 [ $st -eq 0 ] || why="exit $st"
 has "WARN: ~/work/CLAUDE.md" "$out" && has "WARN: ~/CLAUDE.local.md" "$out" || why="$why; ancestors not named"
 [ "$(printf '%s\n' "$out" | grep -c 'skip AGENTS.md')" = 2 ] || why="$why; named the user-level file or looked above HOME"
+# a root shim that imports AGENTS.md still loads it, so the ancestors are harmless then
+printf '@AGENTS.md\n\n- Claude only: x\n' > "$R/CLAUDE.md" && commit "$R"; out3=$(HOME=$H check "$R") || why="$why; shim check failed: $out3"
+has "skip AGENTS.md" "$out3" && why="$why; warned though the root CLAUDE.md imports AGENTS.md"
+gc -C "$R" rm -q CLAUDE.md && commit "$R"
 rm "$H/work/CLAUDE.md" "$H/CLAUDE.local.md"; out2=$(HOME=$H check "$R"); has "skip AGENTS.md" "$out2" && why="$why; warned with none"
 rm "$T/CLAUDE.md"
 if [ -z "$why" ]; then ok ancestor-claude-md-warns; else fail ancestor-claude-md-warns "$why: $out"; fi
@@ -442,6 +446,12 @@ R=$(mkrepo); sed -i.bak 's/^approval_policy = .*/# approval_policy = "never"\
 approval_policy = "on-request"/' "$R/.codex/config.toml" && rm "$R/.codex/config.toml.bak"
 expect_fail agent-deny-secrets-and-force-push "$R" ".codex/config.toml engine keys changed"
 [ "$rules" != skipped ] || echo "  (codex CLI absent: std.rules decisions not evaluated)"
+
+# std-issue: one launcher-ready issue per idea, in the sections the launcher requires
+R=$(mkrepo); f=$R/.claude/skills/std-issue/SKILL.md; why=""
+[ -f "$f" ] && grep -q "  .agents/skills/std-issue/SKILL.md$" "$R/standards.lock" || why="not shipped and locked"
+grep -qx "name: std-issue" "$f" 2>/dev/null && grep -q '`## Goal`' "$f" && grep -q '`## Acceptance criteria`' "$f" && grep -q "never a model, subagent, lane, effort" "$f" || why="$why; content"
+if [ -z "$why" ]; then ok std-issue-shipped; else fail std-issue-shipped "$why"; fi
 
 # ---- pack hygiene
 out=$(python3 -c 'import sys,yaml; [yaml.safe_load(open(f)) for f in sys.argv[1:]]' template/.github/workflows/*.yml 2>&1)
