@@ -3,7 +3,7 @@
 // One line per failure with its fix; warnings never fail. Exit 1 on any failure.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, readlinkSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { claudePins, codexPins } from "./pins.mjs";
@@ -81,15 +81,26 @@ else {
   if (agents === null) fail("AGENTS.md missing", restore("AGENTS.md"));
   else {
     const size = Buffer.byteLength(agents), n = (agents.match(/<!-- std:begin [a-z0-9-]+ -->/g) ?? []).length, m = agents.split(end).length - 1;
-    if (size > 4096) fail(`AGENTS.md is ${size} bytes (limit 4096)`, "cut the repo-owned part to local footguns and commands");
+    if (size > 4096) fail(`AGENTS.md is ${size} bytes (limit 4096)`, "cut the repo-owned part to repeated failure modes only; nothing package.json, config or CI already says");
     if (n !== 1 || m !== 1) fail(`AGENTS.md has ${n} std:begin and ${m} std:end markers (need one each)`, "delete the duplicate block");
   }
 
   // Agent config
   const claude = read("CLAUDE.md");
-  if (claude !== null && (pack.claude_md === "forbid" || claude.trim() !== "@AGENTS.md"))
-    fail("CLAUDE.md holds its own content", pack.claude_md === "forbid" ? "git rm CLAUDE.md   (agents read AGENTS.md)" : "move it to AGENTS.md; CLAUDE.md may only be @AGENTS.md");
+  // import-only: the shim is @AGENTS.md first, then only Claude-specific lines (Claude reads the import, then the rest).
+  if (claude !== null && (pack.claude_md === "forbid" || claude.split("\n").find((l) => l.trim())?.trim() !== "@AGENTS.md"))
+    fail("CLAUDE.md holds its own content", pack.claude_md === "forbid" ? "git rm CLAUDE.md   (agents read AGENTS.md)" : "move it to AGENTS.md; CLAUDE.md starts with @AGENTS.md, then only Claude-specific lines");
   if (claude === null && existsSync("CLAUDE.local.md")) warn("CLAUDE.local.md without CLAUDE.md makes Claude skip AGENTS.md | fix: add a CLAUDE.md holding @AGENTS.md, or remove CLAUDE.local.md");
+  // Claude Code reads AGENTS.md only when no CLAUDE.md, .claude/CLAUDE.md or CLAUDE.local.md sits in the working
+  // directory or above it; the user's own ~/.claude/CLAUDE.md does not count. Folders above the repository, up to $HOME.
+  const real = (p) => { try { return realpathSync(p); } catch { return p; } };
+  const home = real(homedir()), tilde = (p) => (p.startsWith(home + "/") ? "~" + p.slice(home.length) : p);
+  for (let d = dirname(process.cwd()), up = home !== process.cwd() && process.cwd().startsWith(home + "/"); up; d = dirname(d)) {
+    for (const f of ["CLAUDE.md", ".claude/CLAUDE.md", "CLAUDE.local.md"])
+      if (!(d === home && f === ".claude/CLAUDE.md") && existsSync(join(d, f)))
+        warn(`${tilde(join(d, f))} makes Claude skip AGENTS.md in this repository | fix: delete it (personal rules belong in ~/.claude/CLAUDE.md, which does not count)`);
+    if (d === home || d === dirname(d)) break;
+  }
   let link = null;
   try { link = readlinkSync(".claude/skills"); } catch {}
   if (link !== "../.agents/skills") fail(".claude/skills is not a link to ../.agents/skills", "rm -rf .claude/skills && ln -s ../.agents/skills .claude/skills");
@@ -110,10 +121,26 @@ else {
   // Forbidden paths and content
   // standards.json allow_paths: repo-owned globs for shipped content that looks like agent config (a plugin's .mcp.json);
   // they exempt the .mcp.json and forbidden-path checks only.
+  // standards.json nested_instructions: [{path, reason}], the only AGENTS.md / CLAUDE.md files allowed below the root.
+  const nested = new Set(), declaredNested = std?.nested_instructions;
+  if (declaredNested !== undefined) {
+    if (!Array.isArray(declaredNested)) fail("standards.json nested_instructions must be a list", "use [{path, reason}] or remove it");
+    else for (const e of declaredNested) {
+      if (!(e && typeof e === "object" && Object.keys(e).sort().join(",") === "path,reason" && typeof e.path === "string" && typeof e.reason === "string" && e.reason.trim())) {
+        fail("standards.json nested_instructions has an invalid entry", "each entry is {path, reason} with a nonempty reason"); continue;
+      }
+      const base = e.path.split("/").pop();
+      if (!["AGENTS.md", "CLAUDE.md"].includes(base) || e.path === base) fail(`nested_instructions: ${e.path} is not an AGENTS.md or CLAUDE.md below the root`, "declare only nested AGENTS.md or CLAUDE.md files");
+      else if (!tracked.includes(e.path)) fail(`nested_instructions names ${e.path}, which is not tracked`, "remove the stale entry");
+      else nested.add(e.path);
+    }
+  }
   const allowed = (Array.isArray(std?.allow_paths) ? std.allow_paths.filter((g) => typeof g === "string" && g.trim()) : []).map(glob);
   for (const f of tracked) {
     const name = f.split("/").pop(), dirs = f.split("/").slice(0, -1).map((d) => d.toLowerCase()), ok = allowed.some((r) => r.test(f));
-    if (f === "CONTEXT.md") fail("CONTEXT.md at the root is forbidden", `git rm ${f}   (rules go in AGENTS.md)`);
+    if (name === "CONTEXT.md") fail(`CONTEXT.md is forbidden: ${f}`, `git rm ${f}   (rules go in AGENTS.md)`);
+    if (["AGENTS.md", "CLAUDE.md"].includes(name) && f !== name && !nested.has(f))
+      fail(`undeclared nested instruction file: ${f}`, `fold it into the root AGENTS.md and git rm ${f}, or declare it in standards.json nested_instructions as {"path": "${f}", "reason": "<the subdirectory's own rule>"}`);
     if (name === ".mcp.json" && !ok) fail(`${f} is committed`, `git rm --cached ${f} && echo .mcp.json >> .gitignore`);
     if (f.startsWith(".evidence/")) fail(`.evidence/ is tracked (${f})`, "git rm -r .evidence   (pr.sh evidence removes it after posting)");
     if ((/\.(md|markdown)$/i.test(name) && dirs.some((d) => pack.decision_dirs.includes(d))) || /^ADR-.*\.md$/i.test(name) || pack.decision_record_globs.some((g) => glob(g).test(f)))

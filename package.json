@@ -1,6 +1,6 @@
 {
   "name": "repo-standards",
-  "version": "0.4.8",
+  "version": "0.5.0",
   "description": "Org-neutral engine for repo-scoped agent standards",
   "private": true,
   "type": "module",

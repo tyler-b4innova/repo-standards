@@ -27,8 +27,12 @@ expect_fail() {
 R=$(mkrepo); echo "Always use tabs." > "$R/CLAUDE.md" && commit "$R"; a=$(check "$R"); sa=$?
 echo "@AGENTS.md" > "$R/CLAUDE.md" && commit "$R"; b=$(check "$R"); sb=$?
 FO=$T/forbid.json; node -e 'const o=require(process.argv[1]);o.claude_md="forbid";require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$FO"
+# the shim may carry Claude-only lines below the import; the import must come first
+printf '@AGENTS.md\n\n- Claude only: x\n' > "$R/CLAUDE.md" && commit "$R"; d=$(check "$R"); sd=$?
+printf 'Always use tabs.\n@AGENTS.md\n' > "$R/CLAUDE.md" && commit "$R"; e=$(check "$R"); se=$?
+echo "@AGENTS.md" > "$R/CLAUDE.md" && commit "$R"
 OVERLAY=$FO apply "$R" >/dev/null && commit "$R"; c=$(check "$R"); sc=$?
-if [ $sa -eq 1 ] && has CLAUDE.md "$a" && [ $sb -eq 0 ] && [ $sc -eq 1 ] && has CLAUDE.md "$c"; then ok claude-md-no-own-content; else fail claude-md-no-own-content "$sa $sb $sc"; fi
+if [ $sa -eq 1 ] && has CLAUDE.md "$a" && [ $sb -eq 0 ] && [ $sd -eq 0 ] && [ $se -eq 1 ] && has CLAUDE.md "$e" && [ $sc -eq 1 ] && has CLAUDE.md "$c"; then ok claude-md-no-own-content; else fail claude-md-no-own-content "own=$sa shim=$sb shim+lines=$sd lines-first=$se forbid=$sc: $d $e"; fi
 
 # ---- offline check
 all=1; for p in internal client; do R=$(mkrepo $p); out=$(check "$R"); [ $? -eq 0 ] && has "standards ok: example v0.1.0 $p" "$out" || { all=0; echo "$out"; }; done
@@ -71,12 +75,22 @@ R=$(mkrepo); echo mine >"$R/victim"; echo "$(printf '%064d' 0)  scripts/agent/..
 out=$(apply "$R" 2>&1) || why="$why; a traversing lock line made apply fail: $out"
 [ -f "$R/victim" ] || why="$why; a lock line through a managed prefix deleted a repo file"
 # an older pack's lock (`sha256 <hash> <path>` lines and `key value` headers): retired paths go, nothing else does
-R=$(mkrepo); mkdir -p "$R/scripts/agent" && echo old >"$R/scripts/agent/recall" && echo mine >"$R/example"
-printf '# standards.lock\npack example\nversion 0.0.9\nsha256 %064d scripts/agent/recall\n' 0 >"$R/standards.lock"
+R=$(mkrepo); mkdir -p "$R/scripts/agent" && echo old >"$R/scripts/agent/old-helper" && echo mine >"$R/example"
+printf '# standards.lock\npack example\nversion 0.0.9\nsha256 %064d scripts/agent/old-helper\n' 0 >"$R/standards.lock"
 apply "$R" >/dev/null || why="$why; old-format lock refused"
-[ ! -e "$R/scripts/agent/recall" ] || why="$why; retired path from an old-format lock kept"
+[ ! -e "$R/scripts/agent/old-helper" ] || why="$why; retired path from an old-format lock kept"
 [ -f "$R/example" ] || why="$why; a lock header line deleted a repo file"
 if [ -z "$why" ]; then ok apply-no-symlink-writes; else fail apply-no-symlink-writes "$why"; fi
+
+# packs that were never locked left recall files; apply removes them by name and nothing else
+R=$(mkrepo); mkdir -p "$R/.agents/skills/std-recall" "$R/.agents/skills/my-recall"
+for f in .agents/skills/std-recall/SKILL.md scripts/agent/recall scripts/agent/recall.mjs scripts/agent/ledger-recall .agents/skills/my-recall/SKILL.md; do echo old > "$R/$f"; done
+commit "$R"; out=$(apply "$R"); why=""
+for f in .agents/skills/std-recall scripts/agent/recall scripts/agent/recall.mjs scripts/agent/ledger-recall; do [ ! -e "$R/$f" ] || why="$why; $f kept"; done
+[ -f "$R/.agents/skills/my-recall/SKILL.md" ] || why="$why; removed a repo-owned skill"
+has "-scripts/agent/ledger-recall" "$out" || why="$why; removal not reported: $out"
+commit "$R" >/dev/null; c=$(check "$R") || why="$why; check after removal: $c"
+if [ -z "$why" ]; then ok orphan-recall-removed; else fail orphan-recall-removed "$why"; fi
 
 # standards.json allow_paths exempts shipped content (a plugin's .mcp.json) and nothing else; re-apply keeps it
 why=""
@@ -270,6 +284,11 @@ if [ -z "$why" ]; then ok session-hook-single; else fail session-hook-single "$w
 
 R=$(mkrepo); node -e 'console.log("- " + "x".repeat(3000))' >> "$R/AGENTS.md"
 expect_fail agents-md-max-4096 "$R" "(limit 4096)"
+# nothing invites bloat: a new AGENTS.md is the title and the block only, and the over-limit fix asks for less, not more
+R=$(mkrepo); want=$(printf '# %s\n\n' "$(basename "$R")"; node bin/repo-standards.mjs block --overlay "$OV" --profile internal)
+node -e 'console.log("- " + "x".repeat(3000))' >> "$R/AGENTS.md"; out=$(check "$R")
+if [ "$(git -C "$R" show HEAD:AGENTS.md)" = "$want" ] && has "repeated failure modes only" "$out" && ! has "footguns" "$out"; then ok agents-md-invites-nothing
+else fail agents-md-invites-nothing "$(git -C "$R" show HEAD:AGENTS.md | tail -4) | $out"; fi
 
 all=1
 for f in docs/adr/0001-use-x.md decisions/2026-db.md api/decision-records/a.md notes/ADR-7.md; do
@@ -278,6 +297,38 @@ for f in docs/adr/0001-use-x.md decisions/2026-db.md api/decision-records/a.md n
 done
 R=$(mkrepo); mkdir -p "$R/docs/guide" && echo "We chose X." > "$R/docs/guide/setup.md" && git -C "$R" add docs; check "$R" >/dev/null || all=0
 if [ $all = 1 ]; then ok no-decision-records-in-tree; else fail no-decision-records-in-tree; fi
+
+# instruction files at any depth: CONTEXT.md fails anywhere; a nested AGENTS.md or CLAUDE.md only with a declared reason
+why=""
+for f in CONTEXT.md docs/CONTEXT.md apps/web/CONTEXT.md; do
+  R=$(mkrepo); mkdir -p "$R/$(dirname "$f")" && echo "Glossary." > "$R/$f" && git -C "$R" add "$f"
+  out=$(check "$R"); [ $? -eq 1 ] && has "CONTEXT.md is forbidden: $f" "$out" || why="$why; $f: $out"
+done
+R=$(mkrepo); mkdir -p "$R/apps/web" "$R/.claude" "$R/workers/api"
+echo "- web rule" > "$R/apps/web/AGENTS.md"; echo "@AGENTS.md" > "$R/apps/web/CLAUDE.md"; echo "Rules." > "$R/.claude/CLAUDE.md"; git -C "$R" add -f .claude/CLAUDE.md; commit "$R"
+out=$(check "$R"); st=$?
+for f in apps/web/AGENTS.md apps/web/CLAUDE.md .claude/CLAUDE.md; do has "undeclared nested instruction file: $f" "$out" || why="$why; $f not named"; done
+[ $st -eq 1 ] || why="$why; undeclared passed"
+git -C "$R" rm -q .claude/CLAUDE.md
+jset "$R/standards.json" 'o.nested_instructions=[{path:"apps/web/AGENTS.md",reason:"the web app deploys separately"},{path:"apps/web/CLAUDE.md",reason:"imports it for Claude"}]'; commit "$R"
+out=$(check "$R") || why="$why; declared failed: $out"
+apply "$R" >/dev/null; [ "$(node -p 'require(process.argv[1]).nested_instructions.length' "$R/standards.json")" = 2 ] || why="$why; re-apply dropped nested_instructions"
+gc -C "$R" checkout -q -- standards.json
+jset "$R/standards.json" 'o.nested_instructions.push({path:"workers/api/AGENTS.md",reason:"gone"},{path:"apps/web/README.md",reason:"not one"},{path:"apps/web/AGENTS.md",reason:" "})'; commit "$R"
+out=$(check "$R"); st=$?
+[ $st -eq 1 ] && has "nested_instructions names workers/api/AGENTS.md, which is not tracked" "$out" && has "apps/web/README.md is not an AGENTS.md or CLAUDE.md" "$out" && has "nested_instructions has an invalid entry" "$out" || why="$why; bad declarations: $out"
+if [ -z "$why" ]; then ok instruction-files-any-depth; else fail instruction-files-any-depth "$why"; fi
+
+# a CLAUDE.md above the repository (up to $HOME) makes Claude skip AGENTS.md: a warning, never a failure
+H=$T/home; R=$H/work/site; mkdir -p "$R" "$H/.claude" && git -C "$R" init -q -b main && apply "$R" >/dev/null && commit "$R" init
+echo "Rules." > "$H/work/CLAUDE.md"; echo "Mine." > "$H/CLAUDE.local.md"; echo "User rules." > "$H/.claude/CLAUDE.md"; echo "Above home." > "$T/CLAUDE.md"
+out=$(HOME=$H check "$R"); st=$?; why=""
+[ $st -eq 0 ] || why="exit $st"
+has "WARN: ~/work/CLAUDE.md" "$out" && has "WARN: ~/CLAUDE.local.md" "$out" || why="$why; ancestors not named"
+[ "$(printf '%s\n' "$out" | grep -c 'skip AGENTS.md')" = 2 ] || why="$why; named the user-level file or looked above HOME"
+rm "$H/work/CLAUDE.md" "$H/CLAUDE.local.md"; out2=$(HOME=$H check "$R"); has "skip AGENTS.md" "$out2" && why="$why; warned with none"
+rm "$T/CLAUDE.md"
+if [ -z "$why" ]; then ok ancestor-claude-md-warns; else fail ancestor-claude-md-warns "$why: $out"; fi
 
 R=$(mkrepo); mkdir -p "$R/.evidence" && echo png > "$R/.evidence/a.png" && git -C "$R" add -f .evidence
 expect_fail no-evidence-on-main "$R" ".evidence/ is tracked"
