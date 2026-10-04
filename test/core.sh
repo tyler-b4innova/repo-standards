@@ -326,6 +326,10 @@ out=$(HOME=$H check "$R"); st=$?; why=""
 [ $st -eq 0 ] || why="exit $st"
 has "WARN: ~/work/CLAUDE.md" "$out" && has "WARN: ~/CLAUDE.local.md" "$out" || why="$why; ancestors not named"
 [ "$(printf '%s\n' "$out" | grep -c 'skip AGENTS.md')" = 2 ] || why="$why; named the user-level file or looked above HOME"
+# a root shim that imports AGENTS.md still loads it, so the ancestors are harmless then
+printf '@AGENTS.md\n\n- Claude only: x\n' > "$R/CLAUDE.md" && commit "$R"; out3=$(HOME=$H check "$R") || why="$why; shim check failed: $out3"
+has "skip AGENTS.md" "$out3" && why="$why; warned though the root CLAUDE.md imports AGENTS.md"
+gc -C "$R" rm -q CLAUDE.md && commit "$R"
 rm "$H/work/CLAUDE.md" "$H/CLAUDE.local.md"; out2=$(HOME=$H check "$R"); has "skip AGENTS.md" "$out2" && why="$why; warned with none"
 rm "$T/CLAUDE.md"
 if [ -z "$why" ]; then ok ancestor-claude-md-warns; else fail ancestor-claude-md-warns "$why: $out"; fi
