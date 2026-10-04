@@ -447,6 +447,12 @@ approval_policy = "on-request"/' "$R/.codex/config.toml" && rm "$R/.codex/config
 expect_fail agent-deny-secrets-and-force-push "$R" ".codex/config.toml engine keys changed"
 [ "$rules" != skipped ] || echo "  (codex CLI absent: std.rules decisions not evaluated)"
 
+# std-issue: one launcher-ready issue per idea, in the sections the launcher requires
+R=$(mkrepo); f=$R/.claude/skills/std-issue/SKILL.md; why=""
+[ -f "$f" ] && grep -q "  .agents/skills/std-issue/SKILL.md$" "$R/standards.lock" || why="not shipped and locked"
+grep -qx "name: std-issue" "$f" 2>/dev/null && grep -q '`## Goal`' "$f" && grep -q '`## Acceptance criteria`' "$f" && grep -q "never a model, subagent, lane, effort" "$f" || why="$why; content"
+if [ -z "$why" ]; then ok std-issue-shipped; else fail std-issue-shipped "$why"; fi
+
 # ---- pack hygiene
 out=$(python3 -c 'import sys,yaml; [yaml.safe_load(open(f)) for f in sys.argv[1:]]' template/.github/workflows/*.yml 2>&1)
 if [ $? -eq 0 ]; then ok workflows-parse; else fail workflows-parse "$out"; fi

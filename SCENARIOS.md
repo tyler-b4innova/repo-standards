@@ -79,6 +79,8 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 - **`session-hook-single`**: apply keeps the repository's own SessionStart hooks and leaves exactly one `setup.sh --check` hook under matcher `startup|resume`; `--check` fails when the hook sits under another matcher (apply once dropped a repo's hooks with the old group).
 - **`agent-deny-secrets-and-force-push`**: apply writes the deny set (secret reads, `op`, force-push) replacing any repo list, the Codex bypass keys above the first table, and Codex rules that forbid `op` and force-push but allow `--force-with-lease`; a repository that ignores `.codex/` in any form still commits the engine's Codex files.
 
+- **`std-issue-shipped`**: the pack ships the `std-issue` skill (an idea becomes one complete issue in the launcher's required `## Goal` and `## Acceptance criteria` shape, with no model or run directives, and work too big for one PR is flagged), locked like every managed skill. Stated rule: one full-spec issue per piece of work; the text passed the launcher's readiness check across three vendors.
+
 ## Pull requests and sync
 
 - **`pr-open-verified`**: the PR helper sends nothing on a dry run, refuses a branch that is not on GitHub, reuses the open PR, and prints a URL only after reading the PR back.
