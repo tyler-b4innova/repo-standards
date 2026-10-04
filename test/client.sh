@@ -36,7 +36,7 @@ verdict client-turnstile-versioned "$G" "$B" "src/components/Contact.astro loads
 # timeline), and html never sets overflow-x
 G=$(mkrepo); put "$G" src/styles/global.css '.card { overflow: hidden; }
 .reveal { animation: rise linear both; animation-timeline: view(); overflow: clip; }
-html { scroll-behavior: smooth; }'; commit "$G"
+html { scroll-behavior: smooth; overflow-x: clip; }'; commit "$G" # clip makes no scroll container
 B=$(mkrepo); put "$B" src/components/Hero.astro '<section class="hero"></section>
 <style>
   .hero {
