@@ -314,9 +314,8 @@ H=$T/home; R=$H/work/site; mkdir -p "$R" "$H/.claude" && git -C "$R" init -q -b 
 echo "Rules." > "$H/work/CLAUDE.md"; echo "Mine." > "$H/CLAUDE.local.md"; echo "User rules." > "$H/.claude/CLAUDE.md"; echo "Above home." > "$T/CLAUDE.md"
 out=$(HOME=$H check "$R"); st=$?; why=""
 [ $st -eq 0 ] || why="exit $st"
-has "WARN: $H/work/CLAUDE.md" "$out" && has "WARN: $H/CLAUDE.local.md" "$out" || why="$why; ancestors not named"
-has "$H/.claude/CLAUDE.md" "$out" && why="$why; the user-level file was named"
-has "$T/CLAUDE.md" "$out" && why="$why; looked above HOME"
+has "WARN: ~/work/CLAUDE.md" "$out" && has "WARN: ~/CLAUDE.local.md" "$out" || why="$why; ancestors not named"
+[ "$(printf '%s\n' "$out" | grep -c 'skip AGENTS.md')" = 2 ] || why="$why; named the user-level file or looked above HOME"
 rm "$H/work/CLAUDE.md" "$H/CLAUDE.local.md"; out2=$(HOME=$H check "$R"); has "skip AGENTS.md" "$out2" && why="$why; warned with none"
 rm "$T/CLAUDE.md"
 if [ -z "$why" ]; then ok ancestor-claude-md-warns; else fail ancestor-claude-md-warns "$why: $out"; fi
