@@ -32,6 +32,16 @@
     ".codex/**",
     ".impeccable/**"
   ],
+  "source_platforms": [
+    "Wix",
+    "Squarespace",
+    "WordPress",
+    "Weebly",
+    "GoDaddy",
+    "Webflow",
+    "Duda",
+    "Jimdo"
+  ],
   "risk_paths": [
     ".github/workflows/**",
     "**/{auth,oauth,session,sessions}/**",
