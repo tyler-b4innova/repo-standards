@@ -15,8 +15,10 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+# Every run that can apply (a push or a manual run) queues in one repository-wide group, never cancelled; a pull
+# request's check has its own group, which a newer push to it cancels.
 concurrency:
-  group: std-cloud-env-${{ github.event_name }}-${{ github.ref }}
+  group: ${{ github.event_name == 'pull_request' && format('std-cloud-env-pr-{0}', github.ref) || format('cloud-env-apply-{0}', github.repository) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   cloud-env:
