@@ -75,12 +75,22 @@ R=$(mkrepo); echo mine >"$R/victim"; echo "$(printf '%064d' 0)  scripts/agent/..
 out=$(apply "$R" 2>&1) || why="$why; a traversing lock line made apply fail: $out"
 [ -f "$R/victim" ] || why="$why; a lock line through a managed prefix deleted a repo file"
 # an older pack's lock (`sha256 <hash> <path>` lines and `key value` headers): retired paths go, nothing else does
-R=$(mkrepo); mkdir -p "$R/scripts/agent" && echo old >"$R/scripts/agent/recall" && echo mine >"$R/example"
-printf '# standards.lock\npack example\nversion 0.0.9\nsha256 %064d scripts/agent/recall\n' 0 >"$R/standards.lock"
+R=$(mkrepo); mkdir -p "$R/scripts/agent" && echo old >"$R/scripts/agent/old-helper" && echo mine >"$R/example"
+printf '# standards.lock\npack example\nversion 0.0.9\nsha256 %064d scripts/agent/old-helper\n' 0 >"$R/standards.lock"
 apply "$R" >/dev/null || why="$why; old-format lock refused"
-[ ! -e "$R/scripts/agent/recall" ] || why="$why; retired path from an old-format lock kept"
+[ ! -e "$R/scripts/agent/old-helper" ] || why="$why; retired path from an old-format lock kept"
 [ -f "$R/example" ] || why="$why; a lock header line deleted a repo file"
 if [ -z "$why" ]; then ok apply-no-symlink-writes; else fail apply-no-symlink-writes "$why"; fi
+
+# packs that were never locked left recall files; apply removes them by name and nothing else
+R=$(mkrepo); mkdir -p "$R/.agents/skills/std-recall" "$R/.agents/skills/my-recall"
+for f in .agents/skills/std-recall/SKILL.md scripts/agent/recall scripts/agent/recall.mjs scripts/agent/ledger-recall .agents/skills/my-recall/SKILL.md; do echo old > "$R/$f"; done
+commit "$R"; out=$(apply "$R"); why=""
+for f in .agents/skills/std-recall scripts/agent/recall scripts/agent/recall.mjs scripts/agent/ledger-recall; do [ ! -e "$R/$f" ] || why="$why; $f kept"; done
+[ -f "$R/.agents/skills/my-recall/SKILL.md" ] || why="$why; removed a repo-owned skill"
+has "-scripts/agent/ledger-recall" "$out" || why="$why; removal not reported: $out"
+commit "$R" >/dev/null; c=$(check "$R") || why="$why; check after removal: $c"
+if [ -z "$why" ]; then ok orphan-recall-removed; else fail orphan-recall-removed "$why"; fi
 
 # standards.json allow_paths exempts shipped content (a plugin's .mcp.json) and nothing else; re-apply keeps it
 why=""
