@@ -29,7 +29,8 @@
     "LICENSE.*",
     ".agents/**",
     ".claude/**",
-    ".codex/**"
+    ".codex/**",
+    ".impeccable/**"
   ],
   "risk_paths": [
     ".github/workflows/**",
