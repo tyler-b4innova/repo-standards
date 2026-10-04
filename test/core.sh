@@ -288,6 +288,27 @@ done
 R=$(mkrepo); mkdir -p "$R/docs/guide" && echo "We chose X." > "$R/docs/guide/setup.md" && git -C "$R" add docs; check "$R" >/dev/null || all=0
 if [ $all = 1 ]; then ok no-decision-records-in-tree; else fail no-decision-records-in-tree; fi
 
+# instruction files at any depth: CONTEXT.md fails anywhere; a nested AGENTS.md or CLAUDE.md only with a declared reason
+why=""
+for f in CONTEXT.md docs/CONTEXT.md apps/web/CONTEXT.md; do
+  R=$(mkrepo); mkdir -p "$R/$(dirname "$f")" && echo "Glossary." > "$R/$f" && git -C "$R" add "$f"
+  out=$(check "$R"); [ $? -eq 1 ] && has "CONTEXT.md is forbidden: $f" "$out" || why="$why; $f: $out"
+done
+R=$(mkrepo); mkdir -p "$R/apps/web" "$R/.claude" "$R/workers/api"
+echo "- web rule" > "$R/apps/web/AGENTS.md"; echo "@AGENTS.md" > "$R/apps/web/CLAUDE.md"; echo "Rules." > "$R/.claude/CLAUDE.md"; git -C "$R" add -f .claude/CLAUDE.md; commit "$R"
+out=$(check "$R"); st=$?
+for f in apps/web/AGENTS.md apps/web/CLAUDE.md .claude/CLAUDE.md; do has "undeclared nested instruction file: $f" "$out" || why="$why; $f not named"; done
+[ $st -eq 1 ] || why="$why; undeclared passed"
+git -C "$R" rm -q .claude/CLAUDE.md
+jset "$R/standards.json" 'o.nested_instructions=[{path:"apps/web/AGENTS.md",reason:"the web app deploys separately"},{path:"apps/web/CLAUDE.md",reason:"imports it for Claude"}]'; commit "$R"
+out=$(check "$R") || why="$why; declared failed: $out"
+apply "$R" >/dev/null; [ "$(node -p 'require(process.argv[1]).nested_instructions.length' "$R/standards.json")" = 2 ] || why="$why; re-apply dropped nested_instructions"
+gc -C "$R" checkout -q -- standards.json
+jset "$R/standards.json" 'o.nested_instructions.push({path:"workers/api/AGENTS.md",reason:"gone"},{path:"apps/web/README.md",reason:"not one"},{path:"apps/web/AGENTS.md",reason:" "})'; commit "$R"
+out=$(check "$R"); st=$?
+[ $st -eq 1 ] && has "nested_instructions names workers/api/AGENTS.md, which is not tracked" "$out" && has "apps/web/README.md is not an AGENTS.md or CLAUDE.md" "$out" && has "nested_instructions has an invalid entry" "$out" || why="$why; bad declarations: $out"
+if [ -z "$why" ]; then ok instruction-files-any-depth; else fail instruction-files-any-depth "$why"; fi
+
 R=$(mkrepo); mkdir -p "$R/.evidence" && echo png > "$R/.evidence/a.png" && git -C "$R" add -f .evidence
 expect_fail no-evidence-on-main "$R" ".evidence/ is tracked"
 
