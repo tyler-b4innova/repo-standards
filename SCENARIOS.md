@@ -90,6 +90,10 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 - **`sync-opens-pr-when-red`**: when the applied tree fails the repository's offline check, sync opens exactly one PR for a person, naming the failures, without auto-merge, and leaves the default branch alone; a PR a person closed for the same content is not reopened. Its body tells a person how to fix it from a fresh branch (only the App may push `standards/v*`).
 - **`sync-applies-release`**: sync applies the released overlay with the engine version it pins and refuses a mismatch (an old sync script once ran from a release tag).
 
+## Cloud configuration
+
+- **`cloud-env-apply-opt-in`**: `std-cloud-env.yml` ships only where the overlay names the cloud-env tool (`cloud_env.package`) and the repository has a `cloud-env.json`, and is retired when the file goes; only a `cloud-env.json` change starts it. A pull request runs the tool's offline check with no secret in reach; a push to the default branch applies, with the Cloudflare token read through the pinned 1Password action from the overlay's `cloud_env.token_ref` (org secret `OP_SERVICE_ACCOUNT_TOKEN`), and only posts a notice while that reference is unset; a malformed `cloud_env` is refused. Stated rule: agents never hold a Cloudflare write token; cloud changes land by reviewed PR and apply after merge.
+
 ## Modules
 
 - **`error-tracker-rerun-safe`**: the error-tracker setup (dry run, create, route, write the DSN) is a no-op on rerun, and a rerun after a closed mapping PR never deletes that branch (it may hold later work): it opens a new PR from the next free retry branch (`chore/sentry-project-retry/<repo>/<n>`) off the current default (reruns once broke on a leftover branch).
