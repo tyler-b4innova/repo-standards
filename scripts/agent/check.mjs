@@ -218,6 +218,50 @@ else {
     try { hit = git("grep", "-nIiE", pat, "--", ".", ":!scripts/agent/pack.json").split(":").slice(0, 2).join(":"); } catch {}
     if (hit) fail(`forbidden internal reference /${pat}/ at ${hit}`, "remove the internal reference");
   }
+  // Client sites: checks for the rules their copy-pasted AGENTS.md lines used to state (each guarded real damage).
+  if (pack.profile === "client") {
+    const src = tracked.filter((f) => /\.(astro|html|svelte|vue|[cm]?[jt]sx?)$/.test(f) && !/^(scripts\/agent|node_modules|dist)\//.test(f));
+    // The Turnstile script is the versioned /turnstile/v0/api.js; the unversioned URL 404s, so the form never gets a token.
+    for (const f of src)
+      for (const [u] of (read(f) ?? "").matchAll(/challenges\.cloudflare\.com\/turnstile\/[^\s"'`)<>]*/g))
+        if (!/\/siteverify$/.test(u) && !/\/turnstile\/v0\/api\.js(\?.*)?$/.test(u))
+          fail(`${f} loads Turnstile from ${u}, not the versioned script`, "use https://challenges.cloudflare.com/turnstile/v0/api.js");
+    // overflow: hidden on a block animated on a view()/scroll() timeline freezes the timeline; overflow-x on html breaks
+    // scrolling. Innermost CSS rules of stylesheets and components' <style> blocks (a reading of the stylelint rule).
+    for (const f of tracked.filter((f) => /\.(css|scss|astro|svelte|vue|html)$/.test(f) && !/^(node_modules|dist)\//.test(f))) {
+      const text = read(f) ?? "", css = /\.s?css$/.test(f) ? text : [...text.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map((m) => m[1]).join("\n");
+      for (const [, sel, body] of css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+        const name = sel.trim().replace(/\s+/g, " ");
+        if (/animation-timeline\s*:[^;]*\b(view|scroll)\(/.test(body) && /(^|[;\s])overflow(-[xy])?\s*:\s*hidden\b/.test(body))
+          fail(`${f}: ${name} is animated on a scroll timeline but sets overflow: hidden, which freezes the timeline`, "use overflow: clip");
+        if (name.split(",").some((x) => ["html", ":root"].includes(x.trim())) && /(^|[;\s])overflow-x\s*:/.test(body))
+          fail(`${f}: html sets overflow-x`, "remove it; clip the overflowing element instead (overflow: clip)");
+      }
+    }
+    const wrangler = ["wrangler.jsonc", "wrangler.json", "wrangler.toml"].map(read).find((t) => t !== null) ?? "";
+    // Mail: one seam sends it, and the seam checks the request host, so previews, workers.dev and localhost never mail
+    // the client. Senders: files naming a send_email binding from the wrangler config, or importing cloudflare:email.
+    const bindings = [...(wrangler.match(/send_email[\s\S]*?\]/)?.[0] ?? "").matchAll(/name["']?\s*[:=]\s*["']([A-Za-z_]\w*)["']/g)].map((m) => m[1]);
+    const senders = src.filter((f) => !/\.d\.ts$/.test(f) && (/from\s+["']cloudflare:email["']/.test(read(f) ?? "") || bindings.some((b) => new RegExp(`\\b${b}\\b`).test(read(f) ?? ""))));
+    const hostChecked = (f) => /\.host(name)?\b/.test(read(f) ?? ""), seam = senders.find(hostChecked) ?? senders[0];
+    for (const f of senders.filter((f) => f !== seam)) fail(`${f} sends mail outside the email seam (${seam})`, `send through ${seam}, the one place that reroutes non-production hosts`);
+    if (seam && !hostChecked(seam))
+      fail(`${seam} sends mail but never checks the request host`, "mail real recipients only from the production hosts; reroute every other host (previews, workers.dev, localhost) to a test inbox");
+    // Sentry: a site whose Worker runs code, on the Cloudflare SDK, reports from all four layers.
+    const main = wrangler.match(/["']?main["']?\s*[:=]\s*["']([^"']+)["']/)?.[1]?.replace(/^\.\//, "");
+    const deps = json("package.json") ?? {};
+    if (main && { ...deps.dependencies, ...deps.devDependencies }["@sentry/cloudflare"]) {
+      const missing = (layer, fix) => fail(`Sentry layer missing: ${layer}`, fix);
+      if (!/\bwithSentry\b/.test(read(main) ?? "")) missing("wrapper", `wrap the Worker entry (${main}) in Sentry.withSentry`);
+      if (!tracked.some((f) => /^src\/middleware\.[cm]?[jt]s$/.test(f) && /captureException/.test(read(f) ?? "")))
+        missing("middleware", "add src/middleware.ts calling Sentry.captureException on a route error (the framework turns route errors into 500s the wrapper never sees)");
+      const browser = src.find((f) => /@sentry\/browser/.test(read(f) ?? "") && /\binit\s*\(/.test(read(f) ?? ""));
+      const tunnel = browser && (read(browser).match(/\btunnel\s*:\s*["'`](\/[^"'`]*)["'`]/)?.[1] ?? "").replace(/\/+$/, "");
+      if (!browser) missing("browser", "init @sentry/browser in a client script, with a same-origin tunnel");
+      else if (!tunnel || !tracked.some((f) => [`src/pages${tunnel}`, `src/pages${tunnel}/index`, `src/routes${tunnel}/+server`].some((b) => new RegExp(`^${b.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.[cm]?[jt]s$`).test(f))))
+        missing("tunnel", `serve the browser init's tunnel${tunnel ? ` (${tunnel})` : ""} from a same-origin route that forwards only this site's project`);
+    }
+  }
   for (const host of pack.shared_preview_hosts)
     for (const f of tracked.filter((f) => /(^|\/)wrangler\.(jsonc?|toml)$/.test(f)))
       // The exact host only: {label}.preview.<zone> is the per-Worker form and must not match preview.<zone>.
