@@ -110,4 +110,27 @@ o=$(built client '<html><body><p>Site by Squarespace</p></body></html>'); has "e
 o=$(built internal '<html><body><!-- note --></body></html>'); has "exit=0" "$o" && ! has "built output" "$o" || why="$why; internal scanned: $o"
 if [ -z "$why" ]; then ok client-built-output-clean; else fail client-built-output-clean "$why"; fi
 
+# ---- previews carry noindex: gate.mjs e2e reads the preview's home page before the suite runs against it
+cat >"$T/serve.mjs" <<'JS'
+import { createServer } from "node:http";
+const [port, mode] = process.argv.slice(2);
+createServer((req, res) => {
+  const headers = { "content-type": "text/html", ...(mode === "header" && { "x-robots-tag": "noindex" }) };
+  res.writeHead(200, headers);
+  res.end(`<html><head>${mode === "meta" ? '<meta name="robots" content="noindex, nofollow">' : ""}</head><body>home</body></html>`);
+}).listen(Number(port), "127.0.0.1");
+JS
+e2e() { # e2e <profile> <server mode>: gate's e2e step against a stand-in preview; prints its output, then the exit
+  local d port=$((20000 + RANDOM % 20000)) pid; d=$(mkrepo "$1")
+  put "$d" tests/e2e/home.test.mjs 'import test from "node:test"; test("home", () => {});'; commit "$d"
+  node "$T/serve.mjs" "$port" "$2" & pid=$!; sleep 0.4
+  (cd "$d" && GATE_PREVIEW_URL="http://127.0.0.1:$port" node scripts/agent/gate.mjs e2e 2>&1); echo "exit=$?"; kill $pid; wait $pid 2>/dev/null
+}
+why=""
+o=$(e2e client meta); has "exit=0" "$o" && has "preview noindex: ok" "$o" || why="meta: $o"
+o=$(e2e client header); has "exit=0" "$o" && has "preview noindex: ok" "$o" || why="$why; header: $o"
+o=$(e2e client none); has "exit=1" "$o" && has "the preview at http://127.0.0.1:" "$o" && has "carries no noindex" "$o" || why="$why; none: $o"
+o=$(e2e internal none); has "exit=0" "$o" && ! has "noindex" "$o" || why="$why; internal checked: $o"
+if [ -z "$why" ]; then ok client-preview-noindex; else fail client-preview-noindex "$why"; fi
+
 done_cases
