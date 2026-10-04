@@ -93,6 +93,10 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 - **`sync-opens-pr-when-red`**: when the applied tree fails the repository's offline check, sync opens exactly one PR for a person, naming the failures, without auto-merge, and leaves the default branch alone; a PR a person closed for the same content is not reopened. Its body tells a person how to fix it from a fresh branch (only the App may push `standards/v*`).
 - **`sync-applies-release`**: sync applies the released overlay with the engine version it pins and refuses a mismatch (an old sync script once ran from a release tag).
 
+## Client sites (profile `client`; incident: each guarded real damage, and a review found nothing enforced them once the copy-pasted AGENTS.md rules were deleted)
+
+- **`client-turnstile-versioned`**: `--check` fails a tracked source file that loads the Turnstile script from any URL but the versioned `/turnstile/v0/api.js` (the unversioned one 404s, so the form never gets a token); the `siteverify` call is not a script and passes; internal repositories are not checked.
+
 ## Cloud configuration
 
 - **`cloud-env-apply-opt-in`**: `std-cloud-env.yml` ships only where the overlay names the cloud-env action (`cloud_env.action`, rendered into the workflow; the template names none) and the repository has a `cloud-env.json`, and is retired when the file goes. A `cloud-env.json` change on a pull request, or a manual run, checks it offline with no secret in reach; a push to `main` (the production branch; a staged repository's `staging` only checks) or a manual run on `main` applies, with the Cloudflare token read through the pinned 1Password action from the overlay's `cloud_env.token_ref` (org secret `OP_SERVICE_ACCOUNT_TOKEN`), and only posts a notice while that reference is unset; a malformed `cloud_env` is refused. Stated rule: agents never hold a Cloudflare write token; cloud changes go live only through a reviewed merge to production. Review finding: a `cloud-env.json` that predates the workflow was never checked or applied, so a manual run onboards it.
