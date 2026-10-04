@@ -20,7 +20,7 @@ const HOSTS = new Set([
   "registry.npmjs.org", "www.npmjs.com", "npmjs.com",
   "code.claude.com", "docs.anthropic.com", "claude.ai",
   "learn.chatgpt.com", "developers.openai.com", "chatgpt.com",
-  "developers.cloudflare.com", "json-schema.org", "docs.sentry.io",
+  "developers.cloudflare.com", "challenges.cloudflare.com", "json-schema.org", "docs.sentry.io",
   "example.com", "example.org", "example.net",
 ]);
 const TLD = "com|net|org|io|dev|app|ai|co|ca|us|uk|cloud|site|xyz|tech|info|biz|me";
