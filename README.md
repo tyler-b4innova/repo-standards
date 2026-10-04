@@ -48,6 +48,10 @@ npx -y github:tyler-b4innova/repo-standards#vX.Y.Z apply --target <repo> --overl
 
 The managed AGENTS.md block carries a `## Review guidelines` line telling Codex review to skip pack-managed paths: findings on those belong in this repository.
 
+## Cloud configuration
+
+With the overlay's `"cloud_env": { "package": "github:<owner>/<repo>#<tag>", "token_ref": "op://<vault>/<item>/<field>" }`, apply ships `.github/workflows/std-cloud-env.yml` to each repository that has a `cloud-env.json` (and retires it when the file goes). Only a `cloud-env.json` change starts it: a pull request runs `npx -y <package> apply cloud-env.json --check --offline` with no token; a push to the default branch reads the Cloudflare token through `1password/load-secrets-action` (org secret `OP_SERVICE_ACCOUNT_TOKEN`, a CI-only service account) and runs `apply`. With `token_ref` `null` the apply step is skipped with a notice. The workflow is not a required check.
+
 ## Session start
 
 The SessionStart hook runs `scripts/agent/setup.sh --check` (which also warns about a `CLAUDE.md`, `.claude/CLAUDE.md` or `CLAUDE.local.md` in a folder above the repository, up to `$HOME`: Claude Code then skips AGENTS.md): the offline check, then (only after it passes, never in CI) `cleanup.mjs`, which removes local branches and worktrees of merged work. One batched GitHub call asks which branches' pull requests merged (squash merges look unmerged to git); a branch goes, with its worktree, only when its PR merged in this repository at its local tip or a later commit and the worktree has no changes, untracked or ignored files (ignored ones only inside regenerable directories: `node_modules`, `dist`, `build`, `.next`, `.turbo`, `.cache`, `coverage`, `test-results`, `playwright-report`), is unlocked, not the main one or the session's own, and not under `~/.codex/worktrees`, `~/.t3/worktrees` or `.claude/worktrees`. Anything unsure stays; a network or auth failure removes nothing within a 1.5-second timeout; one line names what went. Cloud setup (`setup.sh` with no arguments) installs tools and dependencies best-effort and exits with the check's status.
