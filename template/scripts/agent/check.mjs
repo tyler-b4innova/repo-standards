@@ -111,10 +111,26 @@ else {
   // Forbidden paths and content
   // standards.json allow_paths: repo-owned globs for shipped content that looks like agent config (a plugin's .mcp.json);
   // they exempt the .mcp.json and forbidden-path checks only.
+  // standards.json nested_instructions: [{path, reason}], the only AGENTS.md / CLAUDE.md files allowed below the root.
+  const nested = new Set(), declaredNested = std?.nested_instructions;
+  if (declaredNested !== undefined) {
+    if (!Array.isArray(declaredNested)) fail("standards.json nested_instructions must be a list", "use [{path, reason}] or remove it");
+    else for (const e of declaredNested) {
+      if (!(e && typeof e === "object" && Object.keys(e).sort().join(",") === "path,reason" && typeof e.path === "string" && typeof e.reason === "string" && e.reason.trim())) {
+        fail("standards.json nested_instructions has an invalid entry", "each entry is {path, reason} with a nonempty reason"); continue;
+      }
+      const base = e.path.split("/").pop();
+      if (!["AGENTS.md", "CLAUDE.md"].includes(base) || e.path === base) fail(`nested_instructions: ${e.path} is not an AGENTS.md or CLAUDE.md below the root`, "declare only nested AGENTS.md or CLAUDE.md files");
+      else if (!tracked.includes(e.path)) fail(`nested_instructions names ${e.path}, which is not tracked`, "remove the stale entry");
+      else nested.add(e.path);
+    }
+  }
   const allowed = (Array.isArray(std?.allow_paths) ? std.allow_paths.filter((g) => typeof g === "string" && g.trim()) : []).map(glob);
   for (const f of tracked) {
     const name = f.split("/").pop(), dirs = f.split("/").slice(0, -1).map((d) => d.toLowerCase()), ok = allowed.some((r) => r.test(f));
-    if (f === "CONTEXT.md") fail("CONTEXT.md at the root is forbidden", `git rm ${f}   (rules go in AGENTS.md)`);
+    if (name === "CONTEXT.md") fail(`CONTEXT.md is forbidden: ${f}`, `git rm ${f}   (rules go in AGENTS.md)`);
+    if (["AGENTS.md", "CLAUDE.md"].includes(name) && f !== name && !nested.has(f))
+      fail(`undeclared nested instruction file: ${f}`, `fold it into the root AGENTS.md and git rm ${f}, or declare it in standards.json nested_instructions as {"path": "${f}", "reason": "<the subdirectory's own rule>"}`);
     if (name === ".mcp.json" && !ok) fail(`${f} is committed`, `git rm --cached ${f} && echo .mcp.json >> .gitignore`);
     if (f.startsWith(".evidence/")) fail(`.evidence/ is tracked (${f})`, "git rm -r .evidence   (pr.sh evidence removes it after posting)");
     if ((/\.(md|markdown)$/i.test(name) && dirs.some((d) => pack.decision_dirs.includes(d))) || /^ADR-.*\.md$/i.test(name) || pack.decision_record_globs.some((g) => glob(g).test(f)))
