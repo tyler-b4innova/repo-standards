@@ -91,4 +91,23 @@ verdict client-mail-seam "$G" "$B" "src/pages/api/order.ts sends mail outside th
 B=$(mkrepo); mail_site "$B"; put "$B" src/pages/api/contact.ts 'import { EmailMessage } from "cloudflare:email"; export const POST = () => env.SEND_EMAIL.send(new EmailMessage("a", "client@example.com", ""));'; commit "$B"
 b=$(check "$B"); has "src/pages/api/contact.ts sends mail but never checks the request host" "$b" && ok client-mail-seam || fail client-mail-seam "no reroute: $b"
 
+# ---- built output: after the build, dist/ HTML has no HTML comments, no comments in inline scripts, and no
+# source-platform names (gate.mjs run build)
+built() { # built <profile> <html>: a site whose build writes dist/index.html; prints gate's build output, then the exit
+  local d; d=$(mkrepo "$1"); printf '%s' "$2" >"$d/page.html"
+  put "$d" package.json '{"name":"site","private":true,"scripts":{"build":"mkdir -p dist/blog && cp page.html dist/index.html && cp page.html dist/blog/index.html"}}'
+  commit "$d"; (cd "$d" && node scripts/agent/gate.mjs run build 2>&1); echo "exit=$?"
+}
+CLEAN='<!doctype html><html><head><meta name="generator" content="Astro"><script>window.x = "https://example.com/a";</script></head><body><p>Hand-built.</p></body></html>'
+why=""
+o=$(built client "$CLEAN"); has "exit=0" "$o" && has "built output: dist/ is clean" "$o" || why="clean: $o"
+o=$(built client '<html><body><!-- old layout --><p>x</p></body></html>'); has "exit=1" "$o" && has "dist/index.html: HTML comment" "$o" || why="$why; comment: $o"
+o=$(built client '<html><body><script>
+  // tracks the old menu
+  go();
+</script></body></html>'); has "exit=1" "$o" && has "dist/index.html: comment in an inline script" "$o" || why="$why; inline: $o"
+o=$(built client '<html><body><p>Site by Squarespace</p></body></html>'); has "exit=1" "$o" && has "dist/index.html: source-platform name Squarespace" "$o" || why="$why; platform: $o"
+o=$(built internal '<html><body><!-- note --></body></html>'); has "exit=0" "$o" && ! has "built output" "$o" || why="$why; internal scanned: $o"
+if [ -z "$why" ]; then ok client-built-output-clean; else fail client-built-output-clean "$why"; fi
+
 done_cases
