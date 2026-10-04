@@ -274,6 +274,11 @@ if [ -z "$why" ]; then ok session-hook-single; else fail session-hook-single "$w
 
 R=$(mkrepo); node -e 'console.log("- " + "x".repeat(3000))' >> "$R/AGENTS.md"
 expect_fail agents-md-max-4096 "$R" "(limit 4096)"
+# nothing invites bloat: a new AGENTS.md is the title and the block only, and the over-limit fix asks for less, not more
+R=$(mkrepo); want=$(printf '# %s\n\n' "$(basename "$R")"; node bin/repo-standards.mjs block --overlay "$OV" --profile internal)
+node -e 'console.log("- " + "x".repeat(3000))' >> "$R/AGENTS.md"; out=$(check "$R")
+if [ "$(git -C "$R" show HEAD:AGENTS.md)" = "$want" ] && has "repeated failure modes only" "$out" && ! has "footguns" "$out"; then ok agents-md-invites-nothing
+else fail agents-md-invites-nothing "$(git -C "$R" show HEAD:AGENTS.md | tail -4) | $out"; fi
 
 all=1
 for f in docs/adr/0001-use-x.md decisions/2026-db.md api/decision-records/a.md notes/ADR-7.md; do

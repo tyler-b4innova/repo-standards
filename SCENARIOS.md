@@ -50,6 +50,7 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 ## Repository contents
 
 - **`agents-md-max-4096`**: an AGENTS.md over 4096 bytes fails `--check`.
+- **`agents-md-invites-nothing`**: apply writes a missing AGENTS.md as the title and the managed block only, with no repo section or placeholder, and the over-limit fix asks for repeated failure modes only (nothing package.json, config or CI already says). Incident: the placeholder and the old fix asked for "local footguns and commands", and repositories filled their AGENTS.md with stack descriptions and command lists.
 - **`agents-block-max-1800`**: an overlay whose rendered managed block exceeds 1800 bytes is refused.
 - **`setup-returns-check-status`**: cloud setup (`scripts/agent/setup.sh` with no arguments) keeps failed installs non-fatal but exits with the standards check's status, so a broken pack is not reported as a ready environment.
 - **`cleanup-merged-work`**: at session start (`setup.sh --check`, never in CI) one batched GitHub call finds merged pull requests, and a local branch goes (with its worktree) only when its PR merged in this repository at its tip or a later commit, and the worktree is clean (no untracked or ignored files outside regenerable directories), unlocked, not the main one or the session's, and not under an app-managed root (`~/.codex/worktrees`, `~/.t3/worktrees`, `.claude/worktrees`); local work past the merged head, open PRs, a fork's branch of the same name, dirty, untracked, locked and app-managed worktrees stay; one line lists what went.
