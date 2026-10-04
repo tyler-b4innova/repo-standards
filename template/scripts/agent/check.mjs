@@ -234,8 +234,8 @@ else {
         const name = sel.trim().replace(/\s+/g, " ");
         if (/animation-timeline\s*:[^;]*\b(view|scroll)\(/.test(body) && /(^|[;\s])overflow(-[xy])?\s*:\s*hidden\b/.test(body))
           fail(`${f}: ${name} is animated on a scroll timeline but sets overflow: hidden, which freezes the timeline`, "use overflow: clip");
-        if (name.split(",").some((x) => ["html", ":root"].includes(x.trim())) && /(^|[;\s])overflow-x\s*:/.test(body))
-          fail(`${f}: html sets overflow-x`, "remove it; clip the overflowing element instead (overflow: clip)");
+        if (name.split(",").some((x) => ["html", ":root"].includes(x.trim())) && /(^|[;\s])overflow-x\s*:\s*(hidden|auto|scroll)\b/.test(body))
+          fail(`${f}: html sets overflow-x to a scroll container`, "remove it; clip the overflowing element instead (overflow: clip)");
       }
     }
     const wrangler = ["wrangler.jsonc", "wrangler.json", "wrangler.toml"].map(read).find((t) => t !== null) ?? "";
