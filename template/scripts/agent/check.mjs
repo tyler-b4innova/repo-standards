@@ -87,8 +87,9 @@ else {
 
   // Agent config
   const claude = read("CLAUDE.md");
-  if (claude !== null && (pack.claude_md === "forbid" || claude.trim() !== "@AGENTS.md"))
-    fail("CLAUDE.md holds its own content", pack.claude_md === "forbid" ? "git rm CLAUDE.md   (agents read AGENTS.md)" : "move it to AGENTS.md; CLAUDE.md may only be @AGENTS.md");
+  // import-only: the shim is @AGENTS.md first, then only Claude-specific lines (Claude reads the import, then the rest).
+  if (claude !== null && (pack.claude_md === "forbid" || claude.split("\n").find((l) => l.trim())?.trim() !== "@AGENTS.md"))
+    fail("CLAUDE.md holds its own content", pack.claude_md === "forbid" ? "git rm CLAUDE.md   (agents read AGENTS.md)" : "move it to AGENTS.md; CLAUDE.md starts with @AGENTS.md, then only Claude-specific lines");
   if (claude === null && existsSync("CLAUDE.local.md")) warn("CLAUDE.local.md without CLAUDE.md makes Claude skip AGENTS.md | fix: add a CLAUDE.md holding @AGENTS.md, or remove CLAUDE.local.md");
   let link = null;
   try { link = readlinkSync(".claude/skills"); } catch {}
