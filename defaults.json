@@ -50,6 +50,11 @@
     "decisions",
     "decision-records"
   ],
+  "orphans": [
+    ".agents/skills/std-recall/**",
+    "scripts/agent/recall*",
+    "scripts/agent/ledger-recall*"
+  ],
   "permissions_deny": [
     "Read(~/.ssh/**)",
     "Read(~/.aws/**)",
