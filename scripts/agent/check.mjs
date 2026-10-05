@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { scan } from "./jsscan.mjs";
 import { claudePins, codexPins } from "./pins.mjs";
+import { findings as stagingFindings, parse as parseWrangler } from "./staging.mjs";
 
 if (process.argv.includes("--help")) {
   console.log("usage: node scripts/agent/check.mjs   (offline standards self-check; exit 1 on failure)");
@@ -326,6 +327,29 @@ else {
       if (!browser) missing("browser", "init @sentry/browser in a client script, with a same-origin tunnel");
       else if (!tunnel || !tracked.some((f) => [`src/pages${tunnel}`, `src/pages${tunnel}/index`, `src/routes${tunnel}/+server`].some((b) => new RegExp(`^${b.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.[cm]?[jt]s$`).test(f))))
         missing("tunnel", `serve the browser init's tunnel${tunnel ? ` (${tunnel})` : ""} from a same-origin route that forwards only this site's project`);
+    }
+  }
+  // Staging and PR Previews (scripts/agent/staging.mjs): staging is a Wrangler environment with its own resources,
+  // previews point at them, and no non-production config names a production resource. The root Worker config only.
+  const sec = std?.secrets;
+  if (sec !== undefined && !(sec && typeof sec === "object" && !Array.isArray(sec) && Object.keys(sec).every((k) => ["required", "store"].includes(k))
+    && (sec.required === undefined || (Array.isArray(sec.required) && sec.required.every((n) => typeof n === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(n))))
+    && [undefined, "1password", "secrets_store"].includes(sec.store)))
+    fail(`standards.json secrets is ${JSON.stringify(sec)}`, '{"required": ["NAME", ...], "store": "1password" (our accounts) or "secrets_store" (a client-owned account)}');
+  if (![undefined, false].includes(std?.staging)) fail(`standards.json staging is ${JSON.stringify(std.staging)}`, "remove it, or false for a Worker that is not released through staging (previews are still checked)");
+  const rootWrangler = ["wrangler.jsonc", "wrangler.json", "wrangler.toml"].find((f) => tracked.includes(f));
+  if (rootWrangler?.endsWith(".toml")) warn(`${rootWrangler} is not checked for staging isolation (TOML) | fix: convert it to wrangler.jsonc`);
+  else if (rootWrangler) {
+    const cfg = parseWrangler(read(rootWrangler) ?? "");
+    if (!cfg || typeof cfg !== "object") fail(`${rootWrangler} does not parse`, "fix the JSON (comments and trailing commas are fine)");
+    else {
+      const required = [...new Set([...(Array.isArray(sec?.required) ? sec.required : []), ...(Array.isArray(cfg.secrets?.required) ? cfg.secrets.required : [])])];
+      const r = stagingFindings(cfg, { file: rootWrangler, std: std ?? {}, pack, required });
+      r.fails.forEach(([m, f]) => fail(m, f)); r.warns.forEach(warn);
+      // the Worker calls the managed pass check (scripts/agent/portal-pass.mjs) before anything else
+      if (pack.portal && !tracked.some((f) => /\.([cm]?[jt]sx?|svelte|astro)$/.test(f) && !f.startsWith("scripts/agent/") && !/(^|\/)(tests?|e2e|__tests__)\//.test(f)
+        && /from\s+["'][^"']*scripts\/agent\/portal-pass(\.mjs)?["']/.test(read(f) ?? "") && /\bportalPass\s*\(/.test(scan(read(f) ?? "").code)))
+        fail("no Worker source calls the portal pass check", 'import { portalPass } from "<path to>/scripts/agent/portal-pass.mjs" and, first in the fetch handler or middleware: const denied = await portalPass(request, env); if (denied) return denied;');
     }
   }
   for (const host of pack.shared_preview_hosts)

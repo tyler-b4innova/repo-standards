@@ -57,6 +57,10 @@ jobs:
         run: node scripts/agent/gate.mjs plan
       - name: standards
         run: scripts/agent/setup.sh --check
+      - name: instructions
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/agent/gate.mjs instructions
       - name: secrets
         run: node scripts/agent/gate.mjs secrets
       - name: syntax

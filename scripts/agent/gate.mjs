@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Steps of the `gate` job (std-gate.yml), also runnable locally:
-//   plan | classify [base] | install | run <script>... | preview | release | e2e | secrets | syntax
+//   plan | classify [base] | install | run <script>... | preview | release | e2e | secrets | syntax | instructions
 // UI paths: pack.json defaults; standards.json "ui_paths" as a list replaces the include globs,
 // as {include, ignore} replaces include and adds ignore. e2e: none fails unless "e2e": false.
 import { execFileSync as ex, spawnSync } from "node:child_process";
@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { scan } from "./jsscan.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
-const SUBS = ["plan", "classify", "install", "run", "preview", "release", "e2e", "secrets", "syntax"], ok = SUBS.includes(cmd);
+const SUBS = ["plan", "classify", "install", "run", "preview", "release", "e2e", "secrets", "syntax", "instructions"], ok = SUBS.includes(cmd);
 if (!ok || args.includes("--help")) {
   console.log(rd(new URL(import.meta.url), "utf8").split("\n").slice(1, 6).map((l) => l.slice(3)).join("\n"));
   process.exit(ok || cmd === "--help" ? 0 : 2);
@@ -55,15 +55,24 @@ function ui(files) {
 // A pull request whose changed paths are all non-deployable (pack.json non_deploy_paths: docs, agent instructions and
 // config, templates) has nothing to preview or test end to end: its changed files, or null. The diff is the checked-out
 // merge commit (pull_request and re-gate runs) against its base parent, or the PR head against the event's base.
+// The pull request's base point: the checked-out merge commit's base parent (pull_request and re-gate runs), or the
+// merge base of the PR head and the event's base. null when there is neither.
+function prBase() {
+  const head = git("rev-parse", "HEAD").trim(), parents = git("rev-list", "--parents", "-n", "1", "HEAD").trim().split(" ").slice(1);
+  if (head !== event.pull_request?.head?.sha && parents.length === 2) return parents[0];
+  return event.pull_request?.base?.sha ? git("merge-base", event.pull_request.base.sha, "HEAD").trim() : null;
+}
+// The paths the pull request changes, both sides of a rename. null when its base cannot be found.
+function prFiles() {
+  try {
+    const base = prBase();
+    return base ? git("diff", "--name-only", "--no-renames", "-z", base, "HEAD").split("\0").filter(Boolean) : null;
+  } catch { return null; }
+}
 function docOnly() {
   if (!prNumber) return null;
-  let files;
-  try {
-    const head = git("rev-parse", "HEAD").trim(), parents = git("rev-list", "--parents", "-n", "1", "HEAD").trim().split(" ").slice(1);
-    const range = head !== event.pull_request?.head?.sha && parents.length === 2 ? [parents[0], "HEAD"] : event.pull_request?.base?.sha ? [`${event.pull_request.base.sha}...HEAD`] : null;
-    if (!range) return null;
-    files = git("diff", "--name-only", "--no-renames", "-z", ...range).split("\0").filter(Boolean);
-  } catch { return null; }
+  const files = prFiles();
+  if (!files) return null;
   const paths = (pack.non_deploy_paths ?? []).map(glob);
   return files.length && files.every((f) => paths.some((r) => r.test(f))) ? files : null;
 }
@@ -124,7 +133,48 @@ const previewUrl = (body, head) => {
   return found;
 };
 
-if (cmd === "plan") {
+// Instruction files at any depth (the launcher's instructions-guard rule): AGENTS.md (and Codex's override), CLAUDE.md,
+// CLAUDE.local.md and Claude's instruction folders under .claude/ (.claude/settings.json is the engine's, not one).
+const INSTRUCTION = [/(^|\/)(AGENTS|AGENTS\.override|CLAUDE|CLAUDE\.local)\.md$/i, /(^|\/)\.claude\/(agents|commands|rules)\//];
+// The managed block of the CODEOWNERS GitHub applies at `rev` (the first of these that exists): its path and block. A
+// symlink there holds no block (GitHub does not follow it).
+const CODEOWNERS = [".github/CODEOWNERS", "CODEOWNERS", "docs/CODEOWNERS"];
+function ownersBlock(rev) {
+  for (const path of CODEOWNERS) {
+    const entry = git("ls-tree", rev, "--", path).trim();
+    if (!entry) continue;
+    const [mode, type] = entry.split(/\s+/);
+    if (type === "tree") continue;
+    if (mode === "120000" || type !== "blob") return { path, block: null };
+    const lines = git("show", `${rev}:${path}`).split("\n"), i = lines.findIndex((l) => l.startsWith("# std:begin "));
+    if (i < 0) return { path, block: null };
+    const j = lines.indexOf("# std:end", i);
+    return { path, block: lines.slice(i, j < 0 ? undefined : j + 1).join("\n") };
+  }
+  return { path: null, block: null };
+}
+
+if (cmd === "instructions") {
+  // Agents never change instruction files. Only the org App's standards-sync (standards/v*) and approved retro
+  // (retro/*) pull requests may; every other author is held to it, the repository owner's own login included.
+  if (!prNumber) { console.log("::notice::instructions: not a pull request (the merge queue holds only pull requests that passed it)"); process.exit(0); }
+  const pr = event.pull_request ?? (await ghApi()(`/pulls/${prNumber}`));
+  const author = pr.user?.login ?? "", ref = pr.head?.ref ?? "";
+  if (pack.sync_app_login && author === pack.sync_app_login && /^(retro\/.+|standards\/v\d.*)$/.test(ref)) {
+    console.log(`instructions: exempt, ${author}'s ${ref} pull request (standards sync or approved retro)`);
+    process.exit(0);
+  }
+  const files = prFiles();
+  if (!files) fail("instructions: the pull request's base commit is not in this checkout", "check out with fetch-depth: 0 (std-gate.yml does)");
+  const bad = new Set(files.filter((f) => INSTRUCTION.some((r) => r.test(f))));
+  if (files.some((f) => CODEOWNERS.includes(f))) {
+    const [before, after] = [ownersBlock(prBase()), ownersBlock("HEAD")];
+    if (before.block !== after.block) bad.add(`${after.path ?? before.path} (managed std block${after.path !== before.path ? `, now read from ${after.path ?? "no CODEOWNERS"}` : ""})`);
+  }
+  if (bad.size) fail(`instruction files changed by ${author || "this pull request"} (${ref}):\n  ${[...bad].join("\n  ")}`,
+    "agents never change instruction files; only the org App's standards-sync (standards/v*) and approved retro (retro/*) pull requests may. Revert these files; a rule change goes through the weekly retro.");
+  console.log("instructions: no instruction file or managed CODEOWNERS block changed");
+} else if (cmd === "plan") {
   // full: build and test this head. cheap: a draft (the check, the secret scan and a syntax pass); the full gate
   // runs from ready_for_review.
   const get = ghApi();
@@ -193,6 +243,17 @@ if (cmd === "plan") {
   // The release check (std-release-check.yml, on main): wait for this commit's Workers Builds (staging Preview and the
   // uploaded production version), then name the extra browsers and the staging URL for the install and e2e steps.
   const get = ghApi(), sha = env.GITHUB_SHA ?? git("rev-parse", "HEAD").trim(), short = sha.slice(0, 7);
+  // A push that changes only non-deployable paths (pack.json non_deploy_paths) leaves staging as it was: nothing to test.
+  // The whole push (the event's before..sha); a manual run, or a before no longer in history, skips nothing.
+  let pushed = null;
+  const before = event.before && !/^0+$/.test(event.before) ? event.before : null;
+  if (before) try { pushed = git("diff", "--name-only", "--no-renames", "-z", before, sha).split("\0").filter(Boolean); } catch {}
+  const nd = (pack.non_deploy_paths ?? []).map(glob);
+  if (pushed?.length && pushed.every((f) => nd.some((r) => r.test(f)))) {
+    console.log(`::notice::release check skipped: only non-deployable paths changed (${pushed.join(", ")})`);
+    output("skip", "true"); output("browsers", ""); output("url", "");
+    process.exit(0);
+  }
   const name = pack.preview?.check_name ?? "Workers Builds";
   const builds = async (c) => ((await get(`/commits/${c}/check-runs?per_page=100`))?.check_runs ?? []).filter((x) => x.name?.startsWith(name));
   // The check can be created late: where the parent commit had a build, this commit's is waited for, not taken as absent.

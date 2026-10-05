@@ -46,7 +46,7 @@ out=$(OVERLAY=$O apply "$T/x" 2>&1) && why="$why; promotion_browsers accepted"; 
 # the workflow: pushes to main and manual runs only; install and e2e take the release step's browsers and URL
 trig=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");console.log(y.slice(y.indexOf("\non:"),y.indexOf("\npermissions:")))' "$R/$WF")
 has "branches: [main]" "$trig" && has "workflow_dispatch" "$trig" && ! has pull_request "$trig" || why="$why; triggers: $trig"
-grep -q 'fetch-depth: 2' "$R/$WF" || why="$why; checkout too shallow to read the parent commit"
+grep -q 'fetch-depth: 0' "$R/$WF" || why="$why; checkout too shallow to read the push's before commit"
 grep -q 'GATE_BROWSERS: ${{ steps.release.outputs.browsers }}' "$R/$WF" && grep -q 'GATE_PREVIEW_URL: ${{ steps.release.outputs.url }}' "$R/$WF" || why="$why; e2e not wired to the release step"
 
 # gate.mjs release: waits for this commit's Workers Builds, then names the extra browsers and the staging URL
@@ -67,4 +67,27 @@ o=$(rel "$R"); has "exit=1" "$o" && has "no \"Workers Builds\" check on ${SHA:0:
 o=$( (cd "$R" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_SHA=$SHA GATE_PREVIEW_WAIT_S=20 GATE_POLL_S=1 GITHUB_OUTPUT= node scripts/agent/gate.mjs release 2>&1); echo "exit=$?"); wait $LATE
 has "exit=0" "$o" && has "browsers=firefox,webkit" "$o" || why="$why; late check: $o"
 if [ -z "$why" ]; then ok release-browsers-on-main; else fail release-browsers-on-main "$why"; fi
+
+# a push of only non-deployable paths (docs, instruction files) skips the release check's browsers; one deployable
+# path runs them
+why=""
+# the push range comes from the event (before..after); without one (a manual run) nothing is skipped
+pushed() { printf '{"before":"%s","after":"%s"}' "$1" "$SHA" >"$T/push.json"; }
+B0=$(git -C "$R" rev-parse HEAD)
+echo "notes" >"$R/README.md"; mkdir -p "$R/docs" && echo "guide" >"$R/docs/guide.md"; commit "$R" docs; SHA=$(git -C "$R" rev-parse HEAD); pushed "$B0"
+put '{"checks":[{"name":"Workers Builds: demo","status":"in_progress"}]}'
+o=$(GITHUB_EVENT_PATH=$T/push.json rel "$R"); has "exit=0" "$o" && has "skip=true" "$o" && has "only non-deployable paths changed (README.md, docs/guide.md)" "$o" && has "browsers=" "$o" || why="$why; docs push: $o"
+o=$(rel "$R"); ! has "skip=true" "$o" || why="$why; skipped without a push range: $o"
+B1=$(git -C "$R" rev-parse HEAD)
+mkdir -p "$R/src" && echo "export {};" >"$R/src/index.ts" && echo "more" >>"$R/README.md"; commit "$R" code; SHA=$(git -C "$R" rev-parse HEAD); pushed "$B1"
+put '{"checks":[{"name":"Workers Builds: demo","status":"completed","conclusion":"success"}]}'
+# a push of a code commit followed by a docs-only commit is judged as a whole: it runs
+echo "again" >>"$R/README.md"; commit "$R" docs2; SHA=$(git -C "$R" rev-parse HEAD); pushed "$B1"
+o=$(GITHUB_EVENT_PATH=$T/push.json rel "$R"); has "exit=0" "$o" && ! has "skip=true" "$o" && has "browsers=firefox,webkit" "$o" || why="$why; code push: $o"
+for step in install e2e; do
+  blk=$(awk -v s="- name: $step" 'index($0,s){f=1;next} f&&/- name:/{exit} f' "$R/$WF")
+  has "if: steps.release.outputs.skip != 'true'" "$blk" || why="$why; $step step not skipped: $blk"
+done
+grep -q "^    if:" "$R/$WF" && why="$why; job-level if"
+if [ -z "$why" ]; then ok release-check-skips-docs; else fail release-check-skips-docs "$why"; fi
 done_cases

@@ -1,0 +1,42 @@
+// The standard Worker config shape: production at the top level, staging as its own Worker (env.staging), PR Previews
+// on the staging resources. Ids and names here are placeholders; create staging resources with the cf CLI.
+{
+  "name": "app",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-05",
+  "assets": { "directory": "./dist", "run_worker_first": true },
+  "vars": { "ENVIRONMENT": "production" },
+  "routes": [{ "pattern": "app.example.com", "custom_domain": true }],
+  "d1_databases": [{ "binding": "DB", "database_name": "app", "database_id": "<prod d1 id>", "migrations_dir": "migrations" }],
+  "kv_namespaces": [{ "binding": "CACHE", "id": "<prod kv id>" }],
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "app-files" }],
+  "queues": { "producers": [{ "binding": "JOBS", "queue": "app-jobs" }], "consumers": [{ "queue": "app-jobs" }] },
+  "workflows": [{ "binding": "FLOW", "name": "app-flow", "class_name": "Flow" }],
+  "services": [{ "binding": "API", "service": "api" }],
+  "triggers": { "crons": ["0 5 * * *"] },
+  "secrets": { "required": ["PAYMENT_KEY"] },
+  "env": {
+    "staging": {
+      // a separate Worker, app-staging: its own host, data, queues, Workflow, cron and sandbox keys
+      "vars": { "ENVIRONMENT": "staging" },
+      "routes": [{ "pattern": "staging.app.example.com", "custom_domain": true }],
+      "d1_databases": [{ "binding": "DB", "database_name": "app-staging", "database_id": "<staging d1 id>", "migrations_dir": "migrations" }],
+      "kv_namespaces": [{ "binding": "CACHE", "id": "<staging kv id>" }],
+      "r2_buckets": [{ "binding": "FILES", "bucket_name": "app-files-staging" }],
+      "queues": { "producers": [{ "binding": "JOBS", "queue": "app-jobs-staging" }], "consumers": [{ "queue": "app-jobs-staging" }] },
+      "workflows": [{ "binding": "FLOW", "name": "app-flow-staging", "class_name": "Flow" }],
+      "services": [{ "binding": "API", "service": "api-staging" }],
+      "triggers": { "crons": ["0 5 * * *"] }
+    }
+  },
+  "previews": {
+    // PR Previews: the staging resources, never production; no consumers, cron or routes
+    "vars": { "ENVIRONMENT": "preview" },
+    "d1_databases": [{ "binding": "DB", "database_name": "app-staging", "database_id": "<staging d1 id>", "migrations_dir": "migrations" }],
+    "kv_namespaces": [{ "binding": "CACHE", "id": "<staging kv id>" }],
+    "r2_buckets": [{ "binding": "FILES", "bucket_name": "app-files-staging" }],
+    "queues": { "producers": [{ "binding": "JOBS", "queue": "app-jobs-staging" }] },
+    "workflows": [{ "binding": "FLOW", "name": "app-flow-staging", "class_name": "Flow" }],
+    "services": [{ "binding": "API", "service": "api-staging" }]
+  }
+}
