@@ -275,9 +275,12 @@ else {
     const deps = json("package.json") ?? {};
     if (main && { ...deps.dependencies, ...deps.devDependencies }["@sentry/cloudflare"]) {
       const missing = (layer, fix) => fail(`Sentry layer missing: ${layer}`, fix);
-      if (!/\bwithSentry\b/.test(read(main) ?? "")) missing("wrapper", `wrap the Worker entry (${main}) in Sentry.withSentry`);
-      if (!tracked.some((f) => /^src\/middleware\.[cm]?[jt]s$/.test(f) && /captureException/.test(read(f) ?? "")))
-        missing("middleware", "add src/middleware.ts calling Sentry.captureException on a route error (the framework turns route errors into 500s the wrapper never sees)");
+      // A main the build generates (not tracked, e.g. dist/_worker.js) is wrapped in the tracked source it is built from.
+      const wrapped = tracked.includes(main) ? /\bwithSentry\s*\(/.test(lexed.get(main)?.code ?? scan(read(main) ?? "").code)
+        : src.some((f) => !/(^|\/)(tests?|e2e|__tests__)\//.test(f) && /\bwithSentry\s*\(/.test(lexed.get(f).code));
+      if (!wrapped) missing("wrapper", `wrap the Worker entry (${main}) in Sentry.withSentry`);
+      if (!tracked.some((f) => /^src\/middleware(\.[cm]?[jt]s$|\/)/.test(f) && /\bcaptureException\s*\(/.test(scan(read(f) ?? "").code)))
+        missing("middleware", "add src/middleware.ts (or src/middleware/) calling Sentry.captureException on a route error (the framework turns route errors into 500s the wrapper never sees)");
       const browser = src.find((f) => /@sentry\/browser/.test(read(f) ?? "") && /\binit\s*\(/.test(read(f) ?? ""));
       const tunnel = browser && (read(browser).match(/\btunnel\s*:\s*["'`](\/[^"'`]*)["'`]/)?.[1] ?? "").replace(/\/+$/, "");
       if (!browser) missing("browser", "init @sentry/browser in a client script, with a same-origin tunnel");
