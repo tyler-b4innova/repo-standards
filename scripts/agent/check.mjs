@@ -81,7 +81,8 @@ else {
       fail("standards.json ui_paths must be a glob list or {include, ignore}", "fix it, or delete it for the engine defaults");
     if (!globs(std.risk_paths)) fail("standards.json risk_paths must be a glob list", "fix it, delete it for the engine defaults, or [] for none");
     // staging_url: where the release check runs the extra browsers (the staging Preview), required when any are named
-    const extra = (Array.isArray(e?.browsers) && e.browsers.length > 0) || (pack.e2e_release_browsers ?? []).length > 0;
+    // and the repository has not opted out with "e2e": false (then no release check ships)
+    const extra = e !== false && ((Array.isArray(e?.browsers) && e.browsers.length > 0) || (pack.e2e_release_browsers ?? []).length > 0);
     const https = (u) => { try { return new URL(u).protocol === "https:"; } catch { return false; } };
     if ((std.staging_url !== undefined || extra) && !https(std.staging_url))
       fail(`standards.json staging_url is ${JSON.stringify(std.staging_url)}${extra ? " (extra browsers run against it on main)" : ""}`, 'the staging Preview\'s https URL, e.g. "https://staging.preview.example.com/"');
