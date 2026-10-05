@@ -144,7 +144,7 @@ else fail sync-lists-off-fleet "plain=$plain_row rest=$rest writes=$plain_writes
 # gets the PR (sync knows no integration branch).
 g_row=$(q acme/standards 's.items.find(i => !i.pull && i.title === "Standards compliance")?.body' | grep '^| acme/gamma ')
 g_body=$(q acme/gamma 's.items.filter(i => i.pull).map(p => p.body).join(" ")')
-if [ -n "$(printf '%s' "$g_row" | grep 'offline check failed')" ] && has_text 'flow \"staged\" is retired' "$g_body" && [ "$(git --git-dir "$R/acme/gamma.git" rev-list --count main)" = 1 ]; then ok sync-lands-without-gate
+if [ -n "$(printf '%s' "$g_row" | grep 'offline check failed')" ] && has_text 'flow "staged" is retired' "$g_body" && [ "$(git --git-dir "$R/acme/gamma.git" rev-list --count main)" = 1 ]; then ok sync-lands-without-gate
 else fail sync-lands-without-gate "staged repo: row=$g_row body=$g_body"; fi
 
 # sync-opens-pr-when-red: beta's applied tree fails the offline check, so one PR for a person naming the failure, no
