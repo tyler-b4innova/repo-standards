@@ -28,12 +28,13 @@ seed acme/gamma '{"pack":"example","version":"0.1.0","profile":"internal","dispa
 seed acme/other "$(std rival internal)"
 seed acme/old "$(std example internal)"
 seed acme/plain
+seed acme/delta "$(std example internal)"
 seed acme/skipme "$(std example internal)"
 seed rival/x "$(std example internal)"
 cat >"$T/stub.json" <<JSON
 { "remotes": "$R",
   "repos": [{"full_name":"acme/alpha"},{"full_name":"acme/beta"},{"full_name":"acme/boot"},{"full_name":"acme/gamma"},{"full_name":"acme/other"},
-            {"full_name":"acme/old","archived":true},{"full_name":"acme/plain"},{"full_name":"acme/skipme"},{"full_name":"acme/standards"},{"full_name":"rival/x"}],
+            {"full_name":"acme/old","archived":true},{"full_name":"acme/plain"},{"full_name":"acme/delta","custom_properties":{"flow":"staged"}},{"full_name":"acme/skipme"},{"full_name":"acme/standards"},{"full_name":"rival/x"}],
   "gate": {"acme/beta": "failure", "acme/boot": ["failure", "success"]},
   "move": {"acme/alpha": "standards/v0.2.0"},
   "variables": {"acme/standards": {"APP_KEY_ISSUED": "2000-01-01"}},
@@ -146,6 +147,12 @@ g_row=$(q acme/standards 's.items.find(i => !i.pull && i.title === "Standards co
 g_body=$(q acme/gamma 's.items.filter(i => i.pull).map(p => p.body).join(" ")')
 if [ -n "$(printf '%s' "$g_row" | grep 'offline check failed')" ] && has_text 'flow "staged" is retired' "$g_body" && [ "$(git --git-dir "$R/acme/gamma.git" rev-list --count main)" = 1 ]; then ok sync-lands-without-gate
 else fail sync-lands-without-gate "staged repo: row=$g_row body=$g_body"; fi
+
+# ... and so does one whose org `flow` property still says staged, though its standards.json names no flow
+d_row=$(q acme/standards 's.items.find(i => !i.pull && i.title === "Standards compliance")?.body' | grep '^| acme/delta ')
+d_body=$(q acme/delta 's.items.filter(i => i.pull).map(p => p.body).join(" ")')
+if [ -n "$(printf '%s' "$d_row" | grep 'still on the staged flow')" ] && has_text 'org property flow is "staged"' "$d_body" && [ "$(git --git-dir "$R/acme/delta.git" rev-list --count main)" = 1 ]; then ok sync-lands-without-gate
+else fail sync-lands-without-gate "staged by property: row=$d_row body=$d_body"; fi
 
 # sync-opens-pr-when-red: beta's applied tree fails the offline check, so one PR for a person naming the failure, no
 # auto-merge, beta's main untouched; the next release supersedes it; a PR a person closed is not reopened.
