@@ -145,6 +145,8 @@ o=$(built client '<html><body><script>
 const a = "https://example.com/x", b = '"'"'/* not a comment */'"'"', c = `// ${a} /*`, d = /\/\*|\/\/[a-z]/g, e = 4 / 2 / 1;
 const f = [1, 2].map((x) => x / 2), g = a.replace(/\/\//g, "/");
 </script></body></html>'); has "exit=0" "$o" && has "built output: dist/ is clean" "$o" || why="$why; strings and regexes: $o"
+# a regex right after a control statement's parenthesis is a regex, not division: [/*] in it opens no comment
+o=$(built client '<html><body><script>if (ok) /[/*]/.test(s); while (x) /[//]/.exec(t); const r = (a) / 2;</script></body></html>'); has "exit=0" "$o" || why="$why; regex after if (): $o"
 o=$(built client '<html><body><p>Site by Squarespace</p></body></html>'); has "exit=1" "$o" && has "dist/index.html: source-platform name Squarespace" "$o" || why="$why; platform: $o"
 o=$(built internal '<html><body><!-- note --></body></html>'); has "exit=0" "$o" && ! has "built output" "$o" || why="$why; internal scanned: $o"
 if [ -z "$why" ]; then ok client-built-output-clean; else fail client-built-output-clean "$why"; fi
