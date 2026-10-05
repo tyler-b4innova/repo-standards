@@ -29,7 +29,7 @@ G() { local d=$1; shift; (cd "$d" && GITHUB_EVENT_PATH=$d/.git/event.json node s
 why=""
 
 # docs only: both steps skip, say so and name the files, and call nothing (the API here is unreachable)
-R=$(pr README.md docs/guide/setup.md AGENTS.md apps/web/CLAUDE.md .github/ISSUE_TEMPLATE/bug.md .github/PULL_REQUEST_TEMPLATE.md LICENSE)
+R=$(pr README.md docs/guide/setup.md AGENTS.md apps/web/CLAUDE.md .github/ISSUE_TEMPLATE/bug.md .github/PULL_REQUEST_TEMPLATE.md LICENSE .impeccable/review/home-desktop.png)
 e=$(G "$R" e2e); es=$?; p=$(G "$R" preview); ps=$?
 [ $es -eq 0 ] && has "only non-deployable paths changed" "$e" && has "docs/guide/setup.md" "$e" || why="$why; docs e2e=$es: $e"
 [ $ps -eq 0 ] && has "only non-deployable paths changed" "$p" && has "url=" "$p" || why="$why; docs preview=$ps: $p"

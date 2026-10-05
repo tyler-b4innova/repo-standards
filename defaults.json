@@ -29,7 +29,18 @@
     "LICENSE.*",
     ".agents/**",
     ".claude/**",
-    ".codex/**"
+    ".codex/**",
+    ".impeccable/**"
+  ],
+  "source_platforms": [
+    "Wix",
+    "Squarespace",
+    "WordPress",
+    "Weebly",
+    "GoDaddy",
+    "Webflow",
+    "Duda",
+    "Jimdo"
   ],
   "risk_paths": [
     ".github/workflows/**",

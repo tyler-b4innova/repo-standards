@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { scan } from "./jsscan.mjs";
 import { claudePins, codexPins } from "./pins.mjs";
 
 if (process.argv.includes("--help")) {
@@ -19,6 +20,21 @@ const json = (f) => { try { return JSON.parse(read(f)); } catch { return null; }
 const sha = (s) => createHash("sha256").update(s).digest("hex");
 const glob = (g) => new RegExp("^" + g.replace(/[.+^$()|[\]\\]/g, "\\$&").replace(/\{([^}]+)\}/g, (_, a) => `(${a.split(",").join("|")})`)
   .replace(/\*\*\//g, "\0").replace(/\*\*/g, "\x01").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]").replace(/\0/g, "(.*/)?").replace(/\x01/g, ".*") + "$");
+// A real production-host guard in (comment-free) source: the request hostname tested for membership in a list or set of
+// quoted hosts (.includes / .has), or compared with a quoted host (=== / !==). Reading or logging the hostname is not one.
+const HOST = /["'`](?:[a-z0-9-]+\.)+[a-z]{2,}["'`]/i;
+function hostGuard(t) {
+  if (new RegExp(`\\.hostname\\s*[!=]==?\\s*${HOST.source}|${HOST.source}\\s*[!=]==?\\s*[\\w$.?()\\[\\]"'\`]*\\.hostname\\b`, "i").test(t)) return true;
+  for (const m of t.matchAll(/(\]|[A-Za-z_$][\w$]*)\s*\)?\s*\.\s*(includes|has)\s*\(/g)) {
+    let depth = 1, j = m.index + m[0].length;
+    for (; j < t.length && depth; j++) depth += t[j] === "(" ? 1 : t[j] === ")" ? -1 : 0;
+    if (!/\.hostname\s*\)$/.test(t.slice(m.index + m[0].length, j))) continue;
+    if (m[1] === "]") { const open = t.lastIndexOf("[", m.index); if (open >= 0 && HOST.test(t.slice(open, m.index))) return true; continue; }
+    const decl = t.match(new RegExp(`\\b(?:const|let|var)\\s+${m[1].replace(/\$/g, "\\$")}\\b[^=]*=\\s*(?:new\\s+Set\\s*\\(\\s*)?\\[([^\\]]*)\\]`));
+    if (decl && HOST.test(decl[1])) return true;
+  }
+  return false;
+}
 const out = [];
 let fails = 0;
 const fail = (msg, fix) => { out.push(`FAIL: ${msg} | fix: ${fix}`); fails++; };
@@ -217,6 +233,60 @@ else {
     let hit = "";
     try { hit = git("grep", "-nIiE", pat, "--", ".", ":!scripts/agent/pack.json").split(":").slice(0, 2).join(":"); } catch {}
     if (hit) fail(`forbidden internal reference /${pat}/ at ${hit}`, "remove the internal reference");
+  }
+  // Client sites: checks for the rules their copy-pasted AGENTS.md lines used to state (each guarded real damage).
+  if (pack.profile === "client") {
+    const src = tracked.filter((f) => /\.(astro|html|svelte|vue|[cm]?[jt]sx?)$/.test(f) && !/^(scripts\/agent|node_modules|dist)\//.test(f));
+    // The Turnstile script is the versioned /turnstile/v0/api.js; the unversioned URL 404s, so the form never gets a token.
+    for (const f of src)
+      for (const [u] of (read(f) ?? "").matchAll(/challenges\.cloudflare\.com\/turnstile\/[^\s"'`)<>]*/g))
+        if (!/\/siteverify$/.test(u) && !/\/turnstile\/v0\/api\.js(\?.*)?$/.test(u))
+          fail(`${f} loads Turnstile from ${u}, not the versioned script`, "use https://challenges.cloudflare.com/turnstile/v0/api.js");
+    // overflow: hidden on a block animated on a view()/scroll() timeline freezes the timeline; overflow-x on html breaks
+    // scrolling. Innermost CSS rules of stylesheets and components' <style> blocks (a reading of the stylelint rule).
+    for (const f of tracked.filter((f) => /\.(css|scss|astro|svelte|vue|html)$/.test(f) && !/^(node_modules|dist)\//.test(f))) {
+      const text = read(f) ?? "", css = /\.s?css$/.test(f) ? text : [...text.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map((m) => m[1]).join("\n");
+      for (const [, sel, body] of css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+        const name = sel.trim().replace(/\s+/g, " ");
+        if (/animation-timeline\s*:[^;]*\b(view|scroll)\(/.test(body) && /(^|[;\s])overflow(-[xy])?\s*:\s*hidden\b/.test(body))
+          fail(`${f}: ${name} is animated on a scroll timeline but sets overflow: hidden, which freezes the timeline`, "use overflow: clip");
+        if (name.split(",").some((x) => ["html", ":root"].includes(x.trim())) && /(^|[;\s])overflow-x\s*:\s*(hidden|auto|scroll)\b/.test(body))
+          fail(`${f}: html sets overflow-x to a scroll container`, "remove it; clip the overflowing element instead (overflow: clip)");
+      }
+    }
+    const wrangler = ["wrangler.jsonc", "wrangler.json", "wrangler.toml"].map(read).find((t) => t !== null) ?? "";
+    // Mail: one seam sends it, and the seam compares the request hostname with the production hosts, so previews,
+    // workers.dev and localhost never mail the client. A sender calls .send( on a send_email binding from the wrangler
+    // config (JSON, or a TOML [[send_email]] table), or imports cloudflare:email and calls .send(; passing the binding
+    // on is not a send.
+    const bindings = /^\s*\[\[send_email\]\]/m.test(wrangler)
+      ? [...wrangler.matchAll(/^\s*\[\[send_email\]\]\s*\n(?:(?!\s*\[)[^\n]*\n?)*/gm)].map((m) => m[0].match(/^\s*name\s*=\s*["']([A-Za-z_]\w*)["']/m)?.[1]).filter(Boolean)
+      : [...(wrangler.match(/["']?send_email["']?\s*:\s*\[[^\]]*\]/)?.[0] ?? "").matchAll(/["']?name["']?\s*:\s*["']([A-Za-z_]\w*)["']/g)].map((m) => m[1]);
+    const lexed = new Map(src.map((f) => [f, scan(read(f) ?? "")]));
+    const sends = (f) => { const { code } = lexed.get(f), imports = /from\s+["']cloudflare:email["']/.test(read(f) ?? "");
+      return bindings.some((b) => new RegExp(`\\b${b}\\s*\\)?\\s*\\.\\s*send\\s*\\(`).test(code)) || (imports && /\.\s*send\s*\(/.test(code)); };
+    const senders = src.filter((f) => !/\.d\.ts$/.test(f) && !/(^|\/)(tests?|e2e|__tests__)\/|\.(test|spec)\.[cm]?[jt]sx?$/.test(f) && sends(f));
+    const seam = senders.find((f) => hostGuard(lexed.get(f).source)) ?? senders[0];
+    for (const f of senders.filter((f) => f !== seam)) fail(`${f} sends mail outside the email seam (${seam})`, `send through ${seam}, the one place that reroutes non-production hosts`);
+    if (seam && !hostGuard(lexed.get(seam).source))
+      fail(`${seam} sends mail but never compares the request hostname with the production hosts`, "mail real recipients only from the production hosts; reroute every other host (previews, workers.dev, localhost) to a test inbox");
+    // Sentry: a site whose Worker runs code, on the Cloudflare SDK, reports from all four layers.
+    const main = wrangler.match(/["']?main["']?\s*[:=]\s*["']([^"']+)["']/)?.[1]?.replace(/^\.\//, "");
+    const deps = json("package.json") ?? {};
+    if (main && { ...deps.dependencies, ...deps.devDependencies }["@sentry/cloudflare"]) {
+      const missing = (layer, fix) => fail(`Sentry layer missing: ${layer}`, fix);
+      // A main the build generates (not tracked, e.g. dist/_worker.js) is wrapped in the tracked source it is built from.
+      const wrapped = tracked.includes(main) ? /\bwithSentry\s*\(/.test(lexed.get(main)?.code ?? scan(read(main) ?? "").code)
+        : src.some((f) => !/(^|\/)(tests?|e2e|__tests__)\//.test(f) && /\bwithSentry\s*\(/.test(lexed.get(f).code));
+      if (!wrapped) missing("wrapper", `wrap the Worker entry (${main}) in Sentry.withSentry`);
+      if (!tracked.some((f) => /^src\/middleware(\.[cm]?[jt]s$|\/)/.test(f) && /\bcaptureException\s*\(/.test(scan(read(f) ?? "").code)))
+        missing("middleware", "add src/middleware.ts (or src/middleware/) calling Sentry.captureException on a route error (the framework turns route errors into 500s the wrapper never sees)");
+      const browser = src.find((f) => /@sentry\/browser/.test(read(f) ?? "") && /\binit\s*\(/.test(read(f) ?? ""));
+      const tunnel = browser && (read(browser).match(/\btunnel\s*:\s*["'`](\/[^"'`]*)["'`]/)?.[1] ?? "").replace(/\/+$/, "");
+      if (!browser) missing("browser", "init @sentry/browser in a client script, with a same-origin tunnel");
+      else if (!tunnel || !tracked.some((f) => [`src/pages${tunnel}`, `src/pages${tunnel}/index`, `src/routes${tunnel}/+server`].some((b) => new RegExp(`^${b.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.[cm]?[jt]s$`).test(f))))
+        missing("tunnel", `serve the browser init's tunnel${tunnel ? ` (${tunnel})` : ""} from a same-origin route that forwards only this site's project`);
+    }
   }
   for (const host of pack.shared_preview_hosts)
     for (const f of tracked.filter((f) => /(^|\/)wrangler\.(jsonc?|toml)$/.test(f)))

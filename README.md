@@ -48,6 +48,17 @@ npx -y github:tyler-b4innova/repo-standards#vX.Y.Z apply --target <repo> --overl
 
 The managed AGENTS.md block carries a `## Review guidelines` line telling Codex review to skip pack-managed paths: findings on those belong in this repository.
 
+## Client sites
+
+Repositories on the `client` profile get checks for the rules their instruction files used to state.
+- **Offline, in `--check`:**
+  - the Turnstile script is the versioned `/turnstile/v0/api.js`;
+  - a CSS rule animated on a `view()`/`scroll()` timeline never sets `overflow: hidden`, and `html` never sets `overflow-x`;
+  - mail goes out through one seam, the only file that calls `.send(` on a `send_email` binding. The seam must test the request hostname against the production hosts with `.includes`, `.has` or `===`, so non-production hosts never mail the client;
+  - a site whose Worker runs code (`main`) on `@sentry/cloudflare` has all four error layers: the wrapper (looked for in the tracked source when the build generates `main`), the middleware (`src/middleware.*` or `src/middleware/`), the browser init, and its same-origin tunnel route.
+- **In `gate.mjs run build`:** the built HTML in `dist/` carries no HTML comments, no comments in inline scripts, and no source-platform names. Inline scripts are read by `scripts/agent/jsscan.mjs`, a small lexer. The names are `defaults.json` `source_platforms` plus the overlay's `profiles.client.source_platforms`.
+- **In `gate.mjs e2e`, against the preview:** the preview's home page says `noindex`, in its robots meta or its `X-Robots-Tag` header. The fetch runs within the e2e budget, and the suite gets the time left.
+
 ## Cloud configuration
 
 With the overlay's `"cloud_env": { "action": "<owner>/<repo>[/<path>]@<ref>", "token_ref": "op://<vault>/<item>/<field>" }`, apply ships `.github/workflows/std-cloud-env.yml` (the action rendered into it) to each repository that has a `cloud-env.json`, and retires it when the file goes. The action takes `args` and runs the org's cloud-env CLI on `cloud-env.json`; a private action repository must allow access from the organization's repositories. A `cloud-env.json` change on a pull request runs the check with `--check --offline` and no token. A push to `main` (the production branch; a staged repository's integration branch only checks) reads the Cloudflare token through `1password/load-secrets-action` (org secret `OP_SERVICE_ACCOUNT_TOKEN`, a CI-only service account) and applies. A manual run checks, and on `main` also applies, which onboards a `cloud-env.json` that predates the workflow. With `token_ref` `null` the apply step is skipped with a notice. The workflow is not a required check.

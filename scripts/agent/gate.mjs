@@ -7,6 +7,7 @@ import { execFileSync as ex, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync as has, mkdtempSync, readdirSync as ls, readFileSync as rd, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { scan } from "./jsscan.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
 const SUBS = ["plan", "classify", "install", "run", "preview", "e2e", "secrets", "syntax"], ok = SUBS.includes(cmd);
@@ -67,6 +68,27 @@ function docOnly() {
   return files.length && files.every((f) => paths.some((r) => r.test(f))) ? files : null;
 }
 const docSkip = (step, files) => console.log(`::notice::${step} skipped: only non-deployable paths changed (${files.join(", ")})`);
+
+// Client sites: the built HTML (dist/) carries no HTML comments, no comments in inline scripts and no source-platform
+// names (pack.json source_platforms), all of which leak how and where the site was made.
+function scanBuilt() {
+  const bad = [], names = pack.source_platforms ?? [];
+  const word = names.length ? new RegExp(`\\b(${names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\\b`, "i") : null;
+  for (const f of ls("dist", { recursive: true }).map(String).filter((f) => /\.html?$/.test(f)).sort()) {
+    const html = rd(`dist/${f}`, "utf8"), at = `dist/${f}`;
+    if (/<!--(?!\s*\[if)/.test(html)) bad.push(`${at}: HTML comment`);
+    // Inline JavaScript only (data blocks such as JSON-LD are not scripts); read by a lexer, not a regex.
+    for (const [, attrs, body] of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
+      const type = attrs.match(/\btype\s*=\s*["']?([^"'\s>]+)/i)?.[1]?.toLowerCase() ?? "";
+      if (/\bsrc\s*=/i.test(attrs) || (type && !["module", "text/javascript", "application/javascript"].includes(type))) continue;
+      if (scan(body).comments.length) { bad.push(`${at}: comment in an inline script`); break; }
+    }
+    const m = word && html.replace(/<[^>]*\b(integrity|nonce)="[^"]*"/g, "").match(word);
+    if (m) bad.push(`${at}: source-platform name ${m[1]}`);
+  }
+  if (bad.length) fail(`built output:\n  ${bad.join("\n  ")}`, "remove the comments from the source (Astro keeps <!-- --> and is:inline script comments), and the platform names");
+  console.log("built output: dist/ is clean");
+}
 
 // The Cloudflare bot's comment body -> the preview URL for `head` ("" when there is none). A table is read by its header
 // row: the "Preview URL" (or "Deployment URL") cell of the row whose "Latest Commit" (or "Commit") is the head, in a
@@ -197,7 +219,10 @@ if (cmd === "plan") {
   const s = args.find((x) => pkg?.scripts?.[x]);
   if (!args.length) fail("no script named", "gate.mjs run <script>...");
   if (!s) console.log(`notice: no ${args.join(" or ")} script in package.json; skipped`);
-  else { console.log(`run: ${pm} run ${s}`); must(pm, ["run", s]); }
+  else {
+    console.log(`run: ${pm} run ${s}`); must(pm, ["run", s]);
+    if (s === "build" && pack.profile === "client" && has("dist")) scanBuilt();
+  }
 } else if (cmd === "e2e") {
   // "e2e": false skips this step and the preview step (docs and static repos, and repos whose Workers Builds run on every PR without an e2e suite).
   if (std.e2e === false) { console.log('::warning::e2e skipped; standards.json sets "e2e": false'); process.exit(0); }
@@ -224,10 +249,26 @@ if (cmd === "plan") {
   if (e2eCfg.budget !== undefined && !(typeof e2eCfg.budget === "number" && e2eCfg.budget > 0)) fail(`standards.json e2e.budget is ${JSON.stringify(e2eCfg.budget)}`, "minutes above 0 (it may only tighten the org budget)");
   const mins = Math.min(e2eCfg.budget ?? Infinity, pack.gate_budget?.e2e ?? 5), ms = Math.round(mins * 60000);
   const url = env.GATE_PREVIEW_URL ?? "";
+  // A client site's preview must not be indexed: its home page's robots meta (or X-Robots-Tag) says noindex. The fetch
+  // and its body read stop at the e2e budget, and the suite gets only the time left.
+  const started = Date.now();
+  if (url && pack.profile === "client") {
+    let res = null, html = "";
+    try { res = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(ms) }); html = await res.text(); }
+    catch (e) { fail(e.name === "TimeoutError" || e.name === "AbortError" ? `the preview at ${url} did not answer within the e2e budget (${mins} min)` : `the preview at ${url} did not answer: ${e.cause?.code ?? e.message}`, "re-run gate once the preview is up"); }
+    const directives = (v) => v.toLowerCase().split(",").map((d) => d.replace(/^[^:]*:/, "").trim());
+    const attrs = (tag) => Object.fromEntries([...tag.matchAll(/([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g)].map((a) => [a[1].toLowerCase(), a[2] ?? a[3] ?? a[4]]));
+    const meta = [...html.matchAll(/<meta\b[^>]*>/gi)].map(([t]) => attrs(t)).some((a) => /^(robots|googlebot)$/i.test(a.name ?? "") && directives(a.content ?? "").some((d) => ["noindex", "none"].includes(d)));
+    if (!meta && !directives(res.headers.get("x-robots-tag") ?? "").some((d) => ["noindex", "none"].includes(d)))
+      fail(`the preview at ${url} carries no noindex (robots meta or X-Robots-Tag)`, "previews must not be indexed: render <meta name=\"robots\" content=\"noindex\"> on every non-production host");
+    console.log(`preview noindex: ok (${url})`);
+  }
+  const left = ms - (Date.now() - started);
+  if (left <= 0) fail(`e2e exceeded its ${mins}-minute budget`, "the preview answered too slowly for the suite to run; re-run gate");
   if (run) {
     console.log(`e2e: ${run[0]} ${run[1].map((a) => (a.includes("*") ? `"${a}"` : a)).join(" ")}${url ? ` against ${url}` : ""} (budget ${mins} min)`);
-    const r = spawnSync(run[0], run[1], { stdio: "inherit", timeout: ms, killSignal: "SIGKILL",
-      env: { ...env, PW_GLOBAL_TIMEOUT: String(ms), ...(url && { PLAYWRIGHT_BASE_URL: url, BASE_URL: url }) } });
+    const r = spawnSync(run[0], run[1], { stdio: "inherit", timeout: left, killSignal: "SIGKILL",
+      env: { ...env, PW_GLOBAL_TIMEOUT: String(left), ...(url && { PLAYWRIGHT_BASE_URL: url, BASE_URL: url }) } });
     if (r.error?.code === "ETIMEDOUT" || r.signal) fail(`e2e exceeded its ${mins}-minute budget`, "make the slow tests faster (fewer navigations, the preview URL), then move the slow tail to promotion PRs; do not shard");
     if (r.status) process.exit(r.status);
   }
