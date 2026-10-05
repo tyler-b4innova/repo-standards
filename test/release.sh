@@ -42,6 +42,7 @@ out=$(OVERLAY=$O apply "$T/x" 2>&1) && why="$why; promotion_browsers accepted"; 
 # the workflow: pushes to main and manual runs only; install and e2e take the release step's browsers and URL
 trig=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");console.log(y.slice(y.indexOf("\non:"),y.indexOf("\npermissions:")))' "$R/$WF")
 has "branches: [main]" "$trig" && has "workflow_dispatch" "$trig" && ! has pull_request "$trig" || why="$why; triggers: $trig"
+grep -q 'fetch-depth: 2' "$R/$WF" || why="$why; checkout too shallow to read the parent commit"
 grep -q 'GATE_BROWSERS: ${{ steps.release.outputs.browsers }}' "$R/$WF" && grep -q 'GATE_PREVIEW_URL: ${{ steps.release.outputs.url }}' "$R/$WF" || why="$why; e2e not wired to the release step"
 
 # gate.mjs release: waits for this commit's Workers Builds, then names the extra browsers and the staging URL
