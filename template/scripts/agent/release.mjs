@@ -57,11 +57,17 @@ const primaryUpload = (a) => {
   }
   return configs.length === 0 || (configs.length === 1 && resolve(configs[0]) === resolve(configFile));
 };
+// Explicitly replace Wrangler's default .env/.env.* search with a private empty file.
+// Process environment comes only from CI, with Builds overrides limited to the primary upload.
+const envDir = mkdtempSync(join(tmpdir(), "release-env-"));
+const envFile = join(envDir, "controlled.env");
+writeFileSync(envFile, "", { mode: 0o600 });
+process.on("exit", () => rmSync(envDir, { recursive: true, force: true }));
 const wrangler = (a, { capture = false } = {}) => {
   console.log(`release: npx wrangler ${a.map((x) => (/^\//.test(x) ? "<file>" : x)).join(" ")}`);
   // The repository's own wrangler where it is installed (the build), else the current major (the clean-up job installs nothing).
   const bin = existsSync("node_modules/.bin/wrangler") ? ["wrangler"] : ["-y", "wrangler@4"];
-  const r = spawnSync("npx", [...bin, ...a], { encoding: "utf8", stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit", env: primaryUpload(a) ? productionEnv : ISOLATED_ENV });
+  const r = spawnSync("npx", [...bin, ...a, `--env-file=${envFile}`], { encoding: "utf8", stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit", env: primaryUpload(a) ? productionEnv : ISOLATED_ENV });
   return { status: r.status ?? 1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
 };
 const must = (a) => { const r = wrangler(a); if (r.status) process.exit(r.status); };
@@ -135,8 +141,8 @@ async function deploy() {
   const dir = mkdtempSync(join(tmpdir(), "release-"));
   process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
   {
-    const f = await secretsFile(dir), sf = f ? ["--secrets-file", f] : [];
     if (cmd === "preview") {
+      const f = await secretsFile(dir), sf = f ? ["--secrets-file", f] : [];
       const branch = env.WORKERS_CI_BRANCH || execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" }).trim(), name = slug(branch);
       if (!name || name === "staging") fail(`branch ${branch} has no usable Preview name (${name || "empty"})`, "rename the branch");
       config();
@@ -163,6 +169,7 @@ async function deploy() {
       const names = worker.primary ? required : [...new Set((Array.isArray(worker.cfg.secrets?.required) ? worker.cfg.secrets.required : []).filter((name) => typeof name === "string" && name))];
       return { ...worker, resolved, name, configArgs, names };
     });
+    const f = await secretsFile(dir), sf = f ? ["--secrets-file", f] : [];
     for (let i = 0; i < targets.length; i++) {
       const target = targets[i];
       const file = target.primary ? f : await secretsFile(dir, target.names, `worker-${i}.json`);

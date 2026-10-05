@@ -6,7 +6,7 @@
 // Bindings by kind: where they sit, and the keys naming the resource they reach (none: a binding with no resource).
 const KINDS = [
   ["d1_databases", ["database_id", "database_name"]], ["kv_namespaces", ["id"]], ["r2_buckets", ["bucket_name"]],
-  ["queues.producers", ["queue"]], ["workflows", ["name"]], ["services", ["service"]], ["hyperdrive", ["id"]],
+  ["queues.producers", ["queue"]], ["workflows", ["name", "script_name"]], ["services", ["service"]], ["hyperdrive", ["id"]],
   ["vectorize", ["index_name"]], ["analytics_engine_datasets", ["dataset"]], ["durable_objects.bindings", ["script_name"]],
   ["secrets_store_secrets", []], ["send_email", []], ["mtls_certificates", []], ["dispatch_namespaces", ["namespace"]],
 ];
@@ -42,29 +42,55 @@ export function parse(text) {
 export const hasData = (cfg) => KINDS.some(([k]) => DATA.has(k) && list(at(cfg, k)).length) || list(at(cfg, "queues.consumers")).length > 0
   || list(at(cfg, "durable_objects.bindings")).some((b) => b.script_name) || Boolean(at(cfg, "triggers.crons")?.length);
 
+// Check the actual resolved target, including flattened adapter output, against every production config.
+export function resourceFindings(target, productionConfigs) {
+  const errors = [], prod = new Map();
+  const entries = (cfg, path) => {
+    if (path.includes(".")) {
+      const parent = cfg[path.split(".")[0]];
+      if (parent !== undefined && (!parent || typeof parent !== "object" || Array.isArray(parent))) {
+        errors.push(`cannot safely read ${path}`); return [];
+      }
+    }
+    const value = at(cfg, path);
+    if (value === undefined) return [];
+    if (!Array.isArray(value) || value.some((b) => !b || typeof b !== "object" || Array.isArray(b))) {
+      errors.push(`cannot safely read ${path}`); return [];
+    }
+    return value;
+  };
+  for (const source of productionConfigs) {
+    for (const [k, keys] of KINDS) for (const b of entries(source, k)) for (const key of keys) {
+      if (b[key] !== undefined && typeof b[key] !== "string") errors.push(`cannot safely read production ${k}.${key}`);
+      if (typeof b[key] === "string" && b[key]) prod.set(`${key}:${b[key]}`, `${k} ${nameOf(b) ?? ""}`.trim());
+    }
+    for (const c of entries(source, "queues.consumers")) {
+      if (typeof c.queue !== "string" || !c.queue) errors.push("cannot safely read production queues.consumers.queue");
+      else prod.set(`queue:${c.queue}`, "queues.consumers");
+    }
+  }
+  const prodWorkers = new Set(productionConfigs.flatMap((source) => [source.name, ...list(source.services).map((s) => s.service), ...list(source.workflows).map((s) => s.script_name), ...list(at(source, "durable_objects.bindings")).map((b) => b.script_name)]).filter(Boolean));
+  for (const [k, keys] of KINDS) for (const b of entries(target, k)) for (const key of keys) {
+    const v = b[key];
+    if (v !== undefined && typeof v !== "string") errors.push(`cannot safely read ${k}.${key}`);
+    const hit = typeof v === "string" && (prod.get(`${key}:${v}`) || (["service", "script_name"].includes(key) && prodWorkers.has(v) && "a production Worker"));
+    if (hit) errors.push(`${k} ${nameOf(b) ?? ""} names the production resource ${v} (${hit})`.replace(/ {2,}/g, " "));
+  }
+  for (const c of entries(target, "queues.consumers")) {
+    if (typeof c.queue !== "string" || !c.queue) errors.push("cannot safely read queues.consumers.queue");
+    else if (prod.has(`queue:${c.queue}`)) errors.push(`consumes the production queue ${c.queue}`);
+  }
+  return errors;
+}
+
 // Findings for a parsed root config: { fails: [[msg, fix]], warns: [msg] }. std: standards.json; pack: pack.json.
 export function findings(cfg, { file, std = {}, pack = {}, required = [], productionConfigs = [cfg] }) {
   const fails = [], warns = [], F = (m, f) => fails.push([`${file}: ${m}`, f]);
-  const prodName = cfg.name, prod = new Map(); // resource -> what names it in production
-  for (const source of productionConfigs) {
-    for (const [k, keys] of KINDS) for (const b of list(at(source, k))) for (const key of keys) if (typeof b[key] === "string" && b[key]) prod.set(`${key}:${b[key]}`, `${k} ${nameOf(b) ?? ""}`.trim());
-    for (const c of list(at(source, "queues.consumers"))) if (c.queue) prod.set(`queue:${c.queue}`, "queues.consumers");
-  }
-  const prodWorkers = new Set(productionConfigs.flatMap((source) => [source.name, ...list(source.services).map((s) => s.service), ...list(at(source, "durable_objects.bindings")).map((b) => b.script_name)]).filter(Boolean));
+  const prodName = cfg.name;
   const stage = at(cfg, "env.staging"), previews = cfg.previews, stagingName = stage?.name ?? (prodName ? `${prodName}-staging` : undefined);
-
-  // No production resource outside production: env.staging and previews (and previews inside env.staging).
   const nonProd = [["env.staging", stage], ["previews", previews], ["env.staging.previews", stage?.previews]].filter(([, s]) => s && typeof s === "object");
-  for (const [where, s] of nonProd) {
-    for (const [k, keys] of KINDS) for (const b of list(at(s, k))) {
-      for (const key of keys) {
-        const v = b[key], hit = typeof v === "string" && (prod.get(`${key}:${v}`) || (["service", "script_name"].includes(key) && prodWorkers.has(v) && "a production Worker"));
-        if (hit) F(`${where} ${k} ${nameOf(b) ?? ""} names the production resource ${v} (${hit})`.replace(/ {2,}/g, " "), `point it at the staging resource (${where === "env.staging" ? "create one with its own id" : "the one env.staging uses"}); staging and previews never reach production`);
-      }
-    }
-    for (const c of list(at(s, "queues.consumers"))) if (c.queue && prod.has(`queue:${c.queue}`))
-      F(`${where} consumes the production queue ${c.queue}`, "consume the staging queue");
-  }
+  for (const [where, target] of nonProd) for (const message of resourceFindings(target, productionConfigs))
+    F(`${where} ${message}`, "point it at isolated staging resources; staging and previews never reach production");
   if (previews && typeof previews === "object") {
     for (const k of ["routes", "route", "triggers"]) if (previews[k] !== undefined) F(`previews sets ${k}, which never target Previews`, `remove previews.${k}; cron and routes belong to production and env.staging`);
     if (at(previews, "queues.consumers") !== undefined) F("previews sets queues.consumers, which never target Previews", "remove it; env.staging consumes the staging queue");
@@ -142,13 +168,56 @@ export function findings(cfg, { file, std = {}, pack = {}, required = [], produc
   return { fails, warns };
 }
 
+// Locate an object property without rewriting any existing configuration or comments.
+function objectSpan(tokens, path, begin = 0) {
+  let depth = 0, end = begin;
+  for (let i = begin; i < tokens.length; i++) {
+    const token = tokens[i][1];
+    if (token === "{" || token === "[") depth++;
+    if (token === "}" || token === "]") { depth--; if (!depth) { end = i; break; } }
+    if (path.length && depth === 1 && token === JSON.stringify(path[0]) && tokens[i + 1]?.[1] === ":" && tokens[i + 2]?.[1] === "{")
+      return objectSpan(tokens, path.slice(1), i + 2);
+  }
+  return path.length ? null : [begin, end];
+}
+function insertProperty(text, path, key, value) {
+  const tokens = structure(text), span = objectSpan(tokens, path);
+  if (!span) return null;
+  const [, endIndex] = span, [end] = tokens[endIndex], [pos, prev] = tokens[endIndex - 1];
+  const head = prev === "," || prev === "{" ? text.slice(0, end) : text.slice(0, pos + prev.length) + "," + text.slice(pos + prev.length, end);
+  return head + `\n${JSON.stringify(key)}: ${JSON.stringify(value)}\n` + text.slice(end);
+}
+
 // Apply's migration for a 0.6.x Worker with no data bindings (a brochure site): add env.staging (a separate Worker on
 // workers.dev, its own vars and bindings, no production routes) and, when missing, a previews block, by inserting text
 // before the config's closing brace, so comments and layout stay. Returns the new text, or null when it cannot (data
-// bindings, an env block already, TOML, unparseable).
+// bindings, an env block already except required-secret upgrades, TOML, unparseable).
 export function migrate(text, { portal = null } = {}) {
   const cfg = parse(text);
-  if (!cfg || typeof cfg !== "object" || Array.isArray(cfg) || !cfg.name || cfg.env !== undefined || hasData(cfg)) return null;
+  if (!cfg || typeof cfg !== "object" || Array.isArray(cfg) || !cfg.name) return null;
+  // Repair the declarations omitted by the 0.7.1 brochure migration, including partial lists.
+  const stage = cfg.env?.staging, required = cfg.secrets?.required;
+  if (stage && typeof stage === "object" && !Array.isArray(stage) && Array.isArray(required)) {
+    const secrets = stage.secrets;
+    if (secrets !== undefined && (!secrets || typeof secrets !== "object" || Array.isArray(secrets))) return null;
+    if (secrets?.required !== undefined && !Array.isArray(secrets.required)) return null;
+    const missing = required.filter((name) => !secrets?.required?.includes(name));
+    if (Array.isArray(secrets?.required) && !missing.length) return null;
+    if (secrets === undefined) return insertProperty(text, ["env", "staging"], "secrets", { required });
+    if (secrets.required === undefined) return insertProperty(text, ["env", "staging", "secrets"], "required", required);
+    const tokens = structure(text), span = objectSpan(tokens, ["env", "staging", "secrets"]);
+    if (!span) return null;
+    for (let i = span[0]; i < span[1]; i++) if (tokens[i][1] === '"required"' && tokens[i + 1]?.[1] === ":" && tokens[i + 2]?.[1] === "[") {
+      let end = i + 3;
+      while (end < span[1] && tokens[end][1] !== "]") end++;
+      if (end === span[1]) return null;
+      const [pos, prev] = tokens[end - 1], close = tokens[end][0];
+      const head = prev === "," || prev === "[" ? text.slice(0, close) : text.slice(0, pos + prev.length) + "," + text.slice(pos + prev.length, close);
+      return head + missing.map((name) => JSON.stringify(name)).join(", ") + text.slice(close);
+    }
+    return null;
+  }
+  if (cfg.env !== undefined || hasData(cfg)) return null;
   const vars = (env) => {
     const v = { ...(cfg.vars ?? {}) };
     for (const k of ["ENVIRONMENT", "SENTRY_ENVIRONMENT"]) if (k in v) v[k] = env;

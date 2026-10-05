@@ -2,7 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
-import { parse } from "./staging.mjs";
+import { parse, resourceFindings } from "./staging.mjs";
 
 export const redirectFile = ".wrangler/deploy/config.json";
 export const rootFile = () => ["wrangler.json", "wrangler.jsonc", "wrangler.toml"].find(existsSync);
@@ -60,6 +60,8 @@ export function assertStaging(root, resolved, productionConfigs = [root]) {
     if (matches(a, b) || matches(b, a) || (a.includes("*") && b.includes("*")))
       throw new Error(`unsafe staging route/custom domain ${route}: overlaps production ${prod}`);
   }
+  const isolation = resourceFindings(resolved.cfg, productionConfigs);
+  if (isolation.length) throw new Error(`unsafe staging resources in ${resolved.file}: ${isolation.join("; ")}`);
   // route and routes are independently inherited; an empty routes array must not hide a production route.
   return expected;
 }

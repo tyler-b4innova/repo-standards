@@ -23,6 +23,12 @@ WF=.github/workflows/std-preview-cleanup.yml
 mkdir -p "$T/bin"
 cat >"$T/bin/npx" <<'EOF'
 #!/usr/bin/env bash
+# The controlled dotenv file is an internal safety argument; verify it before recording business arguments.
+args=()
+for a in "$@"; do
+  case "$a" in --env-file=*) file=${a#--env-file=}; [ -f "$file" ] && [ ! -s "$file" ] || exit 8 ;; *) args+=("$a") ;; esac
+done
+set -- "${args[@]}"
 line="$*"; f=""; prev=""
 for a in "$@"; do [ "$prev" = --secrets-file ] && f=$a; prev=$a; done
 if [ -n "$f" ]; then line="$line | file $(node -p "(require(\"fs\").statSync(process.argv[1]).mode & 0o777).toString(8)" "$f") keys $(node -e 'console.log(Object.keys(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))).join(","))' "$f")"; echo "$f" >>"$FAKE/files"; fi

@@ -166,3 +166,7 @@ Retired in 0.6.0 with the staged flow: `promote-no-ui-auto`, `promote-ui-needs-h
 
 - **`engine-neutral`**: no organization name, internal host, account, App or vault identifier appears in the tree or anywhere in history.
 - **`gate-timeout-overlay`**: the shipped `std-gate.yml` gate job times out at 30 minutes unless the overlay sets `gate.timeout_minutes`, an integer from 5 to 120 (anything else is refused before anything is written); the repository's offline check accepts the rendered value.
+
+- **`release-controlled-dotenv`**: every release Wrangler command uses a private empty explicit env file; build-created .env files cannot reload production override names, match tags or account values onto staging or secondary uploads. Incident: stripped child variables were reloaded by Wrangler before name resolution.
+- **`release-resolved-resource-guard`**: after building, before any remote command, every resolved staging target is checked against all production resources, including generated D1/KV/R2, queue producers and consumers, Workflows, service bindings and Durable Object script names. A safe source config cannot hide production bindings in adapter output.
+- **`staging-required-secrets-upgrade`**: apply repairs the missing or incomplete staging secrets.required declaration in actual 0.7.1 brochure migration output, preserving existing configuration and comments; applying again changes nothing.

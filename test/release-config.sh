@@ -199,4 +199,54 @@ JS
   release && proof legacy || why="$why; legacy primary: $(cat "$T/out")"
 else why="$(cat "$T/out")"; fi
 if [ -z "$why" ]; then ok release-secondary-workers; else fail release-secondary-workers "$why"; fi
+# Build-created dotenv files must not rename staging or secondary uploads, or inject account values.
+repo dotenv astro
+cp -R test/fixtures/release-secondary/. "$R/"
+node -e 'const fs=require("fs"),f=process.argv[1]+"/standards.json",o=JSON.parse(fs.readFileSync(f));o.release_workers=["workers/runtime/wrangler.jsonc"];fs.writeFileSync(f,JSON.stringify(o));const p=process.argv[1]+"/wrangler.jsonc",c=JSON.parse(fs.readFileSync(p));c.compatibility_date="2025-01-01";fs.writeFileSync(p,JSON.stringify(c))' "$R"
+printf '%s\n' '{"runtime-staging":["RUNTIME_KEY"],"runtime":["RUNTIME_KEY"]}' > "$RELEASE_SECRET_LIST"
+if MALICIOUS_DOTENV=1 WRANGLER_CI_OVERRIDE_NAME=site WRANGLER_CI_MATCH_TAG=primary-tag release; then
+  node --input-type=module - "$RELEASE_LOG" <<'JS'
+import { readFileSync } from "node:fs";
+import assert from "node:assert/strict";
+const calls = readFileSync(process.argv[2], "utf8").trim().split("\n").map(JSON.parse).filter((line) => line.args);
+assert.deepEqual(calls.filter((line) => line.args[0] === "deploy").map((line) => line.name), ["site-staging", "runtime-staging"]);
+assert.deepEqual(calls.filter((line) => line.args[0] === "versions").map((line) => line.name), ["site", "runtime"]);
+for (const call of calls) { assert.equal(call.controlledEmpty, true); assert.equal(call.account, null); }
+assert.equal(calls.find((line) => line.name === "runtime" && line.args[0] === "versions").matchTag, null);
+JS
+  if [ $? = 0 ]; then ok release-controlled-dotenv; else fail release-controlled-dotenv "dotenv contaminated release"; fi
+else fail release-controlled-dotenv "$(cat "$T/out")"; fi
+why=""
+for kind in d1_databases:database_id kv_namespaces:id r2_buckets:bucket_name queues:queue queue_producer:queue workflows:name workflows:script_name services:service durable_objects:script_name malformed:queue; do
+  repo "binding-${kind//[:.]/-}" astro
+  cp -R test/fixtures/release-secondary/. "$R/"
+  mkdir -p "$R/migrations"
+  node --input-type=module - "$R" <<'JS'
+import { readFileSync, writeFileSync } from "node:fs";
+const dir = process.argv[2], file = `${dir}/wrangler.jsonc`, cfg = JSON.parse(readFileSync(file, "utf8"));
+cfg.d1_databases = [{ binding: "DB", database_name: "production-db", database_id: "production-database_id" }];
+cfg.kv_namespaces = [{ binding: "KV", id: "production-id" }];
+cfg.r2_buckets = [{ binding: "R2", bucket_name: "production-bucket_name" }];
+cfg.queues = { producers: [{ binding: "Q", queue: "production-queue" }], consumers: [{ queue: "production-queue" }] };
+cfg.workflows = [{ binding: "WF", name: "production-workflow", class_name: "Example" }];
+cfg.env.staging.d1_databases = [{ binding: "DB", database_name: "staging-db", database_id: "staging-d1" }];
+cfg.env.staging.kv_namespaces = [{ binding: "KV", id: "staging-kv" }];
+cfg.env.staging.r2_buckets = [{ binding: "R2", bucket_name: "staging-r2" }];
+cfg.env.staging.queues = { producers: [{ binding: "Q", queue: "staging-queue" }], consumers: [{ queue: "staging-queue" }] };
+cfg.env.staging.workflows = [{ binding: "WF", name: "staging-workflow", class_name: "Example" }];
+for (const key of ["d1_databases", "kv_namespaces", "r2_buckets", "workflows"]) cfg.previews[key] = cfg.env.staging[key];
+cfg.previews.queues = { producers: cfg.env.staging.queues.producers };
+writeFileSync(file, JSON.stringify(cfg));
+const stdFile = `${dir}/standards.json`, std = JSON.parse(readFileSync(stdFile, "utf8"));
+std.release_workers = ["workers/runtime/wrangler.jsonc"];
+writeFileSync(stdFile, JSON.stringify(std));
+JS
+  if PRODUCTION_BINDING=$kind release; then why="$why; generated $kind passed";
+  elif ! grep -Eq 'unsafe staging resources.*(production resource|production queue|cannot safely read)' "$T/out" || ! proof abort; then why="$why; $kind wrong failure: $(cat "$T/out")"; fi
+  # --check uses the same resolved guard after the redirect exists.
+  (cd "$R" && node build.mjs)
+  if (cd "$R" && PRODUCTION_BINDING=$kind scripts/agent/setup.sh --check) > "$T/out" 2>&1; then why="$why; generated $kind passed --check";
+  elif ! grep -q 'unsafe staging resources' "$T/out"; then why="$why; $kind check wrong failure: $(cat "$T/out")"; fi
+done
+if [ -z "$why" ]; then ok release-resolved-resource-guard; else fail release-resolved-resource-guard "$why"; fi
 done_cases
