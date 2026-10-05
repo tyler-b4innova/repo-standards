@@ -123,6 +123,28 @@ B=$(mkrepo); put "$B" wrangler.toml 'name = "site"
 name = "MAILER"'; put "$B" src/pages/api/contact.ts 'export const POST = ({ locals }) => locals.runtime.env.MAILER.send({ to: ["client@example.com"] });'; commit "$B"
 b=$(check "$B"); has "src/pages/api/contact.ts sends mail but never compares the request hostname with the production hosts" "$b" && ok client-mail-seam || fail client-mail-seam "toml binding missed: $b"
 
+# every send_email binding counts, wherever the config declares it: after a nested array, in previews or an env, as a
+# TOML inline array or an env table
+B=$(mkrepo); put "$B" wrangler.jsonc '{ "name": "site", // site
+  "send_email": [{ "name": "FIRST", "allowed_destination_addresses": ["a@example.com", "b@example.com"] }, { "name": "SECOND" }],
+  "previews": { "send_email": [{ "name": "PREVIEW_MAIL" }] }, "env": { "staging": { "send_email": [{ "name": "STAGING_MAIL" }] } } }'
+put "$B" src/lib/email.ts "${SEAM//SEND_EMAIL/FIRST}"; for b in SECOND PREVIEW_MAIL STAGING_MAIL; do put "$B" src/pages/api/$b.ts "export const POST = () => env.$b.send({ to: [\"client@example.com\"] });"; done; commit "$B"
+b=$(check "$B"); for f in SECOND PREVIEW_MAIL STAGING_MAIL; do has "src/pages/api/$f.ts sends mail outside the email seam" "$b" || why2="${why2:-}; json $f missed"; done
+B=$(mkrepo); put "$B" wrangler.toml 'name = "site"
+send_email = [ { name = "INLINE", allowed_destination_addresses = ["a@example.com"] }, { name = "INLINE2" } ]
+[[env.staging.send_email]]
+name = "ENV_MAIL"'; put "$B" src/lib/email.ts "${SEAM//SEND_EMAIL/INLINE}"; for b in INLINE2 ENV_MAIL; do put "$B" src/pages/api/$b.ts "export const POST = () => env.$b.send({ to: [\"client@example.com\"] });"; done; commit "$B"
+b=$(check "$B"); for f in INLINE2 ENV_MAIL; do has "src/pages/api/$f.ts sends mail outside the email seam" "$b" || why2="${why2:-}; toml $f missed"; done
+# the guard may compare an alias of the hostname
+G=$(mkrepo); mail_site "$G"; put "$G" src/lib/email.ts 'const PRODUCTION_HOSTS = ["example.com", "www.example.com"];
+export async function sendFormEmail(request, mail) {
+  const { hostname } = new URL(request.url), host = hostname;
+  const live = PRODUCTION_HOSTS.includes(host) || hostname === "example.com";
+  await env.SEND_EMAIL.send({ ...mail, to: live ? mail.to : ["test@example.com"] });
+}'; commit "$G"
+check "$G" >/dev/null || why2="${why2:-}; hostname alias: $(check "$G")"
+if [ -z "${why2:-}" ]; then ok client-mail-seam; else fail client-mail-seam "$why2"; fi
+
 # ---- built output: after the build, dist/ HTML has no HTML comments, no comments in inline scripts, and no
 # source-platform names (gate.mjs run build)
 built() { # built <profile> <html>: a site whose build writes dist/index.html; prints gate's build output, then the exit
@@ -145,6 +167,8 @@ o=$(built client '<html><body><script>
 const a = "https://example.com/x", b = '"'"'/* not a comment */'"'"', c = `// ${a} /*`, d = /\/\*|\/\/[a-z]/g, e = 4 / 2 / 1;
 const f = [1, 2].map((x) => x / 2), g = a.replace(/\/\//g, "/");
 </script></body></html>'); has "exit=0" "$o" && has "built output: dist/ is clean" "$o" || why="$why; strings and regexes: $o"
+# a regex right after a control statement's parenthesis is a regex, not division: [/*] in it opens no comment
+o=$(built client '<html><body><script>if (ok) /[/*]/.test(s); while (x) /[//]/.exec(t); const r = (a) / 2;</script></body></html>'); has "exit=0" "$o" || why="$why; regex after if (): $o"
 o=$(built client '<html><body><p>Site by Squarespace</p></body></html>'); has "exit=1" "$o" && has "dist/index.html: source-platform name Squarespace" "$o" || why="$why; platform: $o"
 o=$(built internal '<html><body><!-- note --></body></html>'); has "exit=0" "$o" && ! has "built output" "$o" || why="$why; internal scanned: $o"
 if [ -z "$why" ]; then ok client-built-output-clean; else fail client-built-output-clean "$why"; fi
@@ -159,6 +183,7 @@ const metas = {
   none: "",
   nofollow: '<meta name="robots" content="nofollow, noarchive">', // no noindex directive
   other: '<meta name="description" content="noindex">', // not the robots meta
+  inactive: '<!-- <meta name="robots" content="noindex"> --><noscript><meta name="robots" content="noindex"></noscript><template><meta name="robots" content="noindex"></template>',
 };
 createServer((req, res) => {
   const headers = { "content-type": "text/html", ...(mode === "header" && { "x-robots-tag": "googlebot: noindex" }) };
@@ -182,7 +207,7 @@ why=""
 o=$(e2e client meta); has "exit=0" "$o" && has "preview noindex: ok" "$o" || why="meta: $o"
 o=$(e2e client header); has "exit=0" "$o" && has "preview noindex: ok" "$o" || why="$why; header: $o"
 o=$(e2e client spaced); has "exit=0" "$o" && has "preview noindex: ok" "$o" || why="$why; spaced attributes: $o"
-for m in none nofollow other; do o=$(e2e client $m); has "exit=1" "$o" && has "the preview at http://127.0.0.1:" "$o" && has "carries no noindex" "$o" || why="$why; $m: $o"; done
+for m in none nofollow other inactive; do o=$(e2e client $m); has "exit=1" "$o" && has "the preview at http://127.0.0.1:" "$o" && has "carries no noindex" "$o" || why="$why; $m: $o"; done
 # the preview fetch and its body read share the e2e budget, and the suite gets only what is left
 o=$(E2E_BUDGET=0.03 e2e client stall); has "exit=1" "$o" && has "did not answer within the e2e budget" "$o" || why="$why; stalled body: $o"
 o=$(E2E_BUDGET=0.05 SUITE_SLEEP=2000 e2e client slow); has "exit=1" "$o" && has "e2e exceeded its 0.05-minute budget" "$o" || why="$why; suite given the whole budget: $o"

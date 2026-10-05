@@ -258,7 +258,9 @@ if (cmd === "plan") {
     catch (e) { fail(e.name === "TimeoutError" || e.name === "AbortError" ? `the preview at ${url} did not answer within the e2e budget (${mins} min)` : `the preview at ${url} did not answer: ${e.cause?.code ?? e.message}`, "re-run gate once the preview is up"); }
     const directives = (v) => v.toLowerCase().split(",").map((d) => d.replace(/^[^:]*:/, "").trim());
     const attrs = (tag) => Object.fromEntries([...tag.matchAll(/([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g)].map((a) => [a[1].toLowerCase(), a[2] ?? a[3] ?? a[4]]));
-    const meta = [...html.matchAll(/<meta\b[^>]*>/gi)].map(([t]) => attrs(t)).some((a) => /^(robots|googlebot)$/i.test(a.name ?? "") && directives(a.content ?? "").some((d) => ["noindex", "none"].includes(d)));
+    // Only active markup counts: not inside an HTML comment, <noscript> or <template>.
+    const active = html.replace(/<!--[\s\S]*?-->/g, "").replace(/<(noscript|template)\b[\s\S]*?<\/\1\s*>/gi, "");
+    const meta = [...active.matchAll(/<meta\b[^>]*>/gi)].map(([t]) => attrs(t)).some((a) => /^(robots|googlebot)$/i.test(a.name ?? "") && directives(a.content ?? "").some((d) => ["noindex", "none"].includes(d)));
     if (!meta && !directives(res.headers.get("x-robots-tag") ?? "").some((d) => ["noindex", "none"].includes(d)))
       fail(`the preview at ${url} carries no noindex (robots meta or X-Robots-Tag)`, "previews must not be indexed: render <meta name=\"robots\" content=\"noindex\"> on every non-production host");
     console.log(`preview noindex: ok (${url})`);
