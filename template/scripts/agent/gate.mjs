@@ -263,20 +263,24 @@ if (cmd === "plan") {
   if (e2eCfg.budget !== undefined && !(typeof e2eCfg.budget === "number" && e2eCfg.budget > 0)) fail(`standards.json e2e.budget is ${JSON.stringify(e2eCfg.budget)}`, "minutes above 0 (it may only tighten the org budget)");
   const mins = Math.min(e2eCfg.budget ?? Infinity, pack.gate_budget?.e2e ?? 5), ms = Math.round(mins * 60000);
   const url = env.GATE_PREVIEW_URL ?? "";
-  // A client site's preview must not be indexed: its home page's robots meta (or X-Robots-Tag) says noindex. The fetch
-  // and its body read stop at the e2e budget, and the suite gets only the time left.
+  // A client site's preview must not be indexed: its home page and a page only the Worker can answer (a 404; static
+  // _headers rules do not cover Worker-rendered responses) both say noindex, in a robots meta or X-Robots-Tag. The
+  // fetches and their body reads stop at the e2e budget, and the suite gets only the time left.
   const started = Date.now();
   if (url && pack.profile === "client") {
-    let res = null, html = "";
-    try { res = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(ms) }); html = await res.text(); }
-    catch (e) { fail(e.name === "TimeoutError" || e.name === "AbortError" ? `the preview at ${url} did not answer within the e2e budget (${mins} min)` : `the preview at ${url} did not answer: ${e.cause?.code ?? e.message}`, "re-run gate once the preview is up"); }
     const directives = (v) => v.toLowerCase().split(",").map((d) => d.replace(/^[^:]*:/, "").trim());
     const attrs = (tag) => Object.fromEntries([...tag.matchAll(/([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g)].map((a) => [a[1].toLowerCase(), a[2] ?? a[3] ?? a[4]]));
-    // Only active markup counts: not inside an HTML comment, <noscript> or <template>.
-    const active = html.replace(/<!--[\s\S]*?-->/g, "").replace(/<(noscript|template)\b[\s\S]*?<\/\1\s*>/gi, "");
-    const meta = [...active.matchAll(/<meta\b[^>]*>/gi)].map(([t]) => attrs(t)).some((a) => /^(robots|googlebot)$/i.test(a.name ?? "") && directives(a.content ?? "").some((d) => ["noindex", "none"].includes(d)));
-    if (!meta && !directives(res.headers.get("x-robots-tag") ?? "").some((d) => ["noindex", "none"].includes(d)))
-      fail(`the preview at ${url} carries no noindex (robots meta or X-Robots-Tag)`, "previews must not be indexed: render <meta name=\"robots\" content=\"noindex\"> on every non-production host");
+    const signal = AbortSignal.timeout(ms);
+    for (const page of [url, new URL("/__std-noindex-probe", url).href]) {
+      let res = null, html = "";
+      try { res = await fetch(page, { redirect: "follow", signal }); html = await res.text(); }
+      catch (e) { fail(e.name === "TimeoutError" || e.name === "AbortError" ? `the preview at ${page} did not answer within the e2e budget (${mins} min)` : `the preview at ${page} did not answer: ${e.cause?.code ?? e.message}`, "re-run gate once the preview is up"); }
+      // Only active markup counts: not inside an HTML comment, <noscript> or <template>.
+      const active = html.replace(/<!--[\s\S]*?-->/g, "").replace(/<(noscript|template)\b[\s\S]*?<\/\1\s*>/gi, "");
+      const meta = [...active.matchAll(/<meta\b[^>]*>/gi)].map(([t]) => attrs(t)).some((a) => /^(robots|googlebot)$/i.test(a.name ?? "") && directives(a.content ?? "").some((d) => ["noindex", "none"].includes(d)));
+      if (!meta && !directives(res.headers.get("x-robots-tag") ?? "").some((d) => ["noindex", "none"].includes(d)))
+        fail(`the preview at ${page} carries no noindex (robots meta or X-Robots-Tag)`, "previews must not be indexed: send X-Robots-Tag: noindex on every non-production host, from public/_headers for static files and from the middleware for Worker-rendered responses");
+    }
     console.log(`preview noindex: ok (${url})`);
   }
   const left = ms - (Date.now() - started);

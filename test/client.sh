@@ -192,7 +192,7 @@ createServer((req, res) => {
   setTimeout(() => {
     res.writeHead(200, headers);
     res.end(`<html><head>${metas[mode] ?? ""}<meta name="robots" content="${mode === "slow" ? "noindex" : "index"}" data-x></head><body>home</body></html>`.replace(mode === "slow" ? "" : /<meta name="robots" content="index" data-x>/, ""));
-  }, mode === "slow" ? 1500 : 0);
+  }, mode === "slow" && req.url === "/" ? 1500 : 0);
 }).listen(Number(port), "127.0.0.1");
 JS
 e2e() { # e2e <profile> <server mode>: gate's e2e step against a stand-in preview; prints its output, then the exit
