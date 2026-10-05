@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Steps of the `gate` job (std-gate.yml), also runnable locally:
-//   plan | classify [base] | install | run <script>... | preview | e2e | secrets | syntax
+//   plan | classify [base] | install | run <script>... | preview | release | e2e | secrets | syntax
 // UI paths: pack.json defaults; standards.json "ui_paths" as a list replaces the include globs,
 // as {include, ignore} replaces include and adds ignore. e2e: none fails unless "e2e": false.
 import { execFileSync as ex, spawnSync } from "node:child_process";
@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { scan } from "./jsscan.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
-const SUBS = ["plan", "classify", "install", "run", "preview", "e2e", "secrets", "syntax"], ok = SUBS.includes(cmd);
+const SUBS = ["plan", "classify", "install", "run", "preview", "release", "e2e", "secrets", "syntax"], ok = SUBS.includes(cmd);
 if (!ok || args.includes("--help")) {
   console.log(rd(new URL(import.meta.url), "utf8").split("\n").slice(1, 6).map((l) => l.slice(3)).join("\n"));
   process.exit(ok || cmd === "--help" ? 0 : 2);
@@ -189,6 +189,25 @@ if (cmd === "plan") {
     "turn on the Worker's preview URLs (Workers Builds) so each build comments its URL, then re-run gate; or set standards.json e2e.preview to false");
   console.log(`preview: ${url} (${short})`);
   output("url", url);
+} else if (cmd === "release") {
+  // The release check (std-release-check.yml, on main): wait for this commit's Workers Builds (staging Preview and the
+  // uploaded production version), then name the extra browsers and the staging URL for the install and e2e steps.
+  const get = ghApi(), sha = env.GITHUB_SHA ?? git("rev-parse", "HEAD").trim(), short = sha.slice(0, 7);
+  const name = pack.preview?.check_name ?? "Workers Builds";
+  const builds = async () => ((await get(`/commits/${sha}/check-runs?per_page=100`))?.check_runs ?? []).filter((c) => c.name?.startsWith(name));
+  const wait = Number(env.GATE_PREVIEW_WAIT_S ?? 480) * 1000, start = Date.now();
+  for (let runs = await builds(); ; runs = await builds()) {
+    const red = runs.find((c) => c.status === "completed" && !["success", "skipped"].includes(c.conclusion));
+    if (red) fail(`Cloudflare build failed for ${short}: ${red.name} ${red.conclusion} (${red.details_url})`, "fix the Worker build on main; staging and the uploaded version come from it");
+    if (!runs.length) { console.log(`release: no "${name}" check on ${short}; testing staging as it stands`); break; }
+    if (runs.every((c) => c.status === "completed")) break;
+    if (Date.now() - start >= wait) fail(`the Cloudflare build for ${short} is still running after ${wait / 1000}s`, "re-run the release check once the build finishes");
+    await new Promise((r) => setTimeout(r, 15000));
+  }
+  const extra = [...new Set([...(e2eCfg.browsers ?? []), ...(pack.e2e_release_browsers ?? [])])];
+  console.log(`release: ${extra.join(", ")} against ${std.staging_url} (${short})`);
+  output("browsers", extra.join(","));
+  output("url", std.staging_url ?? "");
 } else if (cmd === "classify") {
   // Codex cloud has no origin: fall back to a local default branch, then to HEAD itself (uncommitted and untracked
   // files only). Never the branch's upstream: that is usually the pushed feature head, which would hide its changes.
@@ -266,7 +285,7 @@ if (cmd === "plan") {
     console.log(`e2e: ${run[0]} ${run[1].map((a) => (a.includes("*") ? `"${a}"` : a)).join(" ")}${url ? ` against ${url}` : ""} (budget ${mins} min)`);
     const r = spawnSync(run[0], run[1], { stdio: "inherit", timeout: left, killSignal: "SIGKILL",
       env: { ...env, PW_GLOBAL_TIMEOUT: String(left), ...(url && { PLAYWRIGHT_BASE_URL: url, BASE_URL: url }) } });
-    if (r.error?.code === "ETIMEDOUT" || r.signal) fail(`e2e exceeded its ${mins}-minute budget`, "make the slow tests faster (fewer navigations, the preview URL), then move the slow tail to promotion PRs; do not shard");
+    if (r.error?.code === "ETIMEDOUT" || r.signal) fail(`e2e exceeded its ${mins}-minute budget`, "make the slow tests faster (fewer navigations, the preview URL), then move the slow tail to the release check on main; do not shard");
     if (r.status) process.exit(r.status);
   }
   else fail("no e2e suite (test:e2e or e2e script; tests/e2e/ or e2e/ with playwright.config.* or *.test.*js)",

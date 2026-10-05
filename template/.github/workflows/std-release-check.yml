@@ -1,0 +1,48 @@
+# Managed by the standards pack, shipped only to repositories that name extra browsers (standards.json e2e.browsers, or
+# the org overlay's e2e.release_browsers). Pull requests run Chromium against their preview; a merge to main deploys
+# the staging Preview and uploads the production version, and this runs the extra browsers against staging
+# (standards.json staging_url) before a person deploys that version. Not a required check.
+name: std-release-check
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  checks: read
+  contents: read
+concurrency:
+  group: std-release-check-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  release:
+    runs-on: ${{ vars.STD_GATE_RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: package manager
+        id: pm
+        # the lockfile's package manager caches (pnpm and yarn run through corepack; no cache if that fails)
+        run: |
+          if [ -f pnpm-lock.yaml ]; then if corepack enable && pnpm --version >/dev/null; then echo cache=pnpm >>"$GITHUB_OUTPUT"; fi
+          elif [ -f yarn.lock ]; then if corepack enable && yarn --version >/dev/null; then echo cache=yarn >>"$GITHUB_OUTPUT"; fi
+          elif [ -f package-lock.json ]; then echo cache=npm >>"$GITHUB_OUTPUT"; fi
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: ${{ steps.pm.outputs.cache }}
+      - name: release
+        id: release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/agent/gate.mjs release
+      - name: install
+        env:
+          GATE_BROWSERS: ${{ steps.release.outputs.browsers }}
+        run: node scripts/agent/gate.mjs install
+      - name: e2e
+        env:
+          GATE_BROWSERS: ${{ steps.release.outputs.browsers }}
+          GATE_PREVIEW_URL: ${{ steps.release.outputs.url }}
+        run: node scripts/agent/gate.mjs e2e
