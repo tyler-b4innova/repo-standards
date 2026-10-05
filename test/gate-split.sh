@@ -17,6 +17,8 @@ shape=$(node -e '
 const y=require("fs").readFileSync(process.argv[1],"utf8"),out=[],body=(j)=>{const i=y.indexOf("\n  "+j+":\n");const r=y.slice(i+1).split("\n").slice(1);const e=r.findIndex(l=>/^  \S/.test(l));return (e<0?r:r.slice(0,e)).join("\n")};
 const g=body("gate");
 if(!/needs: \[checks, build, e2e, repo\]/.test(g))out.push("gate needs");
+for(const j of ["build","e2e","repo","gate"])if(!/ref: \$\{\{ needs\.checks\.outputs\.sha \}\}/.test(body(j)))out.push(j+" not pinned to the checked tree");
+if(!/actions\/setup-node/.test(g))out.push("gate job sets up no node");
 if(!/^    if: always\(\)$/m.test(g)||!/^    name: gate$/m.test(g)||!/gate\.mjs verdict/.test(g))out.push("gate job: "+g);
 for(const j of ["checks","build","e2e","repo"]){const b=body(j);if(!/^    timeout-minutes: 30$/m.test(b))out.push(j+" timeout");if(j!=="checks"&&(!/needs: checks/.test(b)||!/if: needs\.checks\.outputs\.mode == .full./.test(b)))out.push(j+" not a tail job")}
 for(const [j,s] of [["build","run typecheck"],["build","run build"],["e2e","gate.mjs preview"],["e2e","gate.mjs e2e"],["repo","gate.local.sh"],["checks","setup.sh --check"],["checks","gate.mjs instructions"],["checks","gate.mjs secrets"]])if(!body(j).includes(s))out.push(j+" lacks "+s);

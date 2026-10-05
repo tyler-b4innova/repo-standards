@@ -31,6 +31,7 @@ jobs:
     runs-on: ${{ vars.STD_GATE_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: {gate_timeout_minutes}
     outputs:
+      sha: ${{ steps.head.outputs.sha }}
       mode: ${{ steps.plan.outputs.mode }}
       browsers: ${{ steps.plan.outputs.browsers }}
     steps:
@@ -53,6 +54,10 @@ jobs:
         with:
           node-version: 24
           cache: ${{ steps.pm.outputs.cache }}
+      # the tree every tail job checks out: a re-gate's merge ref can move while the checks run
+      - name: head
+        id: head
+        run: echo "sha=$(git rev-parse HEAD)" >>"$GITHUB_OUTPUT"
       - name: plan
         id: plan
         env:
@@ -78,12 +83,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.pr && format('refs/pull/{0}/merge', inputs.pr) || '' }}
+          ref: ${{ needs.checks.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: merge ref
-        if: failure() && inputs.pr
-        run: echo "::error::refs/pull/${{ inputs.pr }}/merge is missing, so the pull request conflicts with its new base; resolve the conflict and push"
       - name: package manager
         id: pm
         # the lockfile's package manager caches (pnpm and yarn run through corepack; no cache if that fails)
@@ -109,12 +111,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.pr && format('refs/pull/{0}/merge', inputs.pr) || '' }}
+          ref: ${{ needs.checks.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: merge ref
-        if: failure() && inputs.pr
-        run: echo "::error::refs/pull/${{ inputs.pr }}/merge is missing, so the pull request conflicts with its new base; resolve the conflict and push"
       - name: package manager
         id: pm
         # the lockfile's package manager caches (pnpm and yarn run through corepack; no cache if that fails)
@@ -152,12 +151,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.pr && format('refs/pull/{0}/merge', inputs.pr) || '' }}
+          ref: ${{ needs.checks.outputs.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: merge ref
-        if: failure() && inputs.pr
-        run: echo "::error::refs/pull/${{ inputs.pr }}/merge is missing, so the pull request conflicts with its new base; resolve the conflict and push"
       - name: package manager
         id: pm
         # the lockfile's package manager caches (pnpm and yarn run through corepack; no cache if that fails)
@@ -186,7 +182,11 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.checks.outputs.sha }}
           persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
       - name: verdict
         env:
           NEEDS: ${{ toJSON(needs) }}
