@@ -127,3 +127,4 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 - **`workflows-parse`**: every workflow the engine ships parses as YAML (an unquoted colon once disabled a workflow silently).
 
 - **`engine-neutral`**: no organization name, internal host, account, App or vault identifier appears in the tree or anywhere in history.
+- **`gate-timeout-overlay`**: the shipped `std-gate.yml` gate job times out at 30 minutes unless the overlay sets `gate.timeout_minutes`, an integer from 5 to 120 (anything else is refused before anything is written); the repository's offline check accepts the rendered value.
