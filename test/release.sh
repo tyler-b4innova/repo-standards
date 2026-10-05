@@ -26,15 +26,18 @@ put() { printf '%s' "$1" > "$T/state.json"; }
 rel() { (cd "$1" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_SHA=$SHA GATE_PREVIEW_WAIT_S=0 GITHUB_OUTPUT= node scripts/agent/gate.mjs release 2>&1); echo "exit=$?"; }
 why=""
 
+O=$T/ov.json; node -e 'const o=require(process.argv[1]);o.e2e={release_browsers:["webkit"]};require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$O"
 # shipped (and locked) only where extra browsers are named: the repository's e2e.browsers, or the overlay's
 R=$T/plain; git init -q -b main "$R"; apply "$R" >/dev/null; [ ! -e "$R/$WF" ] || why="shipped with no browsers"
 R=$T/site; git init -q -b main "$R"; apply "$R" >/dev/null
 jset "$R/standards.json" 'o.e2e={browsers:["firefox","webkit"]}'; apply "$R" >/dev/null
 [ -f "$R/$WF" ] && grep -q "  $WF$" "$R/standards.lock" || why="$why; not shipped with e2e.browsers"
+# "e2e": false opts out of the release check too, whatever browsers the repository or the org names
+R3=$T/optout; git init -q -b main "$R3"; apply "$R3" >/dev/null; jset "$R3/standards.json" 'o.e2e=false'; OVERLAY=$O apply "$R3" >/dev/null
+[ ! -e "$R3/$WF" ] || why="$why; shipped despite e2e false"
 commit "$R"; out=$(check "$R"); has "standards.json staging_url" "$out" || why="$why; browsers without staging_url passed: $out"
 jset "$R/standards.json" 'o.staging_url="http://staging.example.com"'; commit "$R"; out=$(check "$R"); has "standards.json staging_url" "$out" || why="$why; http staging_url passed"
 jset "$R/standards.json" 'o.staging_url="https://staging.preview.example.com/"'; commit "$R"; out=$(check "$R") || why="$why; check failed: $out"
-O=$T/ov.json; node -e 'const o=require(process.argv[1]);o.e2e={release_browsers:["webkit"]};require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$O"
 R2=$T/org; git init -q -b main "$R2"; OVERLAY=$O apply "$R2" >/dev/null; [ -f "$R2/$WF" ] || why="$why; overlay release_browsers did not ship it"
 node -e 'const o=require(process.argv[1]);o.e2e={promotion_browsers:["webkit"]};require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$O"
 out=$(OVERLAY=$O apply "$T/x" 2>&1) && why="$why; promotion_browsers accepted"; has "e2e.promotion_browsers is gone" "$out" || why="$why; [$out]"

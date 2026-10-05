@@ -1,5 +1,5 @@
 {
-  "$comment": "Org-level rulesets every org gets. `org/apply.mjs` renders them with the overlay's `org_admin` (App bypass, strict checks, extra checks, extra restricted and ignored push paths, max file size, an external push ruleset) and owns every organization-level ruleset: names not listed here are deleted on apply. `$`-prefixed strings are overlay placeholders. One branch, `main`: work squash-merges to the default branch, every PR ruleset requires resolved review threads, and code-owner review (the managed CODEOWNERS block for a repo's ui_paths) is required on the default branch and main. Strict status checks (`strict_status_checks`) apply on the squash-merge ruleset (its `gate` rule is always present; only its strict flag follows the overlay).",
+  "$comment": "Org-level rulesets every org gets. `org/apply.mjs` renders them with the overlay's `org_admin` (App bypass, strict checks, extra checks, extra restricted and ignored push paths, max file size, an external push ruleset) and owns every organization-level ruleset: names not listed here are deleted on apply. `$`-prefixed strings are overlay placeholders. One branch, `main`: work squash-merges to the default branch, every PR ruleset requires resolved review threads, and code-owner review (the managed CODEOWNERS block for a repo's ui_paths) is required on the default branch and main. Strict status checks (`strict_status_checks`) apply on the squash-merge ruleset (its `gate` rule is always present; only its strict flag follows the overlay). A ruleset's `replaces` names the legacy rulesets it takes over: the first one found is updated in place, and with the overlay's extra-approval setting unset the strictest legacy value is kept.",
   "rulesets": [
     {
       "name": "org: default branch and main (PR + gate)",
@@ -60,6 +60,11 @@
     },
     {
       "name": "org: squash-merge with code-owner review",
+      "replaces": [
+        "org: direct repos squash-merge",
+        "org: staged main takes promotions (merge commit)",
+        "org: staging (PR + gate, squash)"
+      ],
       "target": "branch",
       "conditions": {
         "ref_name": {
