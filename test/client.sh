@@ -74,6 +74,14 @@ for layer in wrapper middleware browser tunnel; do
   B=$(mkrepo); sentry_site "$B" $layer; b=$(check "$B")
   has "Sentry layer missing: $layer" "$b" || why="$why; no $layer: $b"
 done
+# Astro's directory form of the middleware counts; a Worker entry the build generates (dist/_worker.js) is checked in the
+# tracked source that wraps it, so a clean checkout never fails for want of a build
+G=$(mkrepo); sentry_site "$G" middleware; put "$G" src/middleware/index.ts 'export const onRequest = sequence(capture);'; put "$G" src/middleware/capture.ts 'export const capture = async (_c, next) => { try { return await next(); } catch (e) { Sentry.captureException(e); throw e; } };'; commit "$G"
+check "$G" >/dev/null || why="$why; middleware directory: $(check "$G")"
+G=$(mkrepo); sentry_site "$G"; put "$G" wrangler.jsonc '{ "name": "site", "main": "./dist/_worker.js/index.js" }'; gc -C "$G" rm -q sentry.server.config.ts; put "$G" src/worker.ts 'export default Sentry.withSentry(() => ({}), app);'; commit "$G"
+check "$G" >/dev/null || why="$why; generated main: $(check "$G")"
+B=$(mkrepo); sentry_site "$B"; put "$B" wrangler.jsonc '{ "name": "site", "main": "./dist/_worker.js/index.js" }'; gc -C "$B" rm -q sentry.server.config.ts; commit "$B"
+has "Sentry layer missing: wrapper" "$(check "$B")" || why="$why; generated main without a wrapper passed"
 if [ -z "$why" ]; then ok client-sentry-four-layers; else fail client-sentry-four-layers "$why"; fi
 
 # ---- mail: every send goes through one seam, which reroutes any non-production host (previews, workers.dev, localhost)
