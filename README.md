@@ -54,10 +54,10 @@ Repositories on the `client` profile get checks for the rules their instruction 
 - **Offline, in `--check`:**
   - the Turnstile script is the versioned `/turnstile/v0/api.js`;
   - a CSS rule animated on a `view()`/`scroll()` timeline never sets `overflow: hidden`, and `html` never sets `overflow-x`;
-  - mail goes out through one seam that checks the request host, so non-production hosts never mail the client;
-  - a site whose Worker runs code (`main`) on `@sentry/cloudflare` has all four error layers: the wrapper, the middleware, the browser init, and its same-origin tunnel route.
-- **In `gate.mjs run build`:** the built HTML in `dist/` carries no HTML comments, no comments in inline scripts, and no source-platform names. The names are `defaults.json` `source_platforms` plus the overlay's `profiles.client.source_platforms`.
-- **In `gate.mjs e2e`, against the preview:** the preview's home page says `noindex`.
+  - mail goes out through one seam, the only file that calls `.send(` on a `send_email` binding. The seam must test the request hostname against the production hosts with `.includes`, `.has` or `===`, so non-production hosts never mail the client;
+  - a site whose Worker runs code (`main`) on `@sentry/cloudflare` has all four error layers: the wrapper (looked for in the tracked source when the build generates `main`), the middleware (`src/middleware.*` or `src/middleware/`), the browser init, and its same-origin tunnel route.
+- **In `gate.mjs run build`:** the built HTML in `dist/` carries no HTML comments, no comments in inline scripts, and no source-platform names. Inline scripts are read by `scripts/agent/jsscan.mjs`, a small lexer. The names are `defaults.json` `source_platforms` plus the overlay's `profiles.client.source_platforms`.
+- **In `gate.mjs e2e`, against the preview:** the preview's home page says `noindex`, in its robots meta or its `X-Robots-Tag` header. The fetch runs within the e2e budget, and the suite gets the time left.
 
 ## Cloud configuration
 
