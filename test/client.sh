@@ -186,7 +186,8 @@ const metas = {
   inactive: '<!-- <meta name="robots" content="noindex"> --><noscript><meta name="robots" content="noindex"></noscript><template><meta name="robots" content="noindex"></template>',
 };
 createServer((req, res) => {
-  const headers = { "content-type": "text/html", ...(mode === "header" && { "x-robots-tag": "googlebot: noindex" }) };
+  // homeonly: the static home page says noindex (public/_headers), but a page the Worker renders (a 404) does not
+  const headers = { "content-type": "text/html", ...((mode === "header" || (mode === "homeonly" && req.url === "/")) && { "x-robots-tag": "googlebot: noindex" }) };
   if (mode === "stall") { res.writeHead(200, headers); res.write("<html><head>"); return; } // never finishes the body
   setTimeout(() => {
     res.writeHead(200, headers);
@@ -206,6 +207,7 @@ e2e() { # e2e <profile> <server mode>: gate's e2e step against a stand-in previe
 why=""
 o=$(e2e client meta); has "exit=0" "$o" && has "preview noindex: ok" "$o" || why="meta: $o"
 o=$(e2e client header); has "exit=0" "$o" && has "preview noindex: ok" "$o" || why="$why; header: $o"
+o=$(e2e client homeonly); has "exit=1" "$o" && has "carries no noindex" "$o" && has "/__std-noindex-probe" "$o" || why="$why; worker-rendered page without noindex passed: $o"
 o=$(e2e client spaced); has "exit=0" "$o" && has "preview noindex: ok" "$o" || why="$why; spaced attributes: $o"
 for m in none nofollow other inactive; do o=$(e2e client $m); has "exit=1" "$o" && has "the preview at http://127.0.0.1:" "$o" && has "carries no noindex" "$o" || why="$why; $m: $o"; done
 # the preview fetch and its body read share the e2e budget, and the suite gets only what is left
