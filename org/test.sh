@@ -124,6 +124,19 @@ if grep -q 'no changes' <<<"$out" && [ "$(writes)" = 0 ] && [ "$(grep -c 'no cha
 # rulesets that read it), and the overlay's staged settings are refused (render cases above).
 got=$(node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); console.log(JSON.stringify([s.property, s.rulesets.filter(r=>JSON.stringify(r).includes("flow")||JSON.stringify(r).includes("staging")).map(r=>r.name)]))' "$T/state.json")
 [ "$got" = '[null,[]]' ] && ok org-one-flow || fail org-one-flow "$got"
+# an org still on the staged flow keeps its extra-approval setting when the legacy rulesets are replaced: the squash
+# ruleset takes over the legacy direct one in place (same id) with the strictest value any legacy ruleset had, and the
+# staged ones go
+L=$T/legacy.json
+node -e 'const leg=(name,refs,flow,extra)=>({name,target:"branch",enforcement:"active",bypass_actors:[],conditions:{ref_name:{include:refs,exclude:[]},...(flow?{repository_property:{include:[{name:"flow",source:"custom",property_values:[flow]}],exclude:[]}}:{repository_name:{include:["~ALL"],exclude:[]}})},rules:[{type:"pull_request",parameters:{required_approving_review_count:0,require_code_owner_review:true,required_review_thread_resolution:true,require_extra_approval_for_unattributed_changes:extra,allowed_merge_methods:["squash"]}}]});
+require("fs").writeFileSync(process.argv[1],JSON.stringify({org:"acme",repos:[{name:"app"}],property:null,values:{},rulesets:[
+  {id:501,...leg("org: direct repos squash-merge",["~DEFAULT_BRANCH","refs/heads/main"],"direct",false)},
+  {id:502,...leg("org: staged main takes promotions (merge commit)",["refs/heads/main"],"staged",true)},
+  {id:503,...leg("org: staging (PR + gate, squash)",["refs/heads/staging"],null,false)}]}))' "$L"
+start "$L"; out=$(run --dry-run)
+if grep -q 'ruleset "org: squash-merge with code-owner review" #501: update (was "org: direct repos squash-merge")' <<<"$out" \
+  && grep -q 'require_extra_approval_for_unattributed_changes: false -> true' <<<"$out" && ! grep -q 'squash-merge with code-owner review": create' <<<"$out" \
+  && grep -q '#502: delete' <<<"$out" && grep -q '#503: delete' <<<"$out"; then ok org-one-flow; else fail org-one-flow "legacy replacement: $out"; fi
 
 # engine-org-push-external: with push_ruleset "external" the org's own push ruleset is neither updated nor
 # deleted, a push ruleset org-apply made earlier is left alone too, and nothing else changes; managed mode would delete it.
