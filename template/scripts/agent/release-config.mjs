@@ -35,6 +35,14 @@ export function effectiveConfig(root, staging = false, { redirect = true } = {})
   return { file: resolve(file), cfg: target, redirected: resolve(file) !== resolve(root) };
 }
 
+// Name-only follow-up commands reload the root account. Cross-account releases
+// need explicit account selection throughout; until then, reject them before remote work.
+export function assertReleaseAccounts(root, configs = [root]) {
+  for (const cfg of configs) if (cfg.account_id !== root.account_id ||
+    (cfg.env?.staging?.account_id !== undefined && cfg.env.staging.account_id !== root.account_id))
+    throw new Error(`cross-account staging isn't supported yet: ${cfg.name ?? "Worker"} and its env.staging must use the root account_id`);
+}
+
 function routes(cfg) {
   if (cfg.routes !== undefined && !Array.isArray(cfg.routes)) throw new Error("routes must be an array");
   return [...(cfg.routes ?? []), ...(cfg.route ? [cfg.route] : [])].filter((r) => r?.enabled !== false).map((r) => {
@@ -44,6 +52,7 @@ function routes(cfg) {
   });
 }
 export function assertStaging(root, resolved, productionConfigs = [root]) {
+  assertReleaseAccounts(productionConfigs[0], [root, resolved.cfg]);
   if (typeof root.name !== "string" || !root.name) throw new Error("production Worker name is missing");
   const expected = `${root.name}-staging`;
   if (resolved.cfg.name !== expected) throw new Error(`unsafe staging target ${JSON.stringify(resolved.cfg.name)}; expected ${expected}. The build must honor CLOUDFLARE_ENV=staging`);
@@ -94,11 +103,13 @@ export function build(std, pkg, staging = false, { quiet = false } = {}) {
 // Parsing creates independent in-memory snapshots that the staging build cannot overwrite.
 export function buildProductionConfigs(std, pkg, workers, { quiet = false } = {}) {
   build(std, pkg, false, { quiet });
-  return workers.map((worker) => {
+  const configs = workers.map((worker) => {
     const resolved = effectiveConfig(worker.file, false, { redirect: Boolean(worker.primary) });
     if (resolved.cfg.name !== worker.cfg.name) throw new Error(`production build does not target ${worker.cfg.name}`);
     return resolved.cfg;
   });
+  assertReleaseAccounts(workers[0].cfg, configs);
+  return configs;
 }
 
 // On clean CI checkouts the redirect appears only after build. Both --check and gate's

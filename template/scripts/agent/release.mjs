@@ -13,7 +13,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parse, findings as stagingFindings, resourceFindings } from "./staging.mjs";
-import { build, rootFile, readConfig, effectiveConfig, assertStaging, workerFiles, buildProductionConfigs } from "./release-config.mjs";
+import { build, rootFile, readConfig, effectiveConfig, assertStaging, assertReleaseAccounts, workerFiles, buildProductionConfigs } from "./release-config.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
 const SUBS = ["main", "preview", "slug", "cleanup"];
@@ -117,6 +117,17 @@ async function secretsFile(dir, names = required, filename = "secrets.json") {
   return f;
 }
 
+// Staging commands must resolve to the name approved by assertStaging. Only deploy
+// selects an environment; follow-up commands use the exact name without --env.
+function stagingCommand(name, resolved, args) {
+  const explicitName = args[args.indexOf("--name") + 1];
+  const selectsEnv = args.includes("--env") || args.includes("-e");
+  const target = selectsEnv ? resolved.cfg.name : explicitName;
+  if (explicitName !== name || target !== name || (selectsEnv && args[0] !== "deploy"))
+    throw new Error(`unsafe staging command target ${target}; expected exactly ${name}`);
+  return args;
+}
+
 // Post-deploy: every required secret is on the deployed Worker (names only; a JSON list of {name}).
 function secretCheck(what, a, namesRequired = required) {
   if (!namesRequired.length) return;
@@ -152,6 +163,7 @@ async function deploy() {
     }
     const cfg = config(), staged = Boolean(cfg.env?.staging);
     const extras = workerFiles(std, configFile).map((file) => ({ file, cfg: readConfig(file) }));
+    assertReleaseAccounts(cfg, [cfg, ...extras.map((worker) => worker.cfg)]);
     const productionName = env.WRANGLER_CI_OVERRIDE_NAME || cfg.name;
     const productionConfigs = [cfg, ...extras.map((w) => w.cfg), { name: productionName }];
     for (const worker of [...(staged ? [{ file: configFile, cfg }] : []), ...extras]) {
@@ -186,12 +198,17 @@ async function deploy() {
       for (const d of Array.isArray(resolved.cfg.d1_databases) ? resolved.cfg.d1_databases : [])
         if (d?.binding && existsSync(resolve(dirname(resolved.file), d.migrations_dir ?? "migrations"))) must(["d1", "migrations", "apply", d.binding, "--env", "staging", ...configArgs, "--remote"]);
       // Do not pass generated --config: that loses Wrangler's adapter metadata context.
-      const deployed = wrangler(["deploy", "--env", "staging", ...configArgs, "--name", name, ...workerSecrets], { capture: true });
+      const deployed = wrangler(stagingCommand(name, resolved, ["deploy", "--env", "staging", ...configArgs, "--name", name, ...workerSecrets]), { capture: true });
       process.stdout.write(deployed.out);
-      if (deployed.status) process.exit(deployed.status);
+      if (deployed.status) {
+        if (store !== "secrets_store" && names.length && !workerSecrets.length && /required secrets.*(?:not.*set|missing)/is.test(deployed.out))
+          fail(`staging Worker ${name} requires supplied secrets: ${names.join(", ")}; if it does not exist yet, bootstrap it once`,
+            `configure Builds OP_VAULT and OP_SERVICE_ACCOUNT_TOKEN, or create a private JSON secrets file and a private empty env file; in the CI build context unset WRANGLER_CI_OVERRIDE_NAME, WRANGLER_CI_MATCH_TAG and CLOUDFLARE_ENV, then run from this guarded staging build: npx wrangler deploy --env staging --secrets-file <file> --dry-run --name ${name} --env-file <empty-env-file>${configArgs.length ? ` --config ${resolved.file}` : ""}; verify the target is exactly ${name}, then npx wrangler deploy --env staging --secrets-file <file> --name ${name} --env-file <empty-env-file>${configArgs.length ? ` --config ${resolved.file}` : ""}; remove the file and re-run the build`);
+        process.exit(deployed.status);
+      }
       const confirmed = [...deployed.out.replace(/\x1b\[[0-9;]*m/g, "").matchAll(/^\s*(?:Uploaded|Deployed) ([a-zA-Z0-9_-]+)(?: triggers)? \(/gm)].map((m) => m[1]);
       if (!confirmed.length || confirmed.some((n) => n !== name)) fail(`staging deploy output did not confirm ${name}`, "inspect the Wrangler deployment immediately; production upload aborted");
-      secretCheck("the staging Worker", ["secret", "list", "--env", "staging", ...configArgs, "--name", name, "--format", "json"], names);
+      secretCheck("the staging Worker", stagingCommand(name, resolved, ["secret", "list", ...configArgs, "--name", name, "--format", "json"]), names);
     }
     if (!staged) {
       console.log(`::warning::${configFile} has no env.staging; deploying staging as the legacy "staging" Preview. Add env.staging (a separate <name>-staging Worker with its own data): see the standards README`);
