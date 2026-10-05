@@ -16,4 +16,4 @@ cfg.main = "./index.js";
 writeFileSync("dist/server/index.js", "export default {fetch() {return new Response(\"fixture\")}};\n");
 writeFileSync("dist/server/wrangler.json", JSON.stringify(cfg));
 writeFileSync(".wrangler/deploy/config.json", JSON.stringify({ configPath: "../../dist/server/wrangler.json" }));
-appendFileSync(process.env.RELEASE_LOG, JSON.stringify({ build: process.env.CLOUDFLARE_ENV ?? null, name: cfg.name }) + "\n");
+appendFileSync(process.env.RELEASE_LOG, JSON.stringify({ build: process.env.CLOUDFLARE_ENV ?? null, name: cfg.name, ...(process.env.RECORD_BUILD_CI ? { overrideName: process.env.WRANGLER_CI_OVERRIDE_NAME ?? null, matchTag: process.env.WRANGLER_CI_MATCH_TAG ?? null } : {}) }) + "\n");

@@ -43,13 +43,14 @@ export const hasData = (cfg) => KINDS.some(([k]) => DATA.has(k) && list(at(cfg, 
   || list(at(cfg, "durable_objects.bindings")).some((b) => b.script_name) || Boolean(at(cfg, "triggers.crons")?.length);
 
 // Findings for a parsed root config: { fails: [[msg, fix]], warns: [msg] }. std: standards.json; pack: pack.json.
-export function findings(cfg, { file, std = {}, pack = {}, required = [] }) {
+export function findings(cfg, { file, std = {}, pack = {}, required = [], productionConfigs = [cfg] }) {
   const fails = [], warns = [], F = (m, f) => fails.push([`${file}: ${m}`, f]);
   const prodName = cfg.name, prod = new Map(); // resource -> what names it in production
-  for (const [k, keys] of KINDS) for (const b of list(at(cfg, k))) for (const key of keys) if (typeof b[key] === "string" && b[key]) prod.set(`${key}:${b[key]}`, `${k} ${nameOf(b) ?? ""}`.trim());
-  for (const c of list(at(cfg, "queues.consumers"))) if (c.queue) prod.set(`queue:${c.queue}`, "queues.consumers");
-  // production Workers: this one, and every Worker production binds to (a staging or Preview binding to one calls production)
-  const prodWorkers = new Set([prodName, ...list(cfg.services).map((s) => s.service), ...list(at(cfg, "durable_objects.bindings")).map((b) => b.script_name)].filter(Boolean));
+  for (const source of productionConfigs) {
+    for (const [k, keys] of KINDS) for (const b of list(at(source, k))) for (const key of keys) if (typeof b[key] === "string" && b[key]) prod.set(`${key}:${b[key]}`, `${k} ${nameOf(b) ?? ""}`.trim());
+    for (const c of list(at(source, "queues.consumers"))) if (c.queue) prod.set(`queue:${c.queue}`, "queues.consumers");
+  }
+  const prodWorkers = new Set(productionConfigs.flatMap((source) => [source.name, ...list(source.services).map((s) => s.service), ...list(at(source, "durable_objects.bindings")).map((b) => b.script_name)]).filter(Boolean));
   const stage = at(cfg, "env.staging"), previews = cfg.previews, stagingName = stage?.name ?? (prodName ? `${prodName}-staging` : undefined);
 
   // No production resource outside production: env.staging and previews (and previews inside env.staging).
@@ -96,6 +97,9 @@ export function findings(cfg, { file, std = {}, pack = {}, required = [] }) {
   if (list(at(cfg, "queues.consumers")).length && !list(at(stage, "queues.consumers")).length)
     F("env.staging consumes no queue, but production does", "consume the staging queues in env.staging.queues.consumers");
   for (const k of SINGLE) if (cfg[k] !== undefined && stage[k] === undefined) F(`env.staging lacks ${k} (bindings are not inherited)`, `copy ${k} into env.staging`);
+  const missingSecrets = (Array.isArray(cfg.secrets?.required) ? cfg.secrets.required : [])
+    .filter((name) => !Array.isArray(stage.secrets?.required) || !stage.secrets.required.includes(name));
+  if (missingSecrets.length || (Array.isArray(cfg.secrets?.required) && !Array.isArray(stage.secrets?.required))) F(`env.staging lacks secrets.required${missingSecrets.length ? " " + missingSecrets.join(", ") : ""} (secrets are not inherited)`, "copy the top-level secrets.required into env.staging.secrets so wrangler types keeps them required");
   const vars = Object.keys(cfg.vars ?? {}).filter((v) => !(v in (stage.vars ?? {})));
   if (vars.length) F(`env.staging lacks vars ${vars.join(", ")} (vars are not inherited)`, "declare them in env.staging.vars with staging values");
 
@@ -154,7 +158,7 @@ export function migrate(text, { portal = null } = {}) {
   const copy = {};
   for (const [k] of KINDS) if (at(cfg, k) !== undefined && !k.includes(".")) copy[k] = cfg[k];
   for (const k of [...SINGLE, "durable_objects"]) if (cfg[k] !== undefined) copy[k] = cfg[k];
-  const staging = { ...(Object.keys(vars("staging")).length ? { vars: vars("staging") } : {}), ...copy, routes: [], workers_dev: true, preview_urls: false };
+  const staging = { ...(Object.keys(vars("staging")).length ? { vars: vars("staging") } : {}), ...copy, ...(cfg.secrets !== undefined ? { secrets: cfg.secrets } : {}), routes: [], workers_dev: true, preview_urls: false };
   const add = { env: { staging } };
   if (cfg.previews === undefined) add.previews = { ...(Object.keys(vars("preview")).length ? { vars: vars("preview") } : {}), ...copy };
   const body = Object.entries(add).map(([k, v]) => `  ${JSON.stringify(k)}: ${JSON.stringify(v, null, 2).replace(/\n/g, "\n  ")}`).join(",\n");

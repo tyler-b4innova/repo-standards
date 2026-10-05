@@ -1,0 +1,7 @@
+{
+  // Secrets required by both production and staging must stay required in generated types.
+  "name": "site",
+  "compatibility_date": "2025-01-01",
+  "main": "src/index.js",
+  "secrets": { "required": ["MAIL_KEY", "API_KEY"] }
+}

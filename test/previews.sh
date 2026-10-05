@@ -88,7 +88,7 @@ S=$(site secrets); jset "$S/standards.json" 'o.secrets={required:["MAIL_KEY","TU
 reset '[{"name":"MAIL_KEY","type":"secret_text"},{"name":"TURNSTILE_SECRET","type":"secret_text"}]'
 o=$(OP_CLI=$T/bin/op OP_VAULT=client-a OP_SERVICE_ACCOUNT_TOKEN=t WORKERS_CI_COMMIT_SHA=abc1234 rel "$S" main)
 has "exit=0" "$o" && has "wrangler deploy --env staging --config $S/wrangler.jsonc --name site-staging --secrets-file " "$(log)" && has "| file 600 keys MAIL_KEY,TURNSTILE_SECRET" "$(log)" \
-  && has "wrangler secret list --env staging --config $S/wrangler.jsonc --name site-staging --format json" "$(log)" && has "wrangler secret list --format json" "$(log)" \
+  && has "wrangler secret list --env staging --config $S/wrangler.jsonc --name site-staging --format json" "$(log)" && has "wrangler secret list --name site --format json" "$(log)" \
   && ! log | grep "versions upload" | grep -q secrets-file || why="main: $o // $(log)"
 o2=$(OP_CLI=$T/bin/op OP_VAULT=client-a OP_SERVICE_ACCOUNT_TOKEN=t WORKERS_CI_BRANCH=Feat/Login rel "$S" preview)
 has "exit=0" "$o2" && has "wrangler preview --name feat-login --secrets-file " "$(log)" && has "wrangler preview secret list --name feat-login --json" "$(log)" || why="$why; preview: $o2 // $(log)"

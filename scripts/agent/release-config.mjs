@@ -1,7 +1,7 @@
 // Resolve and check the configuration used by a release, including adapter-generated redirects.
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { parse } from "./staging.mjs";
 
 export const redirectFile = ".wrangler/deploy/config.json";
@@ -21,9 +21,9 @@ export function readConfig(file) {
   return cfg;
 }
 
-export function effectiveConfig(root, staging = false) {
+export function effectiveConfig(root, staging = false, { redirect = true } = {}) {
   let file = root;
-  if (existsSync(redirectFile)) {
+  if (redirect && existsSync(redirectFile)) {
     const redirect = parse(read(redirectFile));
     if (typeof redirect?.configPath !== "string" || !redirect.configPath) throw new Error(`${redirectFile}: missing configPath`);
     file = resolve(dirname(redirectFile), redirect.configPath);
@@ -43,17 +43,19 @@ function routes(cfg) {
     return pattern.toLowerCase();
   });
 }
-export function assertStaging(root, resolved) {
+export function assertStaging(root, resolved, productionConfigs = [root]) {
   if (typeof root.name !== "string" || !root.name) throw new Error("production Worker name is missing");
   const expected = `${root.name}-staging`;
   if (resolved.cfg.name !== expected) throw new Error(`unsafe staging target ${JSON.stringify(resolved.cfg.name)}; expected ${expected}. The build must honor CLOUDFLARE_ENV=staging`);
+  if (productionConfigs.some((cfg) => cfg.name === expected))
+    throw new Error(`unsafe staging target ${expected}; names a production Worker from another config`);
   if (resolved.redirected && resolved.cfg.targetEnvironment && resolved.cfg.targetEnvironment !== "staging")
     throw new Error(`unsafe staging build environment ${resolved.cfg.targetEnvironment}; expected staging`);
   // Compare hosts, including wildcard hosts: different paths or route/custom-domain syntax
   // must not let staging take traffic from a production hostname.
   const host = (route) => route.replace(/^https?:\/\//, "").split("/")[0];
   const matches = (pattern, value) => new RegExp(`^${pattern.split("*").map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`).test(value);
-  for (const route of routes(resolved.cfg)) for (const prod of routes(root)) {
+  for (const route of routes(resolved.cfg)) for (const prod of productionConfigs.flatMap(routes)) {
     const a = host(route), b = host(prod);
     if (matches(a, b) || matches(b, a) || (a.includes("*") && b.includes("*")))
       throw new Error(`unsafe staging route/custom domain ${route}: overlaps production ${prod}`);
@@ -76,10 +78,10 @@ export function build(std, pkg, staging = false, { quiet = false } = {}) {
   }
   const buildEnv = { ...process.env };
   delete buildEnv.CLOUDFLARE_ENV;
+  delete buildEnv.WRANGLER_CI_OVERRIDE_NAME;
+  delete buildEnv.WRANGLER_CI_MATCH_TAG;
   if (staging) {
     buildEnv.CLOUDFLARE_ENV = "staging";
-    delete buildEnv.WRANGLER_CI_OVERRIDE_NAME;
-    delete buildEnv.WRANGLER_CI_MATCH_TAG;
   }
   if (!quiet) console.log(`release: build (${staging ? "CLOUDFLARE_ENV=staging" : "CLOUDFLARE_ENV unset"})`);
   const r = spawnSync(command[0], command[1], { env: buildEnv, stdio: quiet ? "pipe" : "inherit" });
@@ -92,11 +94,31 @@ export function verifyGeneratedBuild(std, pkg, root = rootFile()) {
   if (!root || std.staging === false || !existsSync(redirectFile)) return;
   const production = readConfig(root);
   if (!production.env?.staging) return; // legacy Preview releases do not select env.staging
+  const productionConfigs = [production, ...workerFiles(std, root).map(readConfig)];
   let stagingError;
-  try { build(std, pkg, true, { quiet: true }); assertStaging(production, effectiveConfig(root, true)); }
+  try { build(std, pkg, true, { quiet: true }); assertStaging(production, effectiveConfig(root, true), productionConfigs); }
   catch (e) { stagingError = e; }
   try { build(std, pkg, false, { quiet: true }); }
   catch (e) { throw new Error(stagingError ? `${stagingError.message}; production restore also failed: ${e.message}` : e.message); }
   if (stagingError) throw stagingError;
   if (effectiveConfig(root).cfg.name !== production.name) throw new Error("build without CLOUDFLARE_ENV did not restore production");
+}
+
+// Additional Workers are explicit repo-owned config paths, never shell commands or external files.
+export function workerFiles(std, primary = rootFile()) {
+  const files = std.release_workers === undefined ? [] : std.release_workers;
+  if (!Array.isArray(files) || files.some((f) => typeof f !== "string" || !f || isAbsolute(f) || f.split(/[\\/]/).includes("..") || !/\.(jsonc?|toml)$/.test(f)))
+    throw new Error("standards.json release_workers must be a list of relative Wrangler config paths within this repo");
+  if (!files.length) return [];
+  if (!primary) throw new Error("release_workers requires a primary root Wrangler config");
+  const repo = realpathSync("."), seen = new Set([realpathSync(primary)]), names = new Set([readConfig(primary).name]);
+  return files.map((file) => {
+    const path = realpathSync(file), rel = relative(repo, path);
+    if ((rel === ".." || rel.startsWith(`..${sep}`)) || isAbsolute(rel) || seen.has(path)) throw new Error(`release_workers has an external or duplicate config: ${file}`);
+    seen.add(path);
+    const cfg = readConfig(path);
+    if (typeof cfg.name !== "string" || !cfg.name || names.has(cfg.name)) throw new Error(`release_workers must use distinct production Worker names: ${file}`);
+    names.add(cfg.name);
+    return path;
+  });
 }

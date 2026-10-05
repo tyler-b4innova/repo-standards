@@ -43,17 +43,10 @@ jobs:
       - name: merge ref
         if: failure() && inputs.pr
         run: echo "::error::refs/pull/${{ inputs.pr }}/merge is missing, so the pull request conflicts with its new base; resolve the conflict and push"
-      - name: package manager
-        id: pm
-        # the lockfile's package manager caches (pnpm and yarn run through corepack; no cache if that fails)
-        run: |
-          if [ -f pnpm-lock.yaml ]; then if corepack enable && pnpm --version >/dev/null; then echo cache=pnpm >>"$GITHUB_OUTPUT"; fi
-          elif [ -f yarn.lock ]; then if corepack enable && yarn --version >/dev/null; then echo cache=yarn >>"$GITHUB_OUTPUT"; fi
-          elif [ -f package-lock.json ]; then echo cache=npm >>"$GITHUB_OUTPUT"; fi
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
-          cache: ${{ steps.pm.outputs.cache }}
+          package-manager-cache: false # checks installs nothing
       # the tree every tail job checks out: a re-gate's merge ref can move while the checks run
       - name: head
         id: head
@@ -187,6 +180,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
+          package-manager-cache: false # verdict installs nothing
       - name: verdict
         env:
           NEEDS: ${{ toJSON(needs) }}
