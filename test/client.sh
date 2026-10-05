@@ -123,6 +123,28 @@ B=$(mkrepo); put "$B" wrangler.toml 'name = "site"
 name = "MAILER"'; put "$B" src/pages/api/contact.ts 'export const POST = ({ locals }) => locals.runtime.env.MAILER.send({ to: ["client@example.com"] });'; commit "$B"
 b=$(check "$B"); has "src/pages/api/contact.ts sends mail but never compares the request hostname with the production hosts" "$b" && ok client-mail-seam || fail client-mail-seam "toml binding missed: $b"
 
+# every send_email binding counts, wherever the config declares it: after a nested array, in previews or an env, as a
+# TOML inline array or an env table
+B=$(mkrepo); put "$B" wrangler.jsonc '{ "name": "site", // site
+  "send_email": [{ "name": "FIRST", "allowed_destination_addresses": ["a@example.com", "b@example.com"] }, { "name": "SECOND" }],
+  "previews": { "send_email": [{ "name": "PREVIEW_MAIL" }] }, "env": { "staging": { "send_email": [{ "name": "STAGING_MAIL" }] } } }'
+put "$B" src/lib/email.ts "$SEAM"; for b in SECOND PREVIEW_MAIL STAGING_MAIL; do put "$B" src/pages/api/$b.ts "export const POST = () => env.$b.send({ to: [\"client@example.com\"] });"; done; commit "$B"
+b=$(check "$B"); for f in SECOND PREVIEW_MAIL STAGING_MAIL; do has "src/pages/api/$f.ts sends mail outside the email seam" "$b" || why2="${why2:-}; json $f missed"; done
+B=$(mkrepo); put "$B" wrangler.toml 'name = "site"
+send_email = [ { name = "INLINE", allowed_destination_addresses = ["a@example.com"] }, { name = "INLINE2" } ]
+[[env.staging.send_email]]
+name = "ENV_MAIL"'; put "$B" src/lib/email.ts "${SEAM//SEND_EMAIL/INLINE}"; for b in INLINE2 ENV_MAIL; do put "$B" src/pages/api/$b.ts "export const POST = () => env.$b.send({ to: [\"client@example.com\"] });"; done; commit "$B"
+b=$(check "$B"); for f in INLINE2 ENV_MAIL; do has "src/pages/api/$f.ts sends mail outside the email seam" "$b" || why2="${why2:-}; toml $f missed"; done
+# the guard may compare an alias of the hostname
+G=$(mkrepo); mail_site "$G"; put "$G" src/lib/email.ts 'const PRODUCTION_HOSTS = ["example.com", "www.example.com"];
+export async function sendFormEmail(request, mail) {
+  const { hostname } = new URL(request.url), host = hostname;
+  const live = PRODUCTION_HOSTS.includes(host) || hostname === "example.com";
+  await env.SEND_EMAIL.send({ ...mail, to: live ? mail.to : ["test@example.com"] });
+}'; commit "$G"
+check "$G" >/dev/null || why2="${why2:-}; hostname alias: $(check "$G")"
+if [ -z "${why2:-}" ]; then ok client-mail-seam; else fail client-mail-seam "$why2"; fi
+
 # ---- built output: after the build, dist/ HTML has no HTML comments, no comments in inline scripts, and no
 # source-platform names (gate.mjs run build)
 built() { # built <profile> <html>: a site whose build writes dist/index.html; prints gate's build output, then the exit
