@@ -1,6 +1,5 @@
 // The review rule for a pull request: everything that lives in its conversation, not its code. Gate checks the code;
-// this checks the Codex verdict and its threads, the evidence comment for UI changes, and a promotion's design
-// sign-off. It only reads, through the caller's GitHub API function, so a launcher or merge helper can ask it before
+// this checks the Codex verdict and its threads and the evidence comment for UI changes. It only reads, through the caller's GitHub API function, so a launcher or merge helper can ask it before
 // merging (a pack-sync PR gets no exemption: a person fixes it on their own branch, or it is reviewed like any other):
 //   reviewStatus({ api, owner, repo, pr }) -> null | { state: "success"|"failure"|"pending", description, sha, base, base_sha, target_url, details }
 // api(method, path, body?) resolves parsed JSON, null for a 404, and throws on any other failure. Paths are from the
@@ -21,14 +20,9 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.n
   const head = pr.head.sha;
   // The rule comes from the base branch (the org's current pack and the repository's
   // settings there), so a pull request cut before a pack release is judged like any other, and cannot relax its own review.
-  // A promotion (the default branch into another) is judged by the default branch's pack: that is where sync lands a
-  // release, and the production branch only gets it through this very promotion.
-  const info = (await api("GET", R)) ?? {};
-  // Only this repository's own default branch promotes: a fork's branch of the same name is an ordinary PR.
-  const promotion = Boolean(info.default_branch) && pr.head?.repo?.full_name === `${owner}/${repo}` && pr.head?.ref === info.default_branch && pr.base?.ref !== info.default_branch;
   // GitHub may leave pull.base.sha at the commit from when the PR was opened, even after sync updates the base.
   // Resolve the current base ref once, then read both policy files from that exact commit.
-  const baseHead = promotion ? pr.head.sha : pr.base?.ref
+  const baseHead = pr.base?.ref
     ? (await api("GET", `${R}/branches/${encodeURIComponent(pr.base.ref)}`))?.commit?.sha
     : pr.base?.sha;
   if (pr.base?.ref && !baseHead) throw new Error(`cannot resolve current base branch ${pr.base.ref}`);
@@ -56,22 +50,8 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.n
   if (pending) return verdict("pending", pending.description, details);
   return verdict("success", parts.map((p) => p.description).join("; "), details);
 
-  // A promotion (staged flow: default branch into another branch) needs no evidence comment (it is on the original
-  // PRs), but a design change needs an APPROVED review on the current head from a person with write access.
-  // Any other PR changing UI paths needs a trusted evidence comment.
+  // A PR changing UI paths needs a trusted evidence comment.
   async function design() {
-    const flow = std.flow ?? info.custom_properties?.flow;
-    if (flow === "staged" && promotion) {
-      if (!changed.length || std.design_signoff === false || pack.design_signoff === false) return { state: "success", description: "promotion: no design sign-off needed" };
-      const latest = new Map();
-      for (const r of await all(`${R}/pulls/${n}/reviews`)) latest.set(r.user?.login, r);
-      for (const r of latest.values()) {
-        if (r.state !== "APPROVED" || r.commit_id !== head || r.user?.type !== "User" || r.user.login === pr.user?.login) continue;
-        const perm = await api("GET", `${R}/collaborators/${r.user.login}/permission`);
-        if (["admin", "maintain", "write"].includes(perm?.permission)) return { state: "success", description: `design change approved by @${r.user.login}` };
-      }
-      return { state: "failure", description: `design change in this promotion needs a person's approval on ${short(head)}` };
-    }
     if (!changed.length) return null;
     return evidence();
   }

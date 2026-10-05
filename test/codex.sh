@@ -143,9 +143,9 @@ cp "$T/std.keep" "$R/standards.json"; w3=$(pb '[]' ""); w4=$?
 if [ $w2 -eq 0 ] && has "preview: none" "$w1" && ! has "Workers Builds" "$w1" && [ $w4 -eq 1 ] && has "no \"Workers Builds\" check on $H7" "$w3"; then ok e2e-false-skips-preview
 else fail e2e-false-skips-preview "e2e-false=$w2 (want 0) still-gated=$w4 (want 1): $w1 | $w3"; fi
 
-# ---- review-rule-reads-base: the rule and its settings come from the current base branch (a PR cannot bring its own);
-# a promotion (this repo's default branch into another) is judged by the default branch's pack, a fork's same-named
-# branch is not; a stale pull.base.sha is resolved through the branch. A null verdict here: no pack at the ref read.
+# ---- review-rule-reads-base: the rule and its settings come from the current base branch (a PR cannot bring its own),
+# even when the head is this repository's default branch (there are no promotions); a stale pull.base.sha is resolved
+# through the branch. A null verdict here: no pack at the ref read.
 SUM="{user:b,updated_at:new Date().toISOString(),body:'<!-- codex-pull-request-review-summary -->\\n| 📝 **Code Review** | ✅ **Completed** now | \`${HEAD1:0:7}\` | x |'}"
 base="pr:{number:7,draft:false,state:'open',html_url:'https://github.com/acme/demo/pull/7',user:{login:'alice'},head:{sha:'$HEAD1',ref:'feat'},base:{ref:'main'}},comments:{7:[$SUM]},recent:[],pushed:new Date(Date.now()-300000).toISOString(),timeline:[],threads:[]"
 PACKFILE="{content:Buffer.from(require('fs').readFileSync('$PACK')).toString('base64')}"
@@ -155,6 +155,6 @@ put "{$PROMO,files:{'scripts/agent/pack.json@$HEAD1':$PACKFILE}}"; rb2=$(rv)
 put "{${PROMO/acme\/demo/someone\/demo},files:{'scripts/agent/pack.json@$HEAD1':$PACKFILE}}"; rb3=$(rv)
 put "{$base,branchHeads:{main:'$HEAD1'},files:{'scripts/agent/pack.json@$HEAD1':$PACKFILE}}"
 node -e 'const f=process.argv[1],s=require(f);s.pr.base.sha=process.argv[2];require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json" "$OLD"; rb4=$(rv)
-if has "not judged" "$rb1" && has "review success" "$rb2" && has "not judged" "$rb3" && has "review success" "$rb4"; then ok review-rule-reads-base
-else fail review-rule-reads-base "head-pack-only=$rb1 | promotion=$rb2 | fork=$rb3 | stale-base-sha=$rb4"; fi
+if has "not judged" "$rb1" && has "not judged" "$rb2" && has "not judged" "$rb3" && has "review success" "$rb4"; then ok review-rule-reads-base
+else fail review-rule-reads-base "head-pack-only=$rb1 | default-branch-head=$rb2 | fork=$rb3 | stale-base-sha=$rb4"; fi
 done_cases
