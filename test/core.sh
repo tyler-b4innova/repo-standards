@@ -472,4 +472,16 @@ out=$(node bin/repo-standards.mjs block --overlay "$BIG" --profile client 2>&1);
 sizes=$(for p in internal client; do node bin/repo-standards.mjs block --overlay "$OV" --profile $p | wc -c; done | sort -n | tail -1 | tr -d ' ')
 if [ $st -ne 0 ] && has "rendered client block is" "$out" && [ "$sizes" -le 1800 ]; then ok agents-block-max-1800; else fail agents-block-max-1800 "st=$st max=$sizes $out"; fi
 
+# ---- gate job timeout: 30 minutes unless the overlay's gate.timeout_minutes (an integer from 5 to 120) says otherwise
+why=""
+d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; apply "$d" >/dev/null; has "    timeout-minutes: 30" "$(cat "$d/.github/workflows/std-gate.yml")" || why="$why; default is not 30"
+GT=$T/gate-timeout.json; node -e 'const o=require(process.argv[1]);o.gate={...o.gate,timeout_minutes:45};require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$GT"
+d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; OVERLAY=$GT apply "$d" >/dev/null; has "    timeout-minutes: 45" "$(cat "$d/.github/workflows/std-gate.yml")" || why="$why; overlay value not rendered"
+commit "$d" init; out=$(check "$d") || why="$why; check failed on a custom timeout: $out"
+for v in 4 121 30.5 '"30"'; do
+  node -e 'const o=require(process.argv[1]);o.gate={timeout_minutes:JSON.parse(process.argv[3])};require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$T/bad-gt.json" "$v"
+  d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; out=$(OVERLAY=$T/bad-gt.json apply "$d" 2>&1) && why="$why; $v accepted"; has "gate.timeout_minutes must be an integer from 5 to 120" "$out" || why="$why; $v: $out"
+done
+if [ -z "$why" ]; then ok gate-timeout-overlay; else fail gate-timeout-overlay "$why"; fi
+
 done_cases
