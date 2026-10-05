@@ -249,19 +249,26 @@ if (cmd === "plan") {
   if (e2eCfg.budget !== undefined && !(typeof e2eCfg.budget === "number" && e2eCfg.budget > 0)) fail(`standards.json e2e.budget is ${JSON.stringify(e2eCfg.budget)}`, "minutes above 0 (it may only tighten the org budget)");
   const mins = Math.min(e2eCfg.budget ?? Infinity, pack.gate_budget?.e2e ?? 5), ms = Math.round(mins * 60000);
   const url = env.GATE_PREVIEW_URL ?? "";
-  // A client site's preview must not be indexed: its home page says noindex (robots meta or X-Robots-Tag).
+  // A client site's preview must not be indexed: its home page's robots meta (or X-Robots-Tag) says noindex. The fetch
+  // and its body read stop at the e2e budget, and the suite gets only the time left.
+  const started = Date.now();
   if (url && pack.profile === "client") {
     let res = null, html = "";
-    try { res = await fetch(url, { redirect: "follow" }); html = await res.text(); } catch (e) { fail(`the preview at ${url} did not answer: ${e.cause?.code ?? e.message}`, "re-run gate once the preview is up"); }
-    const meta = [...html.matchAll(/<meta\b[^>]*>/gi)].some(([m]) => /name=["']?robots/i.test(m) && /noindex/i.test(m));
-    if (!meta && !/noindex/i.test(res.headers.get("x-robots-tag") ?? ""))
+    try { res = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(ms) }); html = await res.text(); }
+    catch (e) { fail(e.name === "TimeoutError" || e.name === "AbortError" ? `the preview at ${url} did not answer within the e2e budget (${mins} min)` : `the preview at ${url} did not answer: ${e.cause?.code ?? e.message}`, "re-run gate once the preview is up"); }
+    const directives = (v) => v.toLowerCase().split(",").map((d) => d.replace(/^[^:]*:/, "").trim());
+    const attrs = (tag) => Object.fromEntries([...tag.matchAll(/([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g)].map((a) => [a[1].toLowerCase(), a[2] ?? a[3] ?? a[4]]));
+    const meta = [...html.matchAll(/<meta\b[^>]*>/gi)].map(([t]) => attrs(t)).some((a) => /^(robots|googlebot)$/i.test(a.name ?? "") && directives(a.content ?? "").some((d) => ["noindex", "none"].includes(d)));
+    if (!meta && !directives(res.headers.get("x-robots-tag") ?? "").some((d) => ["noindex", "none"].includes(d)))
       fail(`the preview at ${url} carries no noindex (robots meta or X-Robots-Tag)`, "previews must not be indexed: render <meta name=\"robots\" content=\"noindex\"> on every non-production host");
     console.log(`preview noindex: ok (${url})`);
   }
+  const left = ms - (Date.now() - started);
+  if (left <= 0) fail(`e2e exceeded its ${mins}-minute budget`, "the preview answered too slowly for the suite to run; re-run gate");
   if (run) {
     console.log(`e2e: ${run[0]} ${run[1].map((a) => (a.includes("*") ? `"${a}"` : a)).join(" ")}${url ? ` against ${url}` : ""} (budget ${mins} min)`);
-    const r = spawnSync(run[0], run[1], { stdio: "inherit", timeout: ms, killSignal: "SIGKILL",
-      env: { ...env, PW_GLOBAL_TIMEOUT: String(ms), ...(url && { PLAYWRIGHT_BASE_URL: url, BASE_URL: url }) } });
+    const r = spawnSync(run[0], run[1], { stdio: "inherit", timeout: left, killSignal: "SIGKILL",
+      env: { ...env, PW_GLOBAL_TIMEOUT: String(left), ...(url && { PLAYWRIGHT_BASE_URL: url, BASE_URL: url }) } });
     if (r.error?.code === "ETIMEDOUT" || r.signal) fail(`e2e exceeded its ${mins}-minute budget`, "make the slow tests faster (fewer navigations, the preview URL), then move the slow tail to promotion PRs; do not shard");
     if (r.status) process.exit(r.status);
   }
