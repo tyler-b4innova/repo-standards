@@ -13,7 +13,9 @@ trap 'rm -rf "$T"' EXIT
 has() { case "$2" in *"$1"*) return 0 ;; esac; return 1; }
 gc() { git -c user.name=t -c user.email=t@t "$@"; }
 commit() { gc -C "$1" add -A && gc -C "$1" commit -qm "${2:-change}"; }
-mkrepo() { local d; d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; node "$ENGINE/bin/repo-standards.mjs" apply --overlay "$OV" --version 0.1.0 --target "$d" --profile "${1:-client}" >/dev/null && commit "$d" init && echo "$d"; }
+mkrepo() { local d; d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; node "$ENGINE/bin/repo-standards.mjs" apply --overlay "$OV" --version 0.1.0 --target "$d" --profile "${1:-client}" >/dev/null && staging_off "$d" && commit "$d" init && echo "$d"; }
+# these cases test other rules: their bare fixture Workers opt out of the staging environment (test/staging.sh covers it)
+staging_off() { node -e 'const f=process.argv[1]+"/standards.json",fs=require("fs"),o=JSON.parse(fs.readFileSync(f,"utf8"));o.staging=false;fs.writeFileSync(f,JSON.stringify(o,null,2)+"\n")' "$1"; }
 check() { (cd "$1" && scripts/agent/setup.sh --check) 2>&1; }
 put() { mkdir -p "$(dirname "$1/$2")" && printf '%s\n' "$3" >"$1/$2"; }
 # verdict <id> <repo that follows the rule> <repo that breaks it> <needle in the failure>: and an internal repo with the

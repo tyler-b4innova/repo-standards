@@ -67,4 +67,20 @@ o=$(rel "$R"); has "exit=1" "$o" && has "no \"Workers Builds\" check on ${SHA:0:
 o=$( (cd "$R" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_SHA=$SHA GATE_PREVIEW_WAIT_S=20 GATE_POLL_S=1 GITHUB_OUTPUT= node scripts/agent/gate.mjs release 2>&1); echo "exit=$?"); wait $LATE
 has "exit=0" "$o" && has "browsers=firefox,webkit" "$o" || why="$why; late check: $o"
 if [ -z "$why" ]; then ok release-browsers-on-main; else fail release-browsers-on-main "$why"; fi
+
+# a push of only non-deployable paths (docs, instruction files) skips the release check's browsers; one deployable
+# path runs them
+why=""
+echo "notes" >"$R/README.md"; mkdir -p "$R/docs" && echo "guide" >"$R/docs/guide.md"; commit "$R" docs; SHA=$(git -C "$R" rev-parse HEAD)
+put '{"checks":[{"name":"Workers Builds: demo","status":"in_progress"}]}'
+o=$(rel "$R"); has "exit=0" "$o" && has "skip=true" "$o" && has "only non-deployable paths changed (README.md, docs/guide.md)" "$o" && has "browsers=" "$o" || why="$why; docs push: $o"
+mkdir -p "$R/src" && echo "export {};" >"$R/src/index.ts" && echo "more" >>"$R/README.md"; commit "$R" code; SHA=$(git -C "$R" rev-parse HEAD)
+put '{"checks":[{"name":"Workers Builds: demo","status":"completed","conclusion":"success"}]}'
+o=$(rel "$R"); has "exit=0" "$o" && ! has "skip=true" "$o" && has "browsers=firefox,webkit" "$o" || why="$why; code push: $o"
+for step in install e2e; do
+  blk=$(awk -v s="- name: $step" 'index($0,s){f=1;next} f&&/- name:/{exit} f' "$R/$WF")
+  has "if: steps.release.outputs.skip != 'true'" "$blk" || why="$why; $step step not skipped: $blk"
+done
+grep -q "^    if:" "$R/$WF" && why="$why; job-level if"
+if [ -z "$why" ]; then ok release-check-skips-docs; else fail release-check-skips-docs "$why"; fi
 done_cases

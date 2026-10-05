@@ -24,7 +24,7 @@ const server = createServer((req, res) => {
   const rest = p.slice(base.length);
   let m;
   if ((m = rest.match(/^branches\/(.+)$/))) return send(200, { commit: { sha: git("rev-parse", m[1]) ?? fx.head } });
-  if ((m = rest.match(/^pulls\/(\d+)$/))) return send(200, { number: Number(m[1]), state: "open", draft: false, html_url: `https://github.com/${fx.repo}/pull/${m[1]}`, user: { login: "alice" }, head: { sha: fx.head, ref: "feat" }, base: { ref: "main" } });
+  if ((m = rest.match(/^pulls\/(\d+)$/))) return send(200, { number: Number(m[1]), state: "open", draft: false, html_url: `https://github.com/${fx.repo}/pull/${m[1]}`, user: { login: fx.pull?.user ?? "alice" }, head: { sha: fx.head, ref: fx.pull?.ref ?? "feat" }, base: { ref: "main" } });
   if ((m = rest.match(/^compare\/([0-9a-f]+)\.\.\.([0-9a-f]+)$/))) {
     if (git("cat-file", "-e", `${m[1]}^{commit}`) === null) return send(404, { message: "Not Found" });
     const anc = git("merge-base", "--is-ancestor", m[1], m[2]) !== null;

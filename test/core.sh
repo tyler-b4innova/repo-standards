@@ -347,7 +347,7 @@ if [ -z "$why" ]; then ok ancestor-claude-md-warns; else fail ancestor-claude-md
 R=$(mkrepo); mkdir -p "$R/.evidence" && echo png > "$R/.evidence/a.png" && git -C "$R" add -f .evidence
 expect_fail no-evidence-on-main "$R" ".evidence/ is tracked"
 
-R=$(mkrepo); echo '{"routes":[{"pattern":"preview.example.com","custom_domain":true}]}' > "$R/wrangler.jsonc" && git -C "$R" add wrangler.jsonc; a=$(check "$R"); sa=$?
+R=$(mkrepo); jset "$R/standards.json" 'o.staging=false'; echo '{"routes":[{"pattern":"preview.example.com","custom_domain":true}]}' > "$R/wrangler.jsonc" && git -C "$R" add standards.json wrangler.jsonc; a=$(check "$R"); sa=$?
 sed -i.bak 's/preview\.example\.com/preview-site.example.com/' "$R/wrangler.jsonc" && rm "$R/wrangler.jsonc.bak"; check "$R" >/dev/null; sb=$?
 sed -i.bak 's/preview-site\.example\.com/cos.preview.example.com/' "$R/wrangler.jsonc" && rm "$R/wrangler.jsonc.bak"; check "$R" >/dev/null; sb=$((sb + $?))
 if [ $sa -eq 1 ] && has "wrangler.jsonc uses the shared preview host preview.example.com" "$a" && [ $sb -eq 0 ]; then ok shared-preview-host-rejected; else fail shared-preview-host-rejected "$a"; fi
