@@ -135,6 +135,16 @@ out=$(lbad 'l.dispatch[0].when="always"'); has 'when must be "drift"' "$out" && 
 # t3 lanes: provider and model, any effort string, a review from another provider; cloud lanes with a matching runner; both kinds together
 node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.launcher.lanes=[{name:"t3-main",runner:"t3",provider:"claudeAgent",model:"model-x",effort:"any-effort-string",slots:2},{name:"cloud",runner:"codex-cloud",vendor:"codex"},{name:"implied",runner:"claude-cloud"},{name:"legacy",vendor:"claude"}];o.launcher.dispatch[0].ref="main";o.launcher.review={provider:"codex",model:"model-y"};o.launcher.unassigned=["cloud"];require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$T/t3.json"
 d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; out=$(OVERLAY="$T/t3.json" apply "$d" 2>&1) || why="$why; a t3 lane with its review, or cloud lanes, refused: $out"
+# retro: who approves its rule changes, and the drafting model (Claude only; the launcher refuses codex as drafter)
+node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.launcher.retro={approvers:["octocat","hubot"],engineApprovers:["octocat"],provider:"claudeAgent",model:"model-x",effort:"high",repo:"standards"};require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$T/retro.json"
+d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; out=$(OVERLAY="$T/retro.json" apply "$d" 2>&1) || why="$why; a well-formed retro refused: $out"
+R0='approvers:["octocat"],engineApprovers:["octocat"],provider:"claudeAgent",model:"m"'
+for c in "l.retro={$R0,cadence:\"weekly\"}|launcher.retro.cadence is not a launcher setting" "l.retro={$R0};l.retro.approvers=[]|retro.approvers must be a non-empty list of GitHub logins" \
+  "l.retro={$R0};l.retro.engineApprovers=[\"not a login\"]|retro.engineApprovers must be a non-empty list of GitHub logins" "l.retro={$R0};l.retro.provider=\"codex\"|retro.provider must be claudeAgent" \
+  "l.retro={$R0};l.retro.model=\" \"|retro.model must be a non-empty string" "l.retro={$R0};l.retro.effort=3|retro.effort must be a string" "l.retro={$R0};l.retro.repo=[]|retro.repo must be a string" \
+  "l.retro={$R0};l.retro.model=\"sk-\"+\"a\".repeat(40)|looks like a credential" "l.retro=[]|launcher.retro must be an object"; do
+  out=$(lbad "${c%%|*}"); has "${c#*|}" "$out" && ! has ACCEPTED "$out" && ! has WROTE "$out" || why="$why; [${c%%|*}] $out"
+done
 if [ -z "$why" ]; then ok overlay-launcher-validated; else fail overlay-launcher-validated "$why"; fi
 
 # review-settings-removed: the conversation is not a required status any more; an overlay still naming it is refused
