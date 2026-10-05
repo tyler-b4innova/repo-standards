@@ -153,22 +153,39 @@ if [ -z "$why" ]; then ok client-built-output-clean; else fail client-built-outp
 cat >"$T/serve.mjs" <<'JS'
 import { createServer } from "node:http";
 const [port, mode] = process.argv.slice(2);
+const metas = {
+  meta: '<meta name="robots" content="noindex, nofollow">',
+  spaced: "<meta content = 'NOINDEX' name = robots >",
+  none: "",
+  nofollow: '<meta name="robots" content="nofollow, noarchive">', // no noindex directive
+  other: '<meta name="description" content="noindex">', // not the robots meta
+};
 createServer((req, res) => {
-  const headers = { "content-type": "text/html", ...(mode === "header" && { "x-robots-tag": "noindex" }) };
-  res.writeHead(200, headers);
-  res.end(`<html><head>${mode === "meta" ? '<meta name="robots" content="noindex, nofollow">' : ""}</head><body>home</body></html>`);
+  const headers = { "content-type": "text/html", ...(mode === "header" && { "x-robots-tag": "googlebot: noindex" }) };
+  if (mode === "stall") { res.writeHead(200, headers); res.write("<html><head>"); return; } // never finishes the body
+  setTimeout(() => {
+    res.writeHead(200, headers);
+    res.end(`<html><head>${metas[mode] ?? ""}<meta name="robots" content="${mode === "slow" ? "noindex" : "index"}" data-x></head><body>home</body></html>`.replace(mode === "slow" ? "" : /<meta name="robots" content="index" data-x>/, ""));
+  }, mode === "slow" ? 1500 : 0);
 }).listen(Number(port), "127.0.0.1");
 JS
 e2e() { # e2e <profile> <server mode>: gate's e2e step against a stand-in preview; prints its output, then the exit
   local d port=$((20000 + RANDOM % 20000)) pid; d=$(mkrepo "$1")
-  put "$d" tests/e2e/home.test.mjs 'import test from "node:test"; test("home", () => {});'; commit "$d"
+  put "$d" tests/e2e/home.test.mjs "import test from \"node:test\"; test(\"home\", () => new Promise((r) => setTimeout(r, ${SUITE_SLEEP:-0})));"
+  [ -z "${E2E_BUDGET:-}" ] || node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f));o.e2e={budget:Number(process.argv[2])};require("fs").writeFileSync(f,JSON.stringify(o))' "$d/standards.json" "$E2E_BUDGET"
+  commit "$d"
   node "$T/serve.mjs" "$port" "$2" & pid=$!; sleep 0.4
-  (cd "$d" && GATE_PREVIEW_URL="http://127.0.0.1:$port" node scripts/agent/gate.mjs e2e 2>&1); echo "exit=$?"; kill $pid; wait $pid 2>/dev/null
+  # perl's alarm bounds a gate that would wait forever (no deadline on the preview fetch)
+  (cd "$d" && GATE_PREVIEW_URL="http://127.0.0.1:$port" perl -e 'alarm 30; exec @ARGV' node scripts/agent/gate.mjs e2e 2>&1); echo "exit=$?"; kill $pid; wait $pid 2>/dev/null
 }
 why=""
 o=$(e2e client meta); has "exit=0" "$o" && has "preview noindex: ok" "$o" || why="meta: $o"
 o=$(e2e client header); has "exit=0" "$o" && has "preview noindex: ok" "$o" || why="$why; header: $o"
-o=$(e2e client none); has "exit=1" "$o" && has "the preview at http://127.0.0.1:" "$o" && has "carries no noindex" "$o" || why="$why; none: $o"
+o=$(e2e client spaced); has "exit=0" "$o" && has "preview noindex: ok" "$o" || why="$why; spaced attributes: $o"
+for m in none nofollow other; do o=$(e2e client $m); has "exit=1" "$o" && has "the preview at http://127.0.0.1:" "$o" && has "carries no noindex" "$o" || why="$why; $m: $o"; done
+# the preview fetch and its body read share the e2e budget, and the suite gets only what is left
+o=$(E2E_BUDGET=0.03 e2e client stall); has "exit=1" "$o" && has "did not answer within the e2e budget" "$o" || why="$why; stalled body: $o"
+o=$(E2E_BUDGET=0.05 SUITE_SLEEP=2000 e2e client slow); has "exit=1" "$o" && has "e2e exceeded its 0.05-minute budget" "$o" || why="$why; suite given the whole budget: $o"
 o=$(e2e internal none); has "exit=0" "$o" && ! has "noindex" "$o" || why="$why; internal checked: $o"
 if [ -z "$why" ]; then ok client-preview-noindex; else fail client-preview-noindex "$why"; fi
 
