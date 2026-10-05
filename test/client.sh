@@ -161,6 +161,7 @@ const metas = {
   none: "",
   nofollow: '<meta name="robots" content="nofollow, noarchive">', // no noindex directive
   other: '<meta name="description" content="noindex">', // not the robots meta
+  inactive: '<!-- <meta name="robots" content="noindex"> --><noscript><meta name="robots" content="noindex"></noscript><template><meta name="robots" content="noindex"></template>',
 };
 createServer((req, res) => {
   const headers = { "content-type": "text/html", ...(mode === "header" && { "x-robots-tag": "googlebot: noindex" }) };
@@ -184,7 +185,7 @@ why=""
 o=$(e2e client meta); has "exit=0" "$o" && has "preview noindex: ok" "$o" || why="meta: $o"
 o=$(e2e client header); has "exit=0" "$o" && has "preview noindex: ok" "$o" || why="$why; header: $o"
 o=$(e2e client spaced); has "exit=0" "$o" && has "preview noindex: ok" "$o" || why="$why; spaced attributes: $o"
-for m in none nofollow other; do o=$(e2e client $m); has "exit=1" "$o" && has "the preview at http://127.0.0.1:" "$o" && has "carries no noindex" "$o" || why="$why; $m: $o"; done
+for m in none nofollow other inactive; do o=$(e2e client $m); has "exit=1" "$o" && has "the preview at http://127.0.0.1:" "$o" && has "carries no noindex" "$o" || why="$why; $m: $o"; done
 # the preview fetch and its body read share the e2e budget, and the suite gets only what is left
 o=$(E2E_BUDGET=0.03 e2e client stall); has "exit=1" "$o" && has "did not answer within the e2e budget" "$o" || why="$why; stalled body: $o"
 o=$(E2E_BUDGET=0.05 SUITE_SLEEP=2000 e2e client slow); has "exit=1" "$o" && has "e2e exceeded its 0.05-minute budget" "$o" || why="$why; suite given the whole budget: $o"
