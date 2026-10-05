@@ -51,7 +51,11 @@ with "$A" "$GOOD"; o=$(check "$A") || why="$why; isolated data app failed: $o"
 with "$A" 'o.env.staging.name="app"'; o=$(check "$A"); has "env.staging.name is the production Worker" "$o" || why="$why; same name: $o"
 with "$A" 'delete o.env.staging.name; delete o.env.staging.routes'; o=$(check "$A"); has "inherits the production routes" "$o" || why="$why; inherited routes: $o"
 with "$A" 'o.env.staging.routes=[{pattern:"app.example.com",custom_domain:true}]'; o=$(check "$A"); has "a production route" "$o" || why="$why; prod route: $o"
-with "$A" 'o.env.staging.routes=[]; o.env.staging.workers_dev=true'
+with "$A" 'o.env.staging.routes=["app.example.com/*"]; o.routes.push("app.example.com/*")'; o=$(check "$A"); has "a production route" "$o" || why="$why; string route: $o"
+# a Preview hostname route still serving production traffic (enabled) is a production route
+with "$A" 'o.routes=[{pattern:"p.example.com",custom_domain:true,previews_enabled:true}]; o.env.staging.routes=[{pattern:"p.example.com",custom_domain:true}]'; o=$(check "$A"); has "a production route" "$o" || why="$why; enabled preview route: $o"
+with "$A" 'o.routes[0].enabled=false'; o=$(check "$A") || why="$why; disabled preview route: $o"
+with "$A" 'o.routes=[{pattern:"app.example.com",custom_domain:true}]; o.env.staging.routes=[]; o.env.staging.workers_dev=true'
 # bindings and vars are not inherited: each must be re-declared
 with "$A" 'delete o.env.staging.kv_namespaces; delete o.env.staging.vars'; o=$(check "$A"); has "env.staging lacks kv_namespaces KV" "$o" && has "env.staging lacks vars ENVIRONMENT" "$o" || why="$why; not inherited: $o"
 # a TOML config is not checked, but says so
@@ -78,6 +82,11 @@ node --input-type=module -e 'const {parse}=await import(process.argv[1]);const c
 if(!(s.routes.length===0&&s.workers_dev===true&&s.vars.SENTRY_ENVIRONMENT==="staging"&&s.vars.CONTACT_TO==="a@example.com"&&s.send_email[0].name==="SEND_EMAIL"&&c.previews.vars.SENTRY_ENVIRONMENT==="preview"))process.exit(1)' "$ENGINE/template/scripts/agent/staging.mjs" "$B/wrangler.jsonc" || why="$why; migrated config: $(cat "$B/wrangler.jsonc")"
 o=$(check "$B") && has "staging Worker is on workers.dev" "$o" || why="$why; migrated brochure check: $o"
 before=$(cat "$B/wrangler.jsonc"); apply "$B"; [ "$before" = "$(cat "$B/wrangler.jsonc")" ] || why="$why; second apply changed the config"
+# a string holding ", }" keeps its value, and a trailing comment holding braces is not the closing brace
+C=$(repo tricky '{
+  "name": "t", "vars": { "NOTE": "a, }" }, // ends {}
+} // trailing {}')
+node --input-type=module -e 'const {parse}=await import(process.argv[1]);const c=parse((await import("node:fs")).readFileSync(process.argv[2],"utf8"));if(c?.env?.staging?.vars?.NOTE!=="a, }"||c.vars.NOTE!=="a, }")process.exit(1)' "$ENGINE/template/scripts/agent/staging.mjs" "$C/wrangler.jsonc" || why="$why; tricky migration: $(cat "$C/wrangler.jsonc")"
 if [ -z "$why" ]; then ok staging-brochure-migrated; else fail staging-brochure-migrated "$why"; fi
 
 # ---- nothing outside production names a production resource

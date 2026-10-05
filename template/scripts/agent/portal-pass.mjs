@@ -58,16 +58,18 @@ function keyring(url, fetcher) {
     const t = Date.now();
     if (!c || t - c.at > JWKS_TTL) { c = { keys: await load(), at: t, refetchedAt: c?.refetchedAt ?? 0 }; jwksCache.set(url, c); }
     let k = c.keys.find((x) => x.kid === kid);
-    if (!k && t - c.refetchedAt > REFETCH_GAP) {
-      c = { keys: await load(), at: t, refetchedAt: t };
-      jwksCache.set(url, c);
-      k = c.keys.find((x) => x.kid === kid);
+    if (!k && (c.pending || t - c.refetchedAt > REFETCH_GAP)) {
+      // the refetch is reserved before it is awaited and shared, so concurrent unknown kids cost one portal fetch
+      c.refetchedAt = t;
+      c.pending ??= load().then((keys) => { jwksCache.set(url, { keys, at: Date.now(), refetchedAt: t }); return keys; }).finally(() => { c.pending = null; });
+      k = (await c.pending).find((x) => x.kid === kid);
     }
     return k ?? null;
   };
 }
 
-const denied = () => new Response(null, { status: 401, headers: { "WWW-Authenticate": 'Bearer realm="portal"', "Cache-Control": "no-store" } });
+// Refusals and the cookie redirect carry noindex too: gate's preview noindex probe passes without a pass.
+const denied = () => new Response(null, { status: 401, headers: { "WWW-Authenticate": 'Bearer realm="portal"', "Cache-Control": "no-store", "X-Robots-Tag": "noindex" } });
 
 // null: the request may proceed. Otherwise the Response to return (the 401, or the redirect that sets the cookie).
 export async function portalPass(request, env, { fetch: fetcher = globalThis.fetch } = {}) {
@@ -85,7 +87,7 @@ export async function portalPass(request, env, { fetch: fetcher = globalThis.fet
     u.searchParams.delete(QUERY);
     const age = Math.max(1, Math.floor(claims.exp - Date.now() / 1000));
     return new Response(null, { status: 302, headers: {
-      Location: u.toString(), "Cache-Control": "no-store",
+      Location: u.toString(), "Cache-Control": "no-store", "X-Robots-Tag": "noindex",
       "Set-Cookie": `${COOKIE}=${q}; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=${age}`,
     } });
   }

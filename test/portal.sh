@@ -35,7 +35,8 @@ let n = 0;
 const env = () => ({ ENVIRONMENT: "staging", PORTAL_AUD: "site-staging", PORTAL_ISSUER: ISS, PORTAL_JWKS_URL: `https://portal.example.com/jwks/${++n}` });
 const call = (e, { headers = {}, query = "" } = {}) => portalPass(new Request(`https://site-staging.example.com/a/b?x=1${query}`, { headers }), e, { fetch: fetcher });
 const out = {}, why = (id, m) => (out[id] ??= []).push(m);
-const is401 = async (r, id, what) => { if (!(r && r.status === 401 && /Bearer realm="portal"/.test(r.headers.get("www-authenticate") ?? "") && (await r.text()) === "")) why(id, `${what}: ${r?.status}`); };
+// a refusal says noindex too, so gate's preview noindex probe passes on a gated Worker
+const is401 = async (r, id, what) => { if (!(r && r.status === 401 && /Bearer realm="portal"/.test(r.headers.get("www-authenticate") ?? "") && r.headers.get("x-robots-tag") === "noindex" && (await r.text()) === "")) why(id, `${what}: ${r?.status}`); };
 
 // verifies: Bearer, cookie, query (302 that sets the cookie and drops the parameter), aud as a list, agent and test subjects
 const pass = await sign(k1, good);
@@ -55,6 +56,10 @@ if (hits !== before + 1) why("v", `rotation fetched ${hits - before} times`);
 await is401(await call(e, { headers: { authorization: `Bearer ${await sign({ ...k2, kid: "k3" }, good)}` } }), "v", "unknown kid");
 if (hits !== before + 1) why("v", `a second unknown kid refetched (${hits - before})`);
 if ((await call(e, { headers: { authorization: `Bearer ${pass}` } })) !== null) why("v", "cached key after rotation");
+// concurrent unknown kids share one reserved refetch
+const e2 = env(); await call(e2, { headers: { authorization: `Bearer ${pass}` } }); const h1 = hits;
+await Promise.all([1, 2, 3, 4, 5].map(async (i) => call(e2, { headers: { authorization: `Bearer ${await sign({ ...k2, kid: `x${i}` }, good)}` } })));
+if (hits !== h1 + 1) why("v", `concurrent unknown kids fetched ${hits - h1} times`);
 
 // fails closed: every bad pass, and a staging Worker missing its portal settings, is an empty 401
 const bad = [

@@ -12,7 +12,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scan } from "./jsscan.mjs";
+import { parse } from "./staging.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
 const SUBS = ["main", "preview", "slug", "cleanup"];
@@ -41,7 +41,7 @@ function config() {
   if (!configFile) fail("no wrangler config (wrangler.jsonc, wrangler.json or wrangler.toml)", "run this from a Worker repository");
   const text = readFileSync(configFile, "utf8");
   if (configFile.endsWith(".toml")) return { env: /^\s*\[env\.staging[\].]/m.test(text) ? { staging: {} } : {} };
-  try { return JSON.parse(scan(text).source.replace(/,(\s*[}\]])/g, "$1")); } catch (e) { fail(`${configFile} does not parse: ${e.message}`, "fix the config"); }
+  return parse(text) ?? fail(`${configFile} does not parse`, "fix the config (JSON with comments and trailing commas)");
 }
 const wrangler = (a, { capture = false } = {}) => {
   console.log(`release: npx wrangler ${a.map((x) => (/^\//.test(x) ? "<file>" : x)).join(" ")}`);
@@ -54,7 +54,7 @@ const must = (a) => { const r = wrangler(a); if (r.status) process.exit(r.status
 
 const secrets = std.secrets && typeof std.secrets === "object" ? std.secrets : {};
 // Required: standards.json secrets.required and the wrangler config's own secrets.required.
-const wranglerRequired = (() => { try { const c = configFile && !configFile.endsWith(".toml") ? JSON.parse(scan(readFileSync(configFile, "utf8")).source.replace(/,(\s*[}\]])/g, "$1")) : null; return Array.isArray(c?.secrets?.required) ? c.secrets.required : []; } catch { return []; } })();
+const wranglerRequired = (() => { const c = configFile && !configFile.endsWith(".toml") ? parse(readFileSync(configFile, "utf8")) : null; return Array.isArray(c?.secrets?.required) ? c.secrets.required : []; })();
 const required = [...new Set([...(Array.isArray(secrets.required) ? secrets.required : []), ...wranglerRequired])].filter((s) => typeof s === "string" && s);
 const store = secrets.store ?? "1password";
 
@@ -154,18 +154,19 @@ async function deploy() {
 async function cleanup() {
   config();
   const at = args.indexOf("--pr-branch"), names = new Set(), keep = new Set(["staging"]);
-  if (at >= 0) {
-    if (!args[at + 1]) fail("--pr-branch needs a branch", "release.mjs cleanup --pr-branch <branch>");
-    names.add(slug(args[at + 1]));
-  } else if (args.includes("--sweep")) {
-    const base = `${env.GITHUB_API_URL || "https://api.github.com"}/repos/${env.GITHUB_REPOSITORY}`;
-    const headers = { Authorization: `Bearer ${env.GH_TOKEN || env.GITHUB_TOKEN}`, Accept: "application/vnd.github+json" };
-    const get = async (p) => { const r = await fetch(`${base}${p}`, { headers }); if (!r.ok) fail(`GET ${p}: ${r.status}`, "grant the job pull-requests read"); return r.json(); };
-    for (let page = 1; ; page++) {
-      const b = await get(`/pulls?state=open&per_page=100&page=${page}`);
-      b.forEach((p) => keep.add(slug(p.head.ref)));
-      if (b.length < 100) break;
-    }
+  if (at < 0 && !args.includes("--sweep")) fail("nothing to clean up", "release.mjs cleanup --pr-branch <branch> | --sweep");
+  if (at >= 0 && !args[at + 1]) fail("--pr-branch needs a branch", "release.mjs cleanup --pr-branch <branch>");
+  const base = `${env.GITHUB_API_URL || "https://api.github.com"}/repos/${env.GITHUB_REPOSITORY}`;
+  const headers = { Authorization: `Bearer ${env.GH_TOKEN || env.GITHUB_TOKEN}`, Accept: "application/vnd.github+json" };
+  const get = async (p) => { const r = await fetch(`${base}${p}`, { headers }); if (!r.ok) fail(`GET ${p}: ${r.status}`, "grant the job pull-requests read"); return r.json(); };
+  // a Preview an open pull request still uses (the same branch, or one with the same slug) stays, in both modes
+  for (let page = 1; ; page++) {
+    const b = await get(`/pulls?state=open&per_page=100&page=${page}`);
+    b.forEach((p) => keep.add(slug(p.head.ref)));
+    if (b.length < 100) break;
+  }
+  if (at >= 0) names.add(slug(args[at + 1]));
+  else {
     const since = Date.now() - 30 * 864e5;
     for (let page = 1; ; page++) {
       const b = await get(`/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=${page}`);
@@ -173,7 +174,7 @@ async function cleanup() {
       b.filter((p) => p.closed_at && Date.parse(p.closed_at) >= since && (!p.head.repo || p.head.repo.full_name === env.GITHUB_REPOSITORY)).forEach((p) => names.add(slug(p.head.ref)));
       if (b.length < 100 || b.some((p) => Date.parse(p.updated_at) < since)) break;
     }
-  } else fail("nothing to clean up", "release.mjs cleanup --pr-branch <branch> | --sweep");
+  }
   let bad = 0;
   for (const name of [...names].filter(Boolean).sort()) {
     if (keep.has(name)) { console.log(`cleanup: keep ${name} (${name === "staging" ? "staging" : "an open pull request uses it"})`); continue; }

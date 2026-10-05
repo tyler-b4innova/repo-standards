@@ -2,7 +2,6 @@
 // Staging is a Wrangler environment: env.staging deploys a separate <name>-staging Worker with its own data, queues,
 // Workflows, cron and keys. PR Previews (the `previews` block) point every binding at those staging resources: a
 // Preview inherits nothing, and its service bindings and Workflows reach the bound Worker's production deployment.
-import { scan } from "./jsscan.mjs";
 
 // Bindings by kind: where they sit, and the keys naming the resource they reach (none: a binding with no resource).
 const KINDS = [
@@ -20,8 +19,24 @@ const at = (o, path) => path.split(".").reduce((v, k) => (v && typeof v === "obj
 const list = (v) => (Array.isArray(v) ? v.filter((x) => x && typeof x === "object") : []);
 const nameOf = (b) => b.binding ?? b.name;
 
+// JSONC: the text's structural characters (outside strings and comments) by index, for parsing and for finding the
+// config's closing brace.
+function structure(text) {
+  const out = [];
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') { const j = i; for (i++; i < text.length && text[i] !== '"'; i++) if (text[i] === "\\") i++; out.push([j, text.slice(j, i + 1)]); }
+    else if (c === "/" && text[i + 1] === "/") { while (i < text.length && text[i] !== "\n") i++; }
+    else if (c === "/" && text[i + 1] === "*") { i = text.indexOf("*/", i + 2); if (i < 0) i = text.length; else i++; }
+    else if (!/\s/.test(c)) out.push([i, c]);
+  }
+  return out;
+}
+// Parsed JSONC (comments and trailing commas allowed; strings untouched), or null.
 export function parse(text) {
-  try { return JSON.parse(scan(text).source.replace(/,(\s*[}\]])/g, "$1")); } catch { return null; }
+  const t = structure(text ?? "");
+  const kept = t.filter(([, x], k) => !(x === "," && ["}", "]"].includes(t[k + 1]?.[1])));
+  try { return JSON.parse(kept.map(([, x]) => x).join("")); } catch { return null; }
 }
 
 export const hasData = (cfg) => KINDS.some(([k]) => DATA.has(k) && list(at(cfg, k)).length) || list(at(cfg, "queues.consumers")).length > 0
@@ -63,11 +78,13 @@ export function findings(cfg, { file, std = {}, pack = {}, required = [] }) {
     return { fails, warns };
   }
   if (stage.name !== undefined && stage.name === prodName) F("env.staging.name is the production Worker's name", `name it ${prodName}-staging, or remove it (that is the default)`);
-  const routes = (s) => [...list(s.routes), ...(s.route ? [typeof s.route === "string" ? { pattern: s.route } : s.route] : [])].map((r) => (typeof r === "string" ? r : r.pattern)).filter(Boolean);
+  const routes = (s) => [...(Array.isArray(s.routes) ? s.routes : []), ...(s.route ? [s.route] : [])].map((r) => (typeof r === "string" ? r : r?.pattern)).filter(Boolean);
   if ((cfg.routes !== undefined || cfg.route !== undefined) && stage.routes === undefined && stage.route === undefined)
     F("env.staging inherits the production routes", 'set env.staging.routes to staging hosts only (or [] with "workers_dev": true)');
-  // a route with previews_enabled is the Preview hostname, not production traffic
-  const prodRoutes = new Set(routes({ routes: list(cfg.routes).filter((r) => r.previews_enabled !== true).concat(Array.isArray(cfg.routes) ? cfg.routes.filter((r) => typeof r === "string") : []), route: cfg.route }));
+  // every production route except a Preview hostname that serves no production traffic (previews_enabled, enabled false)
+  const prodRoutes = new Set([...(Array.isArray(cfg.routes) ? cfg.routes : []), ...(cfg.route ? [cfg.route] : [])]
+    .filter((r) => !(r && typeof r === "object" && r.previews_enabled === true && r.enabled === false))
+    .map((r) => (typeof r === "string" ? r : r?.pattern)).filter(Boolean));
   for (const p of routes(stage)) if (prodRoutes.has(p)) F(`env.staging routes ${p}, a production route`, "give staging its own host");
   for (const [k] of KINDS) {
     const want = list(at(cfg, k)).map(nameOf).filter(Boolean), have = new Set(list(at(stage, k)).map(nameOf));
@@ -140,9 +157,7 @@ export function migrate(text, { portal = null } = {}) {
   if (cfg.previews === undefined) add.previews = { ...(Object.keys(vars("preview")).length ? { vars: vars("preview") } : {}), ...copy };
   const body = Object.entries(add).map(([k, v]) => `  ${JSON.stringify(k)}: ${JSON.stringify(v, null, 2).replace(/\n/g, "\n  ")}`).join(",\n");
   // The comma goes right after the last property (before any trailing comment), the new keys before the closing brace.
-  const end = text.lastIndexOf("}"), src = scan(text.slice(0, end)).source.trimEnd(), prev = src.at(-1);
-  let lo = 0, hi = end; // the shortest prefix holding all of the significant source
-  while (lo < hi) { const mid = (lo + hi) >> 1; if (scan(text.slice(0, mid)).source.trimEnd().length >= src.length) hi = mid; else lo = mid + 1; }
-  const head = prev === "," || prev === "{" ? text.slice(0, end) : text.slice(0, lo) + "," + text.slice(lo, end);
+  const t = structure(text), [end] = t.at(-1), [pos, prev] = t.at(-2); // the closing brace, and the token before it
+  const head = prev === "," || prev === "{" ? text.slice(0, end) : text.slice(0, pos + prev.length) + "," + text.slice(pos + prev.length, end);
   return head.replace(/[ \t]*$/, "").replace(/\n?$/, "\n") + body + "\n" + text.slice(end);
 }

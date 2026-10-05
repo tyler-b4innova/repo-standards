@@ -24,7 +24,7 @@ cat >"$T/bin/npx" <<'EOF'
 #!/usr/bin/env bash
 line="$*"; f=""; prev=""
 for a in "$@"; do [ "$prev" = --secrets-file ] && f=$a; prev=$a; done
-if [ -n "$f" ]; then line="$line | file $(stat -f %Lp "$f" 2>/dev/null || stat -c %a "$f") keys $(node -e 'console.log(Object.keys(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))).join(","))' "$f")"; echo "$f" >>"$FAKE/files"; fi
+if [ -n "$f" ]; then line="$line | file $(node -p "(require(\"fs\").statSync(process.argv[1]).mode & 0o777).toString(8)" "$f") keys $(node -e 'console.log(Object.keys(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))).join(","))' "$f")"; echo "$f" >>"$FAKE/files"; fi
 echo "$line" >>"$FAKE/npx.log"
 case "$line" in
   *"secret list"*) echo "⛅️ wrangler 4.147.0"; echo "[WARNING] beta"; cat "$FAKE/listed" ;;
@@ -137,11 +137,18 @@ cfg() { (cd "$1" && node -e "$(sed -n "s/^ *run: node -e '\(.*\)' >>.*/\1/p" "$1
 has "token_ref=" "$(cfg "$R")" && [ "$(cfg "$R" | head -1)" = "token_ref=" ] || why="$why; settings without cleanup: $(cfg "$R")"
 grep -q "::notice::PR Previews were not cleaned up" "$R/$WF" || why="$why; no inert notice"
 O=$T/ov.json; node -e 'const o=require(process.argv[1]);o.preview={cleanup:{token_ref:"op://ci/previews/token",account_ref:"op://ci/previews/account"}};require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$O"
+grep -q 'ref: ${{ github.event.repository.default_branch }}' "$R/.github/workflows/std-preview-cleanup.yml" || why="$why; cleanup does not check out the default branch"
 OVERLAY=$O apply "$R" >/dev/null; [ "$(cfg "$R" | tr '\n' ' ')" = "token_ref=op://ci/previews/token account_ref=op://ci/previews/account " ] || why="$why; settings with cleanup: $(cfg "$R")"
 node -e 'const o=require(process.argv[1]);o.preview={cleanup:{token_ref:"ghp_x"}};require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$O"
 out=$(OVERLAY=$O apply "$T/x" 2>&1) && why="$why; a bad cleanup ref was accepted"
 apply "$R" >/dev/null; rm -rf "$R/node_modules" # the clean-up job installs nothing: the current wrangler major
-# one closed pull request: its branch's Preview goes; one already gone is fine; staging is never deleted
+# one closed pull request: its branch's Preview goes; one already gone is fine; staging, and a Preview an open pull
+# request still uses (the same slug), are never deleted
+echo '{"open":[{"head":{"ref":"still/open","repo":{"full_name":"acme/demo"}}}],"closed":[]}' >"$T/state.json"
+node test/stubs/previews-github.mjs "$T/port" "$T/state.json" & STUB=$!
+for i in $(seq 50); do [ -s "$T/port" ] && break; sleep 0.1; done
+export GITHUB_API_URL="http://127.0.0.1:$(cat "$T/port")" GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t
+reset; o=$(rel "$R" cleanup --pr-branch "Still-Open"); has "exit=0" "$o" && has "keep still-open" "$o" && [ -z "$(log)" ] || why="$why; open PR's preview deleted: $o // $(log)"
 reset; o=$(rel "$R" cleanup --pr-branch "Feat/Login"); has "exit=0" "$o" && [ "$(log)" = "-y wrangler@4 preview delete --name feat-login --skip-confirmation" ] || why="$why; pr: $o // $(log)"
 reset; echo feat-login >"$T/gone"; o=$(rel "$R" cleanup --pr-branch "Feat/Login"); has "exit=0" "$o" && has "already gone" "$o" || why="$why; gone: $o"
 reset; echo feat-login >"$T/broken"; o=$(rel "$R" cleanup --pr-branch "Feat/Login"); has "exit=1" "$o" && has "could not delete Preview feat-login" "$o" || why="$why; error passed: $o"
@@ -156,9 +163,7 @@ cat >"$T/state.json" <<EOF
   {"head":{"ref":"done/two","repo":{"full_name":"someone/fork"}},"closed_at":"$now","updated_at":"$now"},
   {"head":{"ref":"ancient","repo":{"full_name":"acme/demo"}},"closed_at":"$old","updated_at":"$old"}]}
 EOF
-node test/stubs/previews-github.mjs "$T/port" "$T/state.json" & STUB=$!
-for i in $(seq 50); do [ -s "$T/port" ] && break; sleep 0.1; done
-reset; o=$(GITHUB_API_URL="http://127.0.0.1:$(cat "$T/port")" GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t rel "$R" cleanup --sweep)
+reset; o=$(rel "$R" cleanup --sweep)
 has "exit=0" "$o" && [ "$(log)" = "-y wrangler@4 preview delete --name done-one --skip-confirmation" ] && has "keep reopened-work" "$o" || why="$why; sweep: $o // $(log)"
 if [ -z "$why" ]; then ok preview-cleanup; else fail preview-cleanup "$why"; fi
 done_cases
