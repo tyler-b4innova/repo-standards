@@ -82,6 +82,8 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 
 - **`std-issue-shipped`**: the pack ships the `std-issue` skill (an idea becomes one complete issue in the launcher's required `## Goal` and `## Acceptance criteria` shape, with no model or run directives, and work too big for one PR is flagged), locked like every managed skill. Stated rule: one full-spec issue per piece of work; the text passed the launcher's readiness check across three vendors.
 
+- **`flow-staged-retired`**: `standards.json` `flow: "staged"` fails `--check`, naming the migration (merge staging into main, make main the default branch, delete staging, and give Workers Builds the one-branch release command); `direct` or no `flow` passes. Stated rule: one branch, `main`; a merge deploys staging and uploads the production version, and a person deploys that version.
+
 ## Pull requests and sync
 
 - **`pr-open-verified`**: the PR helper sends nothing on a dry run, refuses a branch that is not on GitHub, reuses the open PR, and prints a URL only after reading the PR back.
