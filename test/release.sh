@@ -51,7 +51,15 @@ put '{"checks":[{"name":"Workers Builds: demo","status":"completed","conclusion"
 o=$(rel "$R"); has "exit=1" "$o" && has "Cloudflare build failed for eeeeeee" "$o" || why="$why; failed build: $o"
 put '{"checks":[{"name":"Workers Builds: demo","status":"in_progress"}]}'
 o=$(rel "$R"); has "exit=1" "$o" && has "still running" "$o" || why="$why; running build: $o"
+# no build on this commit or its parent: a repository without Workers Builds tests staging as it stands
+P=$(git -C "$R" rev-parse HEAD); gc -C "$R" commit -q --allow-empty -m next; SHA=$(git -C "$R" rev-parse HEAD)
 put '{"checks":[]}'
 o=$(rel "$R"); has "exit=0" "$o" && has "no \"Workers Builds\" check" "$o" || why="$why; no builds: $o"
+# the parent had a build, so this commit's check is waited for, even when it is created late; never "absent" early
+put "{\"checksBy\":{\"$P\":[{\"name\":\"Workers Builds: demo\",\"status\":\"completed\",\"conclusion\":\"success\"}]}}"
+o=$(rel "$R"); has "exit=1" "$o" && has "no \"Workers Builds\" check on ${SHA:0:7}" "$o" && has "though the repository has Workers Builds" "$o" || why="$why; missing build treated as absent: $o"
+( sleep 2; printf '%s' "{\"checksBy\":{\"$P\":[{\"name\":\"Workers Builds: demo\",\"status\":\"completed\",\"conclusion\":\"success\"}],\"$SHA\":[{\"name\":\"Workers Builds: demo\",\"status\":\"completed\",\"conclusion\":\"success\"}]}}" > "$T/state.json" ) & LATE=$!
+o=$( (cd "$R" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_SHA=$SHA GATE_PREVIEW_WAIT_S=20 GATE_POLL_S=1 GITHUB_OUTPUT= node scripts/agent/gate.mjs release 2>&1); echo "exit=$?"); wait $LATE
+has "exit=0" "$o" && has "browsers=firefox,webkit" "$o" || why="$why; late check: $o"
 if [ -z "$why" ]; then ok release-browsers-on-main; else fail release-browsers-on-main "$why"; fi
 done_cases
