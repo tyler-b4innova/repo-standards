@@ -33,6 +33,8 @@ if ("legacy_env" in cfg && !redirected) { console.error("The legacy_env field is
 if (redirected && cfg.targetEnvironment && stage && cfg.targetEnvironment !== stage) { console.error("targetEnvironment does not match --env"); process.exit(1); }
 if (stage && cfg.env?.[stage]) cfg = { ...cfg, ...cfg.env[stage], name: cfg.env[stage].name ?? `${cfg.name}-${stage}` };
 let name = process.env.WRANGLER_CI_OVERRIDE_NAME ?? option("--name") ?? cfg.name;
+// Secret commands append the environment to an explicit --name.
+if (args[0] === "secret" && stage && option("--name")) name += `-${stage}`;
 // Optional local proof: the actual Wrangler parser/bundler and dotenv handling, dry-run only.
 // Normalize its structured result into the stub's output contract so release can finish offline.
 if (process.env.REAL_WRANGLER && process.env.MALICIOUS_DOTENV && ["deploy", "versions"].includes(args[0])) {
@@ -46,6 +48,15 @@ if (process.env.REAL_WRANGLER && process.env.MALICIOUS_DOTENV && ["deploy", "ver
 }
 appendFileSync(process.env.RELEASE_LOG, JSON.stringify({ args, controlledEmpty, account: process.env.CLOUDFLARE_ACCOUNT_ID ?? null, name, configName: cfg.name, env: process.env.CLOUDFLARE_ENV ?? null, overrideName: process.env.WRANGLER_CI_OVERRIDE_NAME ?? null, matchTag: process.env.WRANGLER_CI_MATCH_TAG ?? null, routes: cfg.routes }) + "\n");
 if (args[0] === "deploy") {
+  if (process.env.MISSING_STAGING && !option("--secrets-file") && cfg.secrets?.required?.length) {
+    console.error("required secrets have not been set");
+    process.exit(1);
+  }
+  if (process.env.MISSING_STAGING && option("--secrets-file")) {
+    const file = option("--secrets-file");
+    const values = JSON.parse(readFileSync(file, "utf8"));
+    if (cfg.secrets.required.some((key) => !values[key])) process.exit(1);
+  }
   console.log(`Uploaded ${process.env.WRONG_OUTPUT ? "site" : name} (1.0 sec)`);
   console.log(`Deployed ${process.env.WRONG_OUTPUT ? "site" : name} triggers (1.0 sec)`);
 }
