@@ -107,7 +107,7 @@ for (const f of fs.readdirSync(dir)) {
   const jobs=L.slice(j+1).filter(l=>/^  [A-Za-z0-9_-]+:\s*$/.test(l)).map(l=>l.trim().slice(0,-1));
   gates+=L.slice(j+1).filter(l=>/^    name: gate\s*$/.test(l)).length;
   if (f==="std-gate.yml") {
-    if (jobs.join()!=="gate") out.push("jobs: "+jobs.join());
+    if (jobs.join()!=="checks,build,e2e,repo,gate") out.push("jobs: "+jobs.join());
     const runs=L.slice(j+1).join("\n");
     for (const s of ["scripts/agent/setup.sh --check","gate.mjs secrets","gate.mjs install","gate.mjs run typecheck","gate.mjs run build","gate.mjs e2e","scripts/agent/gate.local.sh"])
       if (!runs.includes(s)) out.push("missing step: "+s);

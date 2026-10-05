@@ -81,7 +81,8 @@ put "{pr:{number:7,draft:true,head:{sha:\"$HEAD1\",ref:\"feat\"},base:{ref:\"mai
 put "{pr:{number:7,draft:false,head:{sha:\"$HEAD1\",ref:\"feat\"},base:{ref:\"main\"}}}"; d2=$(pl pull_request "$PRE")
 if [ "$d1 $d2" = "cheap full" ] && grep -q "if: steps.plan.outputs.mode == 'cheap'" "$GWF"; then ok draft-cheap-ready-full; else fail draft-cheap-ready-full "draft=$d1 ready=$d2"; fi
 # skip-never-greens-gate: no job-level if; a dispatch re-gate plans the pull request it names, never "not a pull request"
-jobif=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");console.log(/^ {4}if:/m.test(y.slice(y.indexOf("jobs:"))))' "$GWF")
+# the required gate job never skips: its only job-level if is always() (the tail's skips are judged by its verdict)
+jobif=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8"),g=y.slice(y.indexOf("\n  gate:"));console.log(!/^ {4}if: always\(\)$/m.test(g)||/^ {4}if: (?!always\(\)$)/m.test(g))' "$GWF")
 dg=$(pl workflow_dispatch '{"inputs":{"pr":"7"}}')
 if [ "$jobif" = false ] && [ "$dg" = full ]; then ok skip-never-greens-gate; else fail skip-never-greens-gate "jobif=$jobif dispatch-mode=$dg"; fi
 # e2e-chromium-default: a pull request from the default branch into main is no promotion: gate plans Chromium only,
