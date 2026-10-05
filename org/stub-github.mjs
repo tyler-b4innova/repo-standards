@@ -44,6 +44,7 @@ createServer((req, res) => {
     if ((m = rest.match(/^properties\/schema\/(.+)$/))) {
       if (req.method === "GET") return st.property?.property_name === m[1] ? send(200, st.property) : send(404, { message: "Not Found" });
       if (req.method === "PUT") { st.property = { property_name: m[1], ...body }; save(); return send(200, st.property); }
+      if (req.method === "DELETE") { st.property = null; st.values = {}; save(); return send(204); }
     }
     if (rest === "properties/values") {
       if (req.method === "GET") return send(200, st.repos.map((r) => ({ repository_name: r.name, properties: st.values?.[r.name] ? [{ property_name: "flow", value: st.values[r.name] }] : [] })));

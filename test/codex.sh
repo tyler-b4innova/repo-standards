@@ -84,6 +84,13 @@ if [ "$d1 $d2" = "cheap full" ] && grep -q "if: steps.plan.outputs.mode == 'chea
 jobif=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");console.log(/^ {4}if:/m.test(y.slice(y.indexOf("jobs:"))))' "$GWF")
 dg=$(pl workflow_dispatch '{"inputs":{"pr":"7"}}')
 if [ "$jobif" = false ] && [ "$dg" = full ]; then ok skip-never-greens-gate; else fail skip-never-greens-gate "jobif=$jobif dispatch-mode=$dg"; fi
+# e2e-chromium-default: a pull request from the default branch into main is no promotion: gate plans Chromium only,
+# whatever browsers the repository names (those run on main, before release)
+cp "$R/standards.json" "$T/std.plan"; node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f));o.e2e={browsers:["firefox"]};require("fs").writeFileSync(f,JSON.stringify(o))' "$R/standards.json"
+put "{pr:{number:7,draft:false,head:{sha:\"$HEAD1\",ref:\"staging\",repo:{full_name:\"acme/demo\"}},base:{ref:\"main\"}},info:{default_branch:\"staging\",custom_properties:{flow:\"staged\"}}}"
+echo "$PRE" > "$T/pev.json"; pb=$( (cd "$R" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$T/pev.json" GITHUB_OUTPUT= node scripts/agent/gate.mjs plan 2>&1) | sed -n 's/^browsers=//p')
+cp "$T/std.plan" "$R/standards.json"
+if [ "$pb" = chromium ]; then ok e2e-chromium-default; else fail e2e-chromium-default "default-branch PR planned browsers=$pb"; fi
 
 # ---- the head's Workers Builds preview: a failed Cloudflare build fails gate; the URL comes from the bot comment
 CF='{user:{login:"cloudflare-workers-and-pages[bot]"},body:"## Deploying\n### Preview URL: https://feat.preview.example.test, https://feat-demo.example.test (commit '"${HEAD1:0:7}"')\n"}'
@@ -143,9 +150,9 @@ cp "$T/std.keep" "$R/standards.json"; w3=$(pb '[]' ""); w4=$?
 if [ $w2 -eq 0 ] && has "preview: none" "$w1" && ! has "Workers Builds" "$w1" && [ $w4 -eq 1 ] && has "no \"Workers Builds\" check on $H7" "$w3"; then ok e2e-false-skips-preview
 else fail e2e-false-skips-preview "e2e-false=$w2 (want 0) still-gated=$w4 (want 1): $w1 | $w3"; fi
 
-# ---- review-rule-reads-base: the rule and its settings come from the current base branch (a PR cannot bring its own);
-# a promotion (this repo's default branch into another) is judged by the default branch's pack, a fork's same-named
-# branch is not; a stale pull.base.sha is resolved through the branch. A null verdict here: no pack at the ref read.
+# ---- review-rule-reads-base: the rule and its settings come from the current base branch (a PR cannot bring its own),
+# even when the head is this repository's default branch (there are no promotions); a stale pull.base.sha is resolved
+# through the branch. A null verdict here: no pack at the ref read.
 SUM="{user:b,updated_at:new Date().toISOString(),body:'<!-- codex-pull-request-review-summary -->\\n| 📝 **Code Review** | ✅ **Completed** now | \`${HEAD1:0:7}\` | x |'}"
 base="pr:{number:7,draft:false,state:'open',html_url:'https://github.com/acme/demo/pull/7',user:{login:'alice'},head:{sha:'$HEAD1',ref:'feat'},base:{ref:'main'}},comments:{7:[$SUM]},recent:[],pushed:new Date(Date.now()-300000).toISOString(),timeline:[],threads:[]"
 PACKFILE="{content:Buffer.from(require('fs').readFileSync('$PACK')).toString('base64')}"
@@ -155,6 +162,6 @@ put "{$PROMO,files:{'scripts/agent/pack.json@$HEAD1':$PACKFILE}}"; rb2=$(rv)
 put "{${PROMO/acme\/demo/someone\/demo},files:{'scripts/agent/pack.json@$HEAD1':$PACKFILE}}"; rb3=$(rv)
 put "{$base,branchHeads:{main:'$HEAD1'},files:{'scripts/agent/pack.json@$HEAD1':$PACKFILE}}"
 node -e 'const f=process.argv[1],s=require(f);s.pr.base.sha=process.argv[2];require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json" "$OLD"; rb4=$(rv)
-if has "not judged" "$rb1" && has "review success" "$rb2" && has "not judged" "$rb3" && has "review success" "$rb4"; then ok review-rule-reads-base
-else fail review-rule-reads-base "head-pack-only=$rb1 | promotion=$rb2 | fork=$rb3 | stale-base-sha=$rb4"; fi
+if has "not judged" "$rb1" && has "not judged" "$rb2" && has "not judged" "$rb3" && has "review success" "$rb4"; then ok review-rule-reads-base
+else fail review-rule-reads-base "head-pack-only=$rb1 | default-branch-head=$rb2 | fork=$rb3 | stale-base-sha=$rb4"; fi
 done_cases

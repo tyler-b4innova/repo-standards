@@ -66,9 +66,12 @@ else {
     const e2eOk = e === undefined || e === false || (typeof e === "string" && e.trim()) || (eo && Object.keys(e).every((k) => ["command", "browsers", "preview", "budget"].includes(k))
       && (e.command === undefined || (typeof e.command === "string" && e.command.trim())) && (e.browsers === undefined || (Array.isArray(e.browsers) && e.browsers.every((b) => ["chromium", "firefox", "webkit"].includes(b))))
       && [undefined, false].includes(e.preview) && (e.budget === undefined || (typeof e.budget === "number" && e.budget > 0)));
-    if (!e2eOk) fail(`standards.json e2e is ${JSON.stringify(e)}`, 'use false (docs/static only), the e2e command, or {"command", "browsers" (promotion PRs), "preview": false, "budget" (minutes, tighter only)}');
+    if (!e2eOk) fail(`standards.json e2e is ${JSON.stringify(e)}`, 'use false (docs/static only), the e2e command, or {"command", "browsers" (extra, run on main against staging_url), "preview": false, "budget" (minutes, tighter only)}');
     if (std.deploy_workflow !== undefined && !(typeof std.deploy_workflow === "string" && /^[\w.-]+\.ya?ml$/.test(std.deploy_workflow)))
-      fail(`standards.json deploy_workflow is ${JSON.stringify(std.deploy_workflow)}`, "name the one deploy workflow file, e.g. deploy.yml"); one("flow", [undefined, "staged", "direct"]); one("design_signoff", [undefined, true, false]);
+      fail(`standards.json deploy_workflow is ${JSON.stringify(std.deploy_workflow)}`, "name the one deploy workflow file, e.g. deploy.yml"); 
+    if (std.flow !== "staged") one("flow", [undefined, "direct"]);
+    else fail('standards.json flow "staged" is retired (one branch: main; a merge deploys staging and uploads the production version)',
+      "merge staging into main, make main the default branch, delete staging, give Workers Builds' main trigger the one-branch release command, then remove flow"); one("design_signoff", [undefined, true, false]);
     if (std.allow_paths !== undefined && !(Array.isArray(std.allow_paths) && std.allow_paths.every((g) => typeof g === "string" && g.trim())))
       fail(`standards.json allow_paths is ${JSON.stringify(std.allow_paths)}`, 'a list of globs, e.g. ["plugins/*/.mcp.json"]');
     if (!/^\d+\.\d+\.\d+$/.test(std.version ?? "")) fail("standards.json version is not X.Y.Z", restore("standards.json"));
@@ -77,6 +80,11 @@ else {
     if (!(globs(ui) || (ui && typeof ui === "object" && globs(ui.include) && globs(ui.ignore))))
       fail("standards.json ui_paths must be a glob list or {include, ignore}", "fix it, or delete it for the engine defaults");
     if (!globs(std.risk_paths)) fail("standards.json risk_paths must be a glob list", "fix it, delete it for the engine defaults, or [] for none");
+    // staging_url: where the release check runs the extra browsers (the staging Preview), required when any are named
+    const extra = (Array.isArray(e?.browsers) && e.browsers.length > 0) || (pack.e2e_release_browsers ?? []).length > 0;
+    const https = (u) => { try { return new URL(u).protocol === "https:"; } catch { return false; } };
+    if ((std.staging_url !== undefined || extra) && !https(std.staging_url))
+      fail(`standards.json staging_url is ${JSON.stringify(std.staging_url)}${extra ? " (extra browsers run against it on main)" : ""}`, 'the staging Preview\'s https URL, e.g. "https://staging.preview.example.com/"');
     // production_urls: what the org launcher smoke-tests after a production deploy
     if (std.production_urls !== undefined && !(Array.isArray(std.production_urls) && std.production_urls.every((u) => { try { return new URL(u).protocol === "https:"; } catch { return false; } })))
       fail(`standards.json production_urls is ${JSON.stringify(std.production_urls)}`, 'a list of absolute https URLs, e.g. ["https://example.com/"]');

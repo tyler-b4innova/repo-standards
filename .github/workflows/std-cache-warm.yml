@@ -3,7 +3,7 @@
 name: std-cache-warm
 on:
   push:
-    branches: [main, staging]
+    branches: [main]
     paths: [package-lock.json, pnpm-lock.yaml, yarn.lock]
 permissions:
   contents: read

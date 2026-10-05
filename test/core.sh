@@ -463,6 +463,14 @@ R=$(mkrepo); f=$R/.claude/skills/std-issue/SKILL.md; why=""
 grep -qx "name: std-issue" "$f" 2>/dev/null && grep -q '`## Goal`' "$f" && grep -q '`## Acceptance criteria`' "$f" && grep -q "never a model, subagent, lane, effort" "$f" || why="$why; content"
 if [ -z "$why" ]; then ok std-issue-shipped; else fail std-issue-shipped "$why"; fi
 
+# one-branch releases: the staged flow (a staging branch promoted to main) is gone; `direct` or no flow passes
+why=""
+R=$(mkrepo); check "$R" >/dev/null || why="no flow failed"
+jset "$R/standards.json" 'o.flow="direct"'; commit "$R"; check "$R" >/dev/null || why="$why; direct failed"
+jset "$R/standards.json" 'o.flow="staged"'; commit "$R"; out=$(check "$R"); st=$?
+[ $st -eq 1 ] && has 'standards.json flow "staged" is retired' "$out" && has "merge staging into main" "$out" || why="$why; staged: $out"
+if [ -z "$why" ]; then ok flow-staged-retired; else fail flow-staged-retired "$why"; fi
+
 # ---- pack hygiene
 out=$(python3 -c 'import sys,yaml; [yaml.safe_load(open(f)) for f in sys.argv[1:]]' template/.github/workflows/*.yml 2>&1)
 if [ $? -eq 0 ]; then ok workflows-parse; else fail workflows-parse "$out"; fi

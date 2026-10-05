@@ -1,17 +1,5 @@
 {
-  "$comment": "Org-level rulesets every org gets. `org/apply.mjs` renders them with the overlay's `org_admin` (App bypass, strict checks, extra checks per ruleset, extra restricted and ignored push paths, max file size, an external push ruleset) and owns every organization-level ruleset: names not listed here are deleted on apply. `$`-prefixed strings are overlay placeholders. Every PR ruleset requires resolved review threads; code-owner review (the managed CODEOWNERS block for a repo's ui_paths) is required on main only: the direct repos' default branch and main, and staged repos' main. Strict status checks (`strict_status_checks`) apply only where ordinary PRs land: the direct repos' ruleset and staging (their `gate` rule is always present; only its strict flag follows the overlay); never on a ruleset that covers staged repos' main, because promotions leave main ahead by merge commits staging never gets, so strict would hold every promotion BEHIND.",
-  "property": {
-    "property_name": "flow",
-    "value_type": "single_select",
-    "allowed_values": [
-      "direct",
-      "staged"
-    ],
-    "required": true,
-    "default_value": "direct",
-    "values_editable_by": "org_actors",
-    "description": "direct: work merges to the default branch. staged: work merges to staging (the default branch) and is promoted to main."
-  },
+  "$comment": "Org-level rulesets every org gets. `org/apply.mjs` renders them with the overlay's `org_admin` (App bypass, strict checks, extra checks, extra restricted and ignored push paths, max file size, an external push ruleset) and owns every organization-level ruleset: names not listed here are deleted on apply. `$`-prefixed strings are overlay placeholders. One branch, `main`: work squash-merges to the default branch, every PR ruleset requires resolved review threads, and code-owner review (the managed CODEOWNERS block for a repo's ui_paths) is required on the default branch and main. Strict status checks (`strict_status_checks`) apply on the squash-merge ruleset (its `gate` rule is always present; only its strict flag follows the overlay).",
   "rulesets": [
     {
       "name": "org: default branch and main (PR + gate)",
@@ -71,7 +59,7 @@
       ]
     },
     {
-      "name": "org: direct repos squash-merge",
+      "name": "org: squash-merge with code-owner review",
       "target": "branch",
       "conditions": {
         "ref_name": {
@@ -81,17 +69,12 @@
           ],
           "exclude": []
         },
-        "repository_property": {
+        "repository_name": {
           "include": [
-            {
-              "name": "flow",
-              "source": "custom",
-              "property_values": [
-                "direct"
-              ]
-            }
+            "~ALL"
           ],
-          "exclude": []
+          "exclude": [],
+          "protected": false
         }
       },
       "rules": [
@@ -114,105 +97,6 @@
                 "context": "gate",
                 "integration_id": "$gate_integration_id"
               }
-            ]
-          }
-        }
-      ]
-    },
-    {
-      "name": "org: staged main takes promotions (merge commit)",
-      "target": "branch",
-      "conditions": {
-        "ref_name": {
-          "include": [
-            "refs/heads/main"
-          ],
-          "exclude": []
-        },
-        "repository_property": {
-          "include": [
-            {
-              "name": "flow",
-              "source": "custom",
-              "property_values": [
-                "staged"
-              ]
-            }
-          ],
-          "exclude": []
-        }
-      },
-      "rules": [
-        {
-          "type": "pull_request",
-          "parameters": {
-            "require_code_owner_review": true,
-            "allowed_merge_methods": [
-              "merge"
-            ]
-          }
-        },
-        {
-          "type": "required_status_checks",
-          "parameters": {
-            "strict_required_status_checks_policy": false,
-            "do_not_enforce_on_create": true,
-            "required_status_checks": [
-              {
-                "context": "gate",
-                "integration_id": "$gate_integration_id"
-              },
-              "$extra_checks.staged_main"
-            ]
-          }
-        }
-      ]
-    },
-    {
-      "name": "org: staging (PR + gate, squash)",
-      "target": "branch",
-      "conditions": {
-        "ref_name": {
-          "include": [
-            "refs/heads/staging"
-          ],
-          "exclude": []
-        },
-        "repository_name": {
-          "include": [
-            "~ALL"
-          ],
-          "exclude": [],
-          "protected": false
-        }
-      },
-      "rules": [
-        {
-          "type": "deletion"
-        },
-        {
-          "type": "non_fast_forward"
-        },
-        {
-          "type": "pull_request",
-          "parameters": {
-            "required_review_thread_resolution": true,
-            "allowed_merge_methods": [
-              "squash"
-            ]
-          }
-        },
-        {
-          "type": "required_status_checks",
-          "parameters": {
-            "strict_required_status_checks_policy": "$strict_status_checks",
-            "do_not_enforce_on_create": true,
-            "required_status_checks": [
-              {
-                "context": "gate",
-                "integration_id": "$gate_integration_id"
-              },
-              "$extra_checks.staging"
             ]
           }
         }

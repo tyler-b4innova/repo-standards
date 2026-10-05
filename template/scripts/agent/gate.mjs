@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Steps of the `gate` job (std-gate.yml), also runnable locally:
-//   plan | classify [base] | install | run <script>... | preview | e2e | secrets | syntax
+//   plan | classify [base] | install | run <script>... | preview | release | e2e | secrets | syntax
 // UI paths: pack.json defaults; standards.json "ui_paths" as a list replaces the include globs,
 // as {include, ignore} replaces include and adds ignore. e2e: none fails unless "e2e": false.
 import { execFileSync as ex, spawnSync } from "node:child_process";
@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { scan } from "./jsscan.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
-const SUBS = ["plan", "classify", "install", "run", "preview", "e2e", "secrets", "syntax"], ok = SUBS.includes(cmd);
+const SUBS = ["plan", "classify", "install", "run", "preview", "release", "e2e", "secrets", "syntax"], ok = SUBS.includes(cmd);
 if (!ok || args.includes("--help")) {
   console.log(rd(new URL(import.meta.url), "utf8").split("\n").slice(1, 6).map((l) => l.slice(3)).join("\n"));
   process.exit(ok || cmd === "--help" ? 0 : 2);
@@ -32,7 +32,7 @@ const event = env.GITHUB_EVENT_PATH ? json(env.GITHUB_EVENT_PATH) ?? {} : {};
 const prNumber = event.pull_request?.number ?? (env.GITHUB_EVENT_NAME === "workflow_dispatch" && /^\d+$/.test(event.inputs?.pr ?? "") ? Number(event.inputs.pr) : null);
 const pack = json("scripts/agent/pack.json") ?? {};
 const e2eCfg = typeof std.e2e === "object" && std.e2e ? std.e2e : {}, e2eCmd = typeof std.e2e === "string" ? std.e2e : e2eCfg.command;
-// Browsers for this run: Chromium, plus the repo's (and overlay's) extra browsers on promotion PRs only (plan sets GATE_BROWSERS).
+// Browsers for this run: Chromium on pull requests; the release check sets the repo's (and overlay's) extra browsers.
 const browsers = () => (env.GATE_BROWSERS || "chromium").split(",").filter(Boolean);
 const output = (k, v) => { console.log(`${k}=${v}`); if (env.GITHUB_OUTPUT) writeFileSync(env.GITHUB_OUTPUT, `${k}=${v}\n`, { flag: "a" }); };
 const ghApi = () => {
@@ -131,15 +131,10 @@ if (cmd === "plan") {
   let mode = "full", why = "build and test this head";
   const pr = prNumber ? await get(`/pulls/${prNumber}`) : null;
   if (pr?.draft) { mode = "cheap"; why = "draft: the full gate runs from ready_for_review"; }
-  let list = ["chromium"];
-  if (pr) {
-    const info = (await get("", { need: false })) ?? {}, flow = std.flow ?? info.custom_properties?.flow;
-    if (flow === "staged" && pr.head?.repo?.full_name === env.GITHUB_REPOSITORY && pr.head.ref === info.default_branch && pr.base.ref !== info.default_branch)
-      list = [...new Set([...list, ...(e2eCfg.browsers ?? []), ...(pack.e2e_promotion_browsers ?? [])])];
-  }
+  // Pull requests run Chromium only; a repository's extra browsers run on main, against staging, before a release.
   console.log(`plan: ${mode} (${why})`);
   output("mode", mode);
-  output("browsers", list.join(","));
+  output("browsers", "chromium");
 } else if (cmd === "syntax") {
   // The cheap gate's stand-in for building: managed scripts and workflows must at least parse.
   const bad = [], yaml = spawnSync("python3", ["-c", "import yaml"]).status === 0;
@@ -194,6 +189,31 @@ if (cmd === "plan") {
     "turn on the Worker's preview URLs (Workers Builds) so each build comments its URL, then re-run gate; or set standards.json e2e.preview to false");
   console.log(`preview: ${url} (${short})`);
   output("url", url);
+} else if (cmd === "release") {
+  // The release check (std-release-check.yml, on main): wait for this commit's Workers Builds (staging Preview and the
+  // uploaded production version), then name the extra browsers and the staging URL for the install and e2e steps.
+  const get = ghApi(), sha = env.GITHUB_SHA ?? git("rev-parse", "HEAD").trim(), short = sha.slice(0, 7);
+  const name = pack.preview?.check_name ?? "Workers Builds";
+  const builds = async (c) => ((await get(`/commits/${c}/check-runs?per_page=100`))?.check_runs ?? []).filter((x) => x.name?.startsWith(name));
+  // The check can be created late: where the parent commit had a build, this commit's is waited for, not taken as absent.
+  let parent = null;
+  try { parent = git("rev-parse", `${sha}^`).trim(); } catch {}
+  const hasBuilds = (await builds(sha)).length > 0 || (parent ? (await builds(parent)).length > 0 : false);
+  const wait = Number(env.GATE_PREVIEW_WAIT_S ?? 480) * 1000, poll = Number(env.GATE_POLL_S ?? 15) * 1000, start = Date.now();
+  if (!hasBuilds) console.log(`release: no "${name}" check on ${short} or its parent; testing staging as it stands`);
+  else for (;;) {
+    const runs = await builds(sha);
+    const red = runs.find((c) => c.status === "completed" && !["success", "skipped"].includes(c.conclusion));
+    if (red) fail(`Cloudflare build failed for ${short}: ${red.name} ${red.conclusion} (${red.details_url})`, "fix the Worker build on main; staging and the uploaded version come from it");
+    if (runs.length && runs.every((c) => c.status === "completed")) break;
+    if (Date.now() - start >= wait)
+      fail(runs.length ? `the Cloudflare build for ${short} is still running after ${wait / 1000}s` : `no "${name}" check on ${short} after ${wait / 1000}s, though the repository has Workers Builds`, "re-run the release check once the build finishes");
+    await new Promise((r) => setTimeout(r, poll));
+  }
+  const extra = [...new Set([...(e2eCfg.browsers ?? []), ...(pack.e2e_release_browsers ?? [])])];
+  console.log(`release: ${extra.join(", ")} against ${std.staging_url} (${short})`);
+  output("browsers", extra.join(","));
+  output("url", std.staging_url ?? "");
 } else if (cmd === "classify") {
   // Codex cloud has no origin: fall back to a local default branch, then to HEAD itself (uncommitted and untracked
   // files only). Never the branch's upstream: that is usually the pushed feature head, which would hide its changes.
@@ -231,7 +251,7 @@ if (cmd === "plan") {
   // standards.json "e2e": "<command>" names the suite; else a script, a tests/e2e or e2e dir, or a root Playwright config.
   const script = ["test:e2e", "e2e"].find((s) => pkg?.scripts?.[s]), dir = ["tests/e2e", "e2e"].find(has);
   const rootPw = ls(".").some((f) => /^playwright\.config\.[cm]?[jt]s$/.test(f)), pw = rootPw || (dir && ls(dir).some((f) => /^playwright\.config\.[cm]?[jt]s$/.test(f)));
-  // Playwright runs this run's browsers only (Chromium unless a promotion opts in more), when the config defines
+  // Playwright runs this run's browsers only (Chromium unless the release check opts in more), when the config defines
   // those projects; a config without projects runs as it is.
   const cfgFile = [...(rootPw ? ls(".") : []), ...(dir && !rootPw ? ls(dir).map((f) => `${dir}/${f}`) : [])].find((f) => /(^|\/)playwright\.config\.[cm]?[jt]s$/.test(f));
   const cfg = cfgFile ? rd(cfgFile, "utf8") : "", named = (b) => new RegExp(`name:\\s*['"\`]${b}['"\`]`).test(cfg);
@@ -249,20 +269,24 @@ if (cmd === "plan") {
   if (e2eCfg.budget !== undefined && !(typeof e2eCfg.budget === "number" && e2eCfg.budget > 0)) fail(`standards.json e2e.budget is ${JSON.stringify(e2eCfg.budget)}`, "minutes above 0 (it may only tighten the org budget)");
   const mins = Math.min(e2eCfg.budget ?? Infinity, pack.gate_budget?.e2e ?? 5), ms = Math.round(mins * 60000);
   const url = env.GATE_PREVIEW_URL ?? "";
-  // A client site's preview must not be indexed: its home page's robots meta (or X-Robots-Tag) says noindex. The fetch
-  // and its body read stop at the e2e budget, and the suite gets only the time left.
+  // A client site's preview must not be indexed: its home page and a page only the Worker can answer (a 404; static
+  // _headers rules do not cover Worker-rendered responses) both say noindex, in a robots meta or X-Robots-Tag. The
+  // fetches and their body reads stop at the e2e budget, and the suite gets only the time left.
   const started = Date.now();
   if (url && pack.profile === "client") {
-    let res = null, html = "";
-    try { res = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(ms) }); html = await res.text(); }
-    catch (e) { fail(e.name === "TimeoutError" || e.name === "AbortError" ? `the preview at ${url} did not answer within the e2e budget (${mins} min)` : `the preview at ${url} did not answer: ${e.cause?.code ?? e.message}`, "re-run gate once the preview is up"); }
     const directives = (v) => v.toLowerCase().split(",").map((d) => d.replace(/^[^:]*:/, "").trim());
     const attrs = (tag) => Object.fromEntries([...tag.matchAll(/([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g)].map((a) => [a[1].toLowerCase(), a[2] ?? a[3] ?? a[4]]));
-    // Only active markup counts: not inside an HTML comment, <noscript> or <template>.
-    const active = html.replace(/<!--[\s\S]*?-->/g, "").replace(/<(noscript|template)\b[\s\S]*?<\/\1\s*>/gi, "");
-    const meta = [...active.matchAll(/<meta\b[^>]*>/gi)].map(([t]) => attrs(t)).some((a) => /^(robots|googlebot)$/i.test(a.name ?? "") && directives(a.content ?? "").some((d) => ["noindex", "none"].includes(d)));
-    if (!meta && !directives(res.headers.get("x-robots-tag") ?? "").some((d) => ["noindex", "none"].includes(d)))
-      fail(`the preview at ${url} carries no noindex (robots meta or X-Robots-Tag)`, "previews must not be indexed: render <meta name=\"robots\" content=\"noindex\"> on every non-production host");
+    const signal = AbortSignal.timeout(ms);
+    for (const page of [url, new URL("/__std-noindex-probe", url).href]) {
+      let res = null, html = "";
+      try { res = await fetch(page, { redirect: "follow", signal }); html = await res.text(); }
+      catch (e) { fail(e.name === "TimeoutError" || e.name === "AbortError" ? `the preview at ${page} did not answer within the e2e budget (${mins} min)` : `the preview at ${page} did not answer: ${e.cause?.code ?? e.message}`, "re-run gate once the preview is up"); }
+      // Only active markup counts: not inside an HTML comment, <noscript> or <template>.
+      const active = html.replace(/<!--[\s\S]*?-->/g, "").replace(/<(noscript|template)\b[\s\S]*?<\/\1\s*>/gi, "");
+      const meta = [...active.matchAll(/<meta\b[^>]*>/gi)].map(([t]) => attrs(t)).some((a) => /^(robots|googlebot)$/i.test(a.name ?? "") && directives(a.content ?? "").some((d) => ["noindex", "none"].includes(d)));
+      if (!meta && !directives(res.headers.get("x-robots-tag") ?? "").some((d) => ["noindex", "none"].includes(d)))
+        fail(`the preview at ${page} carries no noindex (robots meta or X-Robots-Tag)`, "previews must not be indexed: send X-Robots-Tag: noindex on every non-production host, from public/_headers for static files and from the middleware for Worker-rendered responses");
+    }
     console.log(`preview noindex: ok (${url})`);
   }
   const left = ms - (Date.now() - started);
@@ -271,7 +295,7 @@ if (cmd === "plan") {
     console.log(`e2e: ${run[0]} ${run[1].map((a) => (a.includes("*") ? `"${a}"` : a)).join(" ")}${url ? ` against ${url}` : ""} (budget ${mins} min)`);
     const r = spawnSync(run[0], run[1], { stdio: "inherit", timeout: left, killSignal: "SIGKILL",
       env: { ...env, PW_GLOBAL_TIMEOUT: String(left), ...(url && { PLAYWRIGHT_BASE_URL: url, BASE_URL: url }) } });
-    if (r.error?.code === "ETIMEDOUT" || r.signal) fail(`e2e exceeded its ${mins}-minute budget`, "make the slow tests faster (fewer navigations, the preview URL), then move the slow tail to promotion PRs; do not shard");
+    if (r.error?.code === "ETIMEDOUT" || r.signal) fail(`e2e exceeded its ${mins}-minute budget`, "make the slow tests faster (fewer navigations, the preview URL), then move the slow tail to the release check on main; do not shard");
     if (r.status) process.exit(r.status);
   }
   else fail("no e2e suite (test:e2e or e2e script; tests/e2e/ or e2e/ with playwright.config.* or *.test.*js)",

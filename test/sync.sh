@@ -28,12 +28,13 @@ seed acme/gamma '{"pack":"example","version":"0.1.0","profile":"internal","dispa
 seed acme/other "$(std rival internal)"
 seed acme/old "$(std example internal)"
 seed acme/plain
+seed acme/delta "$(std example internal)"
 seed acme/skipme "$(std example internal)"
 seed rival/x "$(std example internal)"
 cat >"$T/stub.json" <<JSON
 { "remotes": "$R",
   "repos": [{"full_name":"acme/alpha"},{"full_name":"acme/beta"},{"full_name":"acme/boot"},{"full_name":"acme/gamma"},{"full_name":"acme/other"},
-            {"full_name":"acme/old","archived":true},{"full_name":"acme/plain"},{"full_name":"acme/skipme"},{"full_name":"acme/standards"},{"full_name":"rival/x"}],
+            {"full_name":"acme/old","archived":true},{"full_name":"acme/plain"},{"full_name":"acme/delta","custom_properties":{"flow":"staged"}},{"full_name":"acme/skipme"},{"full_name":"acme/standards"},{"full_name":"rival/x"}],
   "gate": {"acme/beta": "failure", "acme/boot": ["failure", "success"]},
   "move": {"acme/alpha": "standards/v0.2.0"},
   "variables": {"acme/standards": {"APP_KEY_ISSUED": "2000-01-01"}},
@@ -65,6 +66,7 @@ overlay() { # overlay [block line]: the test org's overlay, pinned to this engin
 overlay
 API=http://127.0.0.1:$GP
 sync() { env -u GITHUB_GRAPHQL_URL GH_TOKEN=test-token GITHUB_API_URL=$API SYNC_GIT_BASE=file://$R node bin/repo-standards.mjs sync --overlay "$OV" $([ "$(node -p 'require("./package.json").breaking===true')" = true ] && ! printf '%s\n' "$@" | grep -qx -- --dry-run && echo --proven) "$@" 2>&1; }
+has_text() { case "$2" in *"$1"*) return 0 ;; esac; return 1; }
 mark() { wc -l <"$LOG" | tr -d ' '; }
 between() { sed -n "$(($1 + 1)),$2p" "$LOG"; } # log lines after mark $1 up to mark $2
 writes_since() { tail -n +"$(($1 + 1))" "$LOG" | grep -v '"method":"GET"' || true; }
@@ -139,11 +141,18 @@ plain_writes=$(between "$m1" "$e1" | grep -v '"method":"GET"' | grep -c '/repos/
 if [ "$plain_row" = "| acme/plain | - | none | not in fleet: no standards.json |" ] && [ -z "$rest" ] && [ "$plain_writes" = 0 ] && [ "$(sha acme/plain main)" = "$(git -C "$T/seed/acme/plain" rev-parse HEAD)" ]; then ok sync-lists-off-fleet
 else fail sync-lists-off-fleet "plain=$plain_row rest=$rest writes=$plain_writes"; fi
 
-# A staged repository whose default branch is main never takes a direct landing.
+# A repository still on the retired staged flow gets no landing: its offline check names the migration, so a person
+# gets the PR (sync knows no integration branch).
 g_row=$(q acme/standards 's.items.find(i => !i.pull && i.title === "Standards compliance")?.body' | grep '^| acme/gamma ')
-g_prs=$(q acme/gamma 's.items.filter(i => i.pull).length')
-if [ -n "$(printf '%s' "$g_row" | grep 'staged repo defaults to main')" ] && [ "$g_prs" -ge 1 ] && [ "$(git --git-dir "$R/acme/gamma.git" rev-list --count main)" = 1 ]; then ok sync-lands-without-gate
-else fail sync-lands-without-gate "staged repo on main: row=$g_row prs=$g_prs"; fi
+g_body=$(q acme/gamma 's.items.filter(i => i.pull).map(p => p.body).join(" ")')
+if [ -n "$(printf '%s' "$g_row" | grep 'offline check failed')" ] && has_text 'flow "staged" is retired' "$g_body" && [ "$(git --git-dir "$R/acme/gamma.git" rev-list --count main)" = 1 ]; then ok sync-lands-without-gate
+else fail sync-lands-without-gate "staged repo: row=$g_row body=$g_body"; fi
+
+# ... and so does one whose org `flow` property still says staged, though its standards.json names no flow
+d_row=$(q acme/standards 's.items.find(i => !i.pull && i.title === "Standards compliance")?.body' | grep '^| acme/delta ')
+d_body=$(q acme/delta 's.items.filter(i => i.pull).map(p => p.body).join(" ")')
+if [ -n "$(printf '%s' "$d_row" | grep 'still on the staged flow')" ] && has_text 'org property flow is "staged"' "$d_body" && [ "$(git --git-dir "$R/acme/delta.git" rev-list --count main)" = 1 ]; then ok sync-lands-without-gate
+else fail sync-lands-without-gate "staged by property: row=$d_row body=$d_body"; fi
 
 # sync-opens-pr-when-red: beta's applied tree fails the offline check, so one PR for a person naming the failure, no
 # auto-merge, beta's main untouched; the next release supersedes it; a PR a person closed is not reopened.

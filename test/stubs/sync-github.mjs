@@ -67,7 +67,7 @@ createServer((req, res) => {
     if ((m = p.match(/^\/orgs\/([^/]+)\/repos$/))) return send(200, cfg.repos.filter((r) => r.full_name.startsWith(`${m[1]}/`)));
     if (!(m = p.match(/^\/repos\/([^/]+\/[^/]+)(?:\/(.*))?$/))) return send(404, { message: `stub: no route ${p}` });
     const [, r, rest = ""] = m;
-    if (rest === "") return send(200, { full_name: r, default_branch: defaultBranch(r), archived: !!cfg.repos.find((x) => x.full_name === r)?.archived });
+    if (rest === "") return send(200, { full_name: r, default_branch: defaultBranch(r), archived: !!cfg.repos.find((x) => x.full_name === r)?.archived, custom_properties: cfg.repos.find((x) => x.full_name === r)?.custom_properties ?? {} });
     if ((m = rest.match(/^contents\/(.+)$/))) {
       const f = m[1];
       if (req.method === "PUT") {

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// GitHub stand-in for promotion cases. State is re-read from <state.json> on every request.
+// GitHub stand-in for a pull request from the default branch into main. State is re-read from <state.json> on every request.
 // Usage: node test/stubs/promote-github.mjs <port-file> <state.json> <repo>   (<repo>'s working tree answers contents)
 import { readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
@@ -14,6 +14,7 @@ const server = createServer((req, res) => {
   let m;
   if (p === "") return send(200, { default_branch: "staging", custom_properties: { flow: st.flow ?? "staged" } });
   if (p === "/pulls/7") return send(200, st.pr);
+  if (p === "/branches/main") return send(200, { commit: { sha: "c".repeat(40) } });
   if (p === "/pulls/7/files") return list(st.files.map((filename) => ({ filename })));
   if (p === "/pulls/7/reviews") return list(st.reviews);
   if (p === "/issues/7/comments") return list([]);
