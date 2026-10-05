@@ -43,11 +43,14 @@ function config() {
   if (configFile.endsWith(".toml")) return { env: /^\s*\[env\.staging[\].]/m.test(text) ? { staging: {} } : {} };
   return parse(text) ?? fail(`${configFile} does not parse`, "fix the config (JSON with comments and trailing commas)");
 }
+// Workers Builds targets the production Worker through WRANGLER_CI_OVERRIDE_NAME (and guards it with
+// WRANGLER_CI_MATCH_TAG), which would also rename an --env staging command onto production: staging commands run without them.
+const STAGING_ENV = Object.fromEntries(Object.entries(env).filter(([k]) => !["WRANGLER_CI_OVERRIDE_NAME", "WRANGLER_CI_MATCH_TAG"].includes(k)));
 const wrangler = (a, { capture = false } = {}) => {
   console.log(`release: npx wrangler ${a.map((x) => (/^\//.test(x) ? "<file>" : x)).join(" ")}`);
   // The repository's own wrangler where it is installed (the build), else the current major (the clean-up job installs nothing).
   const bin = existsSync("node_modules/.bin/wrangler") ? ["wrangler"] : ["-y", "wrangler@4"];
-  const r = spawnSync("npx", [...bin, ...a], { encoding: "utf8", stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit" });
+  const r = spawnSync("npx", [...bin, ...a], { encoding: "utf8", stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit", env: a.includes("--env") ? STAGING_ENV : env });
   return { status: r.status ?? 1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
 };
 const must = (a) => { const r = wrangler(a); if (r.status) process.exit(r.status); };

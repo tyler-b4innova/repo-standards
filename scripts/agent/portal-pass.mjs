@@ -79,8 +79,7 @@ export async function portalPass(request, env, { fetch: fetcher = globalThis.fet
   const opts = { aud, issuer, jwks: keyring(url, fetcher) };
   const bearer = (request.headers.get("authorization") ?? "").match(/^Bearer\s+(\S+)$/i)?.[1];
   if (bearer && (await verifyPass(bearer, opts))) return null;
-  const cookie = (request.headers.get("cookie") ?? "").split(";").map((c) => c.trim()).find((c) => c.startsWith(`${COOKIE}=`))?.slice(COOKIE.length + 1);
-  if (cookie && (await verifyPass(cookie, opts))) return null;
+  // a valid query pass always becomes the cookie and leaves the URL, even when an older cookie is still valid
   const u = new URL(request.url), q = u.searchParams.get(QUERY);
   const claims = q && (await verifyPass(q, opts));
   if (claims) {
@@ -91,5 +90,7 @@ export async function portalPass(request, env, { fetch: fetcher = globalThis.fet
       "Set-Cookie": `${COOKIE}=${q}; HttpOnly; Secure; SameSite=None; Path=/; Max-Age=${age}`,
     } });
   }
+  const cookie = (request.headers.get("cookie") ?? "").split(";").map((c) => c.trim()).find((c) => c.startsWith(`${COOKIE}=`))?.slice(COOKIE.length + 1);
+  if (cookie && (await verifyPass(cookie, opts))) return null;
   return denied();
 }

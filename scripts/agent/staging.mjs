@@ -79,7 +79,8 @@ export function findings(cfg, { file, std = {}, pack = {}, required = [] }) {
   }
   if (stage.name !== undefined && stage.name === prodName) F("env.staging.name is the production Worker's name", `name it ${prodName}-staging, or remove it (that is the default)`);
   const routes = (s) => [...(Array.isArray(s.routes) ? s.routes : []), ...(s.route ? [s.route] : [])].map((r) => (typeof r === "string" ? r : r?.pattern)).filter(Boolean);
-  if ((cfg.routes !== undefined || cfg.route !== undefined) && stage.routes === undefined && stage.route === undefined)
+  // routes and route are inherited separately, and an inherited routes wins over the staging route
+  if ((cfg.routes !== undefined && stage.routes === undefined) || (cfg.route !== undefined && stage.route === undefined && stage.routes === undefined))
     F("env.staging inherits the production routes", 'set env.staging.routes to staging hosts only (or [] with "workers_dev": true)');
   // every production route except a Preview hostname that serves no production traffic (previews_enabled, enabled false)
   const prodRoutes = new Set([...(Array.isArray(cfg.routes) ? cfg.routes : []), ...(cfg.route ? [cfg.route] : [])]

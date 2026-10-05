@@ -227,7 +227,7 @@ else {
       else if (/^\S/.test(L[i])) break;
     }
     for (const j of jobs) if (!j.body.some((l) => /^ {4}(timeout-minutes|uses):/.test(l)))
-      fail(`${f} job ${j.name} has no timeout-minutes (the default is 360 minutes)`, `add timeout-minutes to ${j.name} (gate 15, anything else at most 20)`);
+      fail(`${f} job ${j.name} has no timeout-minutes (the default is 360 minutes)`, `add timeout-minutes to ${j.name} (gate 30, anything else at most 20)`);
     const runs = jobs.flatMap((j) => j.body).filter((l) => !/^\s*(-\s*)?(name|uses|id|if):/.test(l)).join("\n");
     if (/playwright install\b(?![^\n;&|]*\b(chromium|chrome|firefox|webkit|msedge)\b)/.test(runs))
       fail(`${f} runs playwright install without naming a browser (it downloads all of them)`, "name the browser: playwright install --with-deps chromium");
