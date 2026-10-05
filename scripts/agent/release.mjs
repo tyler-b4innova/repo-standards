@@ -13,7 +13,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parse, findings as stagingFindings, resourceFindings } from "./staging.mjs";
-import { build, rootFile, readConfig, effectiveConfig, assertStaging, workerFiles, buildProductionConfigs } from "./release-config.mjs";
+import { build, rootFile, readConfig, effectiveConfig, assertStaging, assertReleaseAccounts, workerFiles, buildProductionConfigs } from "./release-config.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
 const SUBS = ["main", "preview", "slug", "cleanup"];
@@ -163,6 +163,7 @@ async function deploy() {
     }
     const cfg = config(), staged = Boolean(cfg.env?.staging);
     const extras = workerFiles(std, configFile).map((file) => ({ file, cfg: readConfig(file) }));
+    assertReleaseAccounts(cfg, [cfg, ...extras.map((worker) => worker.cfg)]);
     const productionName = env.WRANGLER_CI_OVERRIDE_NAME || cfg.name;
     const productionConfigs = [cfg, ...extras.map((w) => w.cfg), { name: productionName }];
     for (const worker of [...(staged ? [{ file: configFile, cfg }] : []), ...extras]) {

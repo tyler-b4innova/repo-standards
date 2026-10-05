@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { scan } from "./jsscan.mjs";
 import { claudePins, codexPins } from "./pins.mjs";
-import { verifyGeneratedBuild, workerFiles, readConfig, effectiveConfig, assertStaging } from "./release-config.mjs";
+import { verifyGeneratedBuild, workerFiles, readConfig, effectiveConfig, assertStaging, assertReleaseAccounts } from "./release-config.mjs";
 import { findings as stagingFindings, parse as parseWrangler } from "./staging.mjs";
 
 if (process.argv.includes("--help")) {
@@ -342,7 +342,8 @@ else {
   let productionConfigs = [];
   try {
     const extras = workerFiles(std ?? {}, rootWrangler ?? null);
-    productionConfigs = extras.length ? [readConfig(rootWrangler), ...extras.map(readConfig)] : [];
+    productionConfigs = rootWrangler ? [readConfig(rootWrangler), ...extras.map(readConfig)] : [];
+    if (productionConfigs.length) assertReleaseAccounts(productionConfigs[0], productionConfigs);
     if (extras.length && productionConfigs[0].env?.staging)
       assertStaging(productionConfigs[0], effectiveConfig(rootWrangler, true, { redirect: false }), productionConfigs);
     for (const file of extras) {
