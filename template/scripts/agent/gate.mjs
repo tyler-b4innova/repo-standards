@@ -194,15 +194,21 @@ if (cmd === "plan") {
   // uploaded production version), then name the extra browsers and the staging URL for the install and e2e steps.
   const get = ghApi(), sha = env.GITHUB_SHA ?? git("rev-parse", "HEAD").trim(), short = sha.slice(0, 7);
   const name = pack.preview?.check_name ?? "Workers Builds";
-  const builds = async () => ((await get(`/commits/${sha}/check-runs?per_page=100`))?.check_runs ?? []).filter((c) => c.name?.startsWith(name));
-  const wait = Number(env.GATE_PREVIEW_WAIT_S ?? 480) * 1000, start = Date.now();
-  for (let runs = await builds(); ; runs = await builds()) {
+  const builds = async (c) => ((await get(`/commits/${c}/check-runs?per_page=100`))?.check_runs ?? []).filter((x) => x.name?.startsWith(name));
+  // The check can be created late: where the parent commit had a build, this commit's is waited for, not taken as absent.
+  let parent = null;
+  try { parent = git("rev-parse", `${sha}^`).trim(); } catch {}
+  const hasBuilds = (await builds(sha)).length > 0 || (parent ? (await builds(parent)).length > 0 : false);
+  const wait = Number(env.GATE_PREVIEW_WAIT_S ?? 480) * 1000, poll = Number(env.GATE_POLL_S ?? 15) * 1000, start = Date.now();
+  if (!hasBuilds) console.log(`release: no "${name}" check on ${short} or its parent; testing staging as it stands`);
+  else for (;;) {
+    const runs = await builds(sha);
     const red = runs.find((c) => c.status === "completed" && !["success", "skipped"].includes(c.conclusion));
     if (red) fail(`Cloudflare build failed for ${short}: ${red.name} ${red.conclusion} (${red.details_url})`, "fix the Worker build on main; staging and the uploaded version come from it");
-    if (!runs.length) { console.log(`release: no "${name}" check on ${short}; testing staging as it stands`); break; }
-    if (runs.every((c) => c.status === "completed")) break;
-    if (Date.now() - start >= wait) fail(`the Cloudflare build for ${short} is still running after ${wait / 1000}s`, "re-run the release check once the build finishes");
-    await new Promise((r) => setTimeout(r, 15000));
+    if (runs.length && runs.every((c) => c.status === "completed")) break;
+    if (Date.now() - start >= wait)
+      fail(runs.length ? `the Cloudflare build for ${short} is still running after ${wait / 1000}s` : `no "${name}" check on ${short} after ${wait / 1000}s, though the repository has Workers Builds`, "re-run the release check once the build finishes");
+    await new Promise((r) => setTimeout(r, poll));
   }
   const extra = [...new Set([...(e2eCfg.browsers ?? []), ...(pack.e2e_release_browsers ?? [])])];
   console.log(`release: ${extra.join(", ")} against ${std.staging_url} (${short})`);
