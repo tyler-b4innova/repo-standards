@@ -1,6 +1,6 @@
 {
   "pack": "example",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "profile": "internal",
   "dispatch": "manual",
   "sensitive": false

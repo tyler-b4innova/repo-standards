@@ -1,4 +1,4 @@
-# example v0.6.2 internal engine 0.6.2
+# example v0.6.3 internal engine 0.6.3
 b8460efed90b6a05a6a0a6201ca4316dd1512ce840b79dea6a8f6737dfcd3b97  .agents/skills/std-autoreview/SKILL.md
 79a325fb2bca9c93369a1b664ba72bdab4ab649d4fcb112810f6d1a065112fe9  .agents/skills/std-babysit/SKILL.md
 7b3f303cf40757fb9b4ad56f45d276255c261875bddfcf583ea418f90fc05c60  .agents/skills/std-evidence/SKILL.md
@@ -9,13 +9,13 @@ c3ee9a2af1c213371f5b33ce7c00f889b309332fc1bf0be4fe4f143015892f6c  .agents/skills
 d5c1db5cda8fddb1912f91c9976ce4a4a23cb538293ae984e3161264c7835236  .github/ISSUE_TEMPLATE/agent-task.md
 99499e30b5010b701e2af5883fce336685c093979f756ebde2b4dcc95db2ff84  .github/PULL_REQUEST_TEMPLATE.md
 b67626e602cae17a191887b6d468a7f7e1622ee05ad6168689cc4bce8a10a16c  .github/workflows/std-cache-warm.yml
-598396a212bd236e91b5c0f33b41c9e6838701cc8b25e58f1413ecc16c48ebb3  .github/workflows/std-gate.yml
-1e11cf6d68a144a7bd867851e9933b9255f0f3222a3ba02f19b6132cc07e51fa  scripts/agent/check.mjs
+71d08b1e46eb74951c44e7b8c289f735a8f1fca9f3a44d3183b4ce84d8709ab7  .github/workflows/std-gate.yml
+c598a4209399a4aecc5321f7ad4030e39970257369bdd67b7714297e601762ae  scripts/agent/check.mjs
 f2316d76d3cd35b49cd491209f3da19e1b3eed1b93326383155e19084e552dfe  scripts/agent/cleanup.mjs
 04c219c30b3a0ec531806167b24d5b7803a20877fe970b050110f5ceca8b67b5  scripts/agent/evidence.mjs
 55539e1dd7df02e1dc415cb7789d2458e9b2193a94b73c8b1b8ef7ba9bf95364  scripts/agent/gate.mjs
 41e0b18586c7967cf33038c19d10620861d3f267f87c4f03d913a9457ba487bc  scripts/agent/jsscan.mjs
-c77b778bbf91403c6d0b8860f83e4afeb66ce1ede81765d37223bb86eb6efdc3  scripts/agent/pack.json
+2cf98d04c6f05fb07a352e92e8cc52b7f5f3d1e4102405a3fe35ebe9f5a8f0c3  scripts/agent/pack.json
 f931301273d5f4fa6e77183f1ba995d54c25e4771e30b1d59c89dc7aae870b4c  scripts/agent/pins.mjs
 94f91a6b909e46c989d46abe42846fd8c52534c465fd089c9b08a641eb2744da  scripts/agent/pr.sh
 6c1f04f678c99699dd7778f188278ba081c84e7a4b9370e2ac853a1d3c47ed1a  scripts/agent/review.mjs
