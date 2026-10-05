@@ -7,6 +7,7 @@ import { execFileSync as ex, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync as has, mkdtempSync, readdirSync as ls, readFileSync as rd, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { scan } from "./jsscan.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
 const SUBS = ["plan", "classify", "install", "run", "preview", "e2e", "secrets", "syntax"], ok = SUBS.includes(cmd);
@@ -76,8 +77,12 @@ function scanBuilt() {
   for (const f of ls("dist", { recursive: true }).map(String).filter((f) => /\.html?$/.test(f)).sort()) {
     const html = rd(`dist/${f}`, "utf8"), at = `dist/${f}`;
     if (/<!--(?!\s*\[if)/.test(html)) bad.push(`${at}: HTML comment`);
-    for (const [, body] of html.matchAll(/<script\b(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi))
-      if (/(^|\n)\s*\/\/|\/\*/.test(body)) { bad.push(`${at}: comment in an inline script`); break; }
+    // Inline JavaScript only (data blocks such as JSON-LD are not scripts); read by a lexer, not a regex.
+    for (const [, attrs, body] of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
+      const type = attrs.match(/\btype\s*=\s*["']?([^"'\s>]+)/i)?.[1]?.toLowerCase() ?? "";
+      if (/\bsrc\s*=/i.test(attrs) || (type && !["module", "text/javascript", "application/javascript"].includes(type))) continue;
+      if (scan(body).comments.length) { bad.push(`${at}: comment in an inline script`); break; }
+    }
     const m = word && html.replace(/<[^>]*\b(integrity|nonce)="[^"]*"/g, "").match(word);
     if (m) bad.push(`${at}: source-platform name ${m[1]}`);
   }
