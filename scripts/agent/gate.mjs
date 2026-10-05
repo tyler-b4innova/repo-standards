@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Steps of the `gate` job (std-gate.yml), also runnable locally:
-//   plan | classify [base] | install | run <script>... | preview | release | e2e | secrets | syntax | instructions
+//   plan | classify [base] | install | run <script>... | preview | release | e2e | secrets | syntax | instructions | verdict
 // UI paths: pack.json defaults; standards.json "ui_paths" as a list replaces the include globs,
 // as {include, ignore} replaces include and adds ignore. e2e: none fails unless "e2e": false.
 import { execFileSync as ex, spawnSync } from "node:child_process";
@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { scan } from "./jsscan.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
-const SUBS = ["plan", "classify", "install", "run", "preview", "release", "e2e", "secrets", "syntax", "instructions"], ok = SUBS.includes(cmd);
+const SUBS = ["verdict", "plan", "classify", "install", "run", "preview", "release", "e2e", "secrets", "syntax", "instructions"], ok = SUBS.includes(cmd);
 if (!ok || args.includes("--help")) {
   console.log(rd(new URL(import.meta.url), "utf8").split("\n").slice(1, 6).map((l) => l.slice(3)).join("\n"));
   process.exit(ok || cmd === "--help" ? 0 : 2);
@@ -174,6 +174,19 @@ if (cmd === "instructions") {
   if (bad.size) fail(`instruction files changed by ${author || "this pull request"} (${ref}):\n  ${[...bad].join("\n  ")}`,
     "agents never change instruction files; only the org App's standards-sync (standards/v*) and approved retro (retro/*) pull requests may. Revert these files; a rule change goes through the weekly retro.");
   console.log("instructions: no instruction file or managed CODEOWNERS block changed");
+} else if (cmd === "verdict") {
+  // The required `gate` job: the checks job and the tail (NEEDS, the workflow's needs as JSON) each succeeded, or the
+  // tail was skipped because the checks planned a draft's cheap gate. Anything else (a failure, a cancellation, a
+  // skip the plan did not call for, a missing job) fails it.
+  let needs;
+  try { needs = JSON.parse(env.NEEDS ?? ""); } catch { fail("no job results (NEEDS)", "run the verdict from std-gate.yml's gate job"); }
+  const tail = ["build", "e2e", "repo"], mode = needs.checks?.outputs?.mode, bad = [];
+  for (const j of ["checks", ...tail]) {
+    const r = needs[j]?.result ?? "missing";
+    if (r !== "success" && !(r === "skipped" && tail.includes(j) && mode === "cheap" && needs.checks?.result === "success")) bad.push(`${j}: ${r}`);
+  }
+  if (bad.length) fail(`gate: ${bad.join(", ")}`, "open the failed job's log; a skipped or cancelled job never passes gate");
+  console.log(`gate: ${mode === "cheap" ? "checks passed (draft: the tail runs from ready_for_review)" : "checks, build, e2e and repo checks passed"}`);
 } else if (cmd === "plan") {
   // full: build and test this head. cheap: a draft (the check, the secret scan and a syntax pass); the full gate
   // runs from ready_for_review.

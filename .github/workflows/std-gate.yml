@@ -3,8 +3,9 @@
 # the org launcher sends after a base change (gate then tests the fresh merge ref). Comments, reviews and edits start
 # nothing: the org rulesets require every review thread resolved, and scripts/agent/review.mjs is the conversation's
 # rule for whatever merges (a launcher or merge helper).
-# Repo-owned checks go in scripts/agent/gate.local.sh. No job-level `if` and no early exit: a skipped job reports
-# success and could mask a red gate on the same head.
+# Repo-owned checks go in scripts/agent/gate.local.sh. The job `gate` is the one required check: it needs the checks
+# job and the parallel tail (build, e2e, repo checks), runs whatever happened, and passes only when each of them
+# succeeded, or (a draft's cheap gate) the tail was skipped. Each job's timeout is the overlay's gate.timeout_minutes.
 name: std-gate
 on:
   pull_request:
@@ -25,11 +26,13 @@ concurrency:
   group: std-gate-${{ github.event.pull_request.number || inputs.pr || github.ref }}
   cancel-in-progress: true
 jobs:
-  gate:
-    name: gate
+  checks:
     # The runner is an org variable, so an org can move gate to another pool (and back) without a pack release.
     runs-on: ${{ vars.STD_GATE_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 30
+    outputs:
+      mode: ${{ steps.plan.outputs.mode }}
+      browsers: ${{ steps.plan.outputs.browsers }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -66,30 +69,125 @@ jobs:
       - name: syntax
         if: steps.plan.outputs.mode == 'cheap'
         run: node scripts/agent/gate.mjs syntax
+  # The tail runs in parallel once the checks pass, and only for the full gate (drafts run the checks alone).
+  build:
+    needs: checks
+    if: needs.checks.outputs.mode == 'full'
+    runs-on: ${{ vars.STD_GATE_RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.pr && format('refs/pull/{0}/merge', inputs.pr) || '' }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: merge ref
+        if: failure() && inputs.pr
+        run: echo "::error::refs/pull/${{ inputs.pr }}/merge is missing, so the pull request conflicts with its new base; resolve the conflict and push"
+      - name: package manager
+        id: pm
+        # the lockfile's package manager caches (pnpm and yarn run through corepack; no cache if that fails)
+        run: |
+          if [ -f pnpm-lock.yaml ]; then if corepack enable && pnpm --version >/dev/null; then echo cache=pnpm >>"$GITHUB_OUTPUT"; fi
+          elif [ -f yarn.lock ]; then if corepack enable && yarn --version >/dev/null; then echo cache=yarn >>"$GITHUB_OUTPUT"; fi
+          elif [ -f package-lock.json ]; then echo cache=npm >>"$GITHUB_OUTPUT"; fi
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: ${{ steps.pm.outputs.cache }}
       - name: install
-        if: steps.plan.outputs.mode == 'full'
-        env:
-          GATE_BROWSERS: ${{ steps.plan.outputs.browsers }}
-        run: node scripts/agent/gate.mjs install
+        run: node scripts/agent/gate.mjs install --no-browsers
       - name: typecheck
-        if: steps.plan.outputs.mode == 'full'
         run: node scripts/agent/gate.mjs run typecheck
       - name: build
-        if: steps.plan.outputs.mode == 'full'
         run: node scripts/agent/gate.mjs run build
+  e2e:
+    needs: checks
+    if: needs.checks.outputs.mode == 'full'
+    runs-on: ${{ vars.STD_GATE_RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.pr && format('refs/pull/{0}/merge', inputs.pr) || '' }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: merge ref
+        if: failure() && inputs.pr
+        run: echo "::error::refs/pull/${{ inputs.pr }}/merge is missing, so the pull request conflicts with its new base; resolve the conflict and push"
+      - name: package manager
+        id: pm
+        # the lockfile's package manager caches (pnpm and yarn run through corepack; no cache if that fails)
+        run: |
+          if [ -f pnpm-lock.yaml ]; then if corepack enable && pnpm --version >/dev/null; then echo cache=pnpm >>"$GITHUB_OUTPUT"; fi
+          elif [ -f yarn.lock ]; then if corepack enable && yarn --version >/dev/null; then echo cache=yarn >>"$GITHUB_OUTPUT"; fi
+          elif [ -f package-lock.json ]; then echo cache=npm >>"$GITHUB_OUTPUT"; fi
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: ${{ steps.pm.outputs.cache }}
+      - name: install
+        env:
+          GATE_BROWSERS: ${{ needs.checks.outputs.browsers }}
+        run: node scripts/agent/gate.mjs install
       - name: preview
         id: preview
-        if: steps.plan.outputs.mode == 'full'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/agent/gate.mjs preview
+      # a local e2e run (no preview URL) gets this job's own build, as it did when one job ran everything
+      - name: build
+        if: steps.preview.outputs.url == ''
+        run: node scripts/agent/gate.mjs run build
       - name: e2e
-        if: steps.plan.outputs.mode == 'full'
         env:
-          GATE_BROWSERS: ${{ steps.plan.outputs.browsers }}
+          GATE_BROWSERS: ${{ needs.checks.outputs.browsers }}
           GATE_PREVIEW_URL: ${{ steps.preview.outputs.url }}
         run: node scripts/agent/gate.mjs e2e
+  repo:
+    needs: checks
+    if: needs.checks.outputs.mode == 'full'
+    runs-on: ${{ vars.STD_GATE_RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.pr && format('refs/pull/{0}/merge', inputs.pr) || '' }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: merge ref
+        if: failure() && inputs.pr
+        run: echo "::error::refs/pull/${{ inputs.pr }}/merge is missing, so the pull request conflicts with its new base; resolve the conflict and push"
+      - name: package manager
+        id: pm
+        # the lockfile's package manager caches (pnpm and yarn run through corepack; no cache if that fails)
+        run: |
+          if [ -f pnpm-lock.yaml ]; then if corepack enable && pnpm --version >/dev/null; then echo cache=pnpm >>"$GITHUB_OUTPUT"; fi
+          elif [ -f yarn.lock ]; then if corepack enable && yarn --version >/dev/null; then echo cache=yarn >>"$GITHUB_OUTPUT"; fi
+          elif [ -f package-lock.json ]; then echo cache=npm >>"$GITHUB_OUTPUT"; fi
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: ${{ steps.pm.outputs.cache }}
+      # with the run's browsers: repo checks may run Playwright
+      - name: install
+        env:
+          GATE_BROWSERS: ${{ needs.checks.outputs.browsers }}
+        run: node scripts/agent/gate.mjs install
       - name: repo checks
-        if: steps.plan.outputs.mode == 'full'
         run: |
           if [ -f scripts/agent/gate.local.sh ]; then bash scripts/agent/gate.local.sh; else echo "notice: no scripts/agent/gate.local.sh"; fi
+  gate:
+    name: gate
+    needs: [checks, build, e2e, repo]
+    if: always()
+    runs-on: ${{ vars.STD_GATE_RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: verdict
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: node scripts/agent/gate.mjs verdict
