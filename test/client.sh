@@ -128,7 +128,7 @@ b=$(check "$B"); has "src/pages/api/contact.ts sends mail but never compares the
 B=$(mkrepo); put "$B" wrangler.jsonc '{ "name": "site", // site
   "send_email": [{ "name": "FIRST", "allowed_destination_addresses": ["a@example.com", "b@example.com"] }, { "name": "SECOND" }],
   "previews": { "send_email": [{ "name": "PREVIEW_MAIL" }] }, "env": { "staging": { "send_email": [{ "name": "STAGING_MAIL" }] } } }'
-put "$B" src/lib/email.ts "$SEAM"; for b in SECOND PREVIEW_MAIL STAGING_MAIL; do put "$B" src/pages/api/$b.ts "export const POST = () => env.$b.send({ to: [\"client@example.com\"] });"; done; commit "$B"
+put "$B" src/lib/email.ts "${SEAM//SEND_EMAIL/FIRST}"; for b in SECOND PREVIEW_MAIL STAGING_MAIL; do put "$B" src/pages/api/$b.ts "export const POST = () => env.$b.send({ to: [\"client@example.com\"] });"; done; commit "$B"
 b=$(check "$B"); for f in SECOND PREVIEW_MAIL STAGING_MAIL; do has "src/pages/api/$f.ts sends mail outside the email seam" "$b" || why2="${why2:-}; json $f missed"; done
 B=$(mkrepo); put "$B" wrangler.toml 'name = "site"
 send_email = [ { name = "INLINE", allowed_destination_addresses = ["a@example.com"] }, { name = "INLINE2" } ]
