@@ -90,13 +90,26 @@ export function build(std, pkg, staging = false, { quiet = false } = {}) {
   if (r.status !== 0) throw new Error(`${staging ? "staging" : "production"} build failed; ensure the build supports CLOUDFLARE_ENV staging selection`);
 }
 
+// Resolve production after a build before staging can mutate any remote resource.
+// Parsing creates independent in-memory snapshots that the staging build cannot overwrite.
+export function buildProductionConfigs(std, pkg, workers, { quiet = false } = {}) {
+  build(std, pkg, false, { quiet });
+  return workers.map((worker) => {
+    const resolved = effectiveConfig(worker.file, false, { redirect: Boolean(worker.primary) });
+    if (resolved.cfg.name !== worker.cfg.name) throw new Error(`production build does not target ${worker.cfg.name}`);
+    return resolved.cfg;
+  });
+}
+
 // On clean CI checkouts the redirect appears only after build. Both --check and gate's
 // build entry point probe that same artifact and leave a production build behind.
 export function verifyGeneratedBuild(std, pkg, root = rootFile()) {
   if (!root || std.staging === false || !existsSync(redirectFile)) return;
   const production = readConfig(root);
   if (!production.env?.staging) return; // legacy Preview releases do not select env.staging
-  const productionConfigs = [production, ...workerFiles(std, root).map(readConfig)];
+  const extras = workerFiles(std, root).map((file) => ({ file, cfg: readConfig(file) }));
+  const workers = [{ file: root, cfg: production, primary: true }, ...extras];
+  const productionConfigs = [...workers.map((worker) => worker.cfg), ...buildProductionConfigs(std, pkg, workers, { quiet: true })];
   let stagingError;
   try { build(std, pkg, true, { quiet: true }); assertStaging(production, effectiveConfig(root, true), productionConfigs); }
   catch (e) { stagingError = e; }

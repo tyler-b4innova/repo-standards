@@ -12,8 +12,8 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { parse, findings as stagingFindings } from "./staging.mjs";
-import { build, rootFile, readConfig, effectiveConfig, assertStaging, workerFiles } from "./release-config.mjs";
+import { parse, findings as stagingFindings, resourceFindings } from "./staging.mjs";
+import { build, rootFile, readConfig, effectiveConfig, assertStaging, workerFiles, buildProductionConfigs } from "./release-config.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
 const SUBS = ["main", "preview", "slug", "cleanup"];
@@ -158,6 +158,13 @@ async function deploy() {
       const result = stagingFindings(worker.cfg, { file: worker.file, std: { staging: true }, productionConfigs });
       const isolation = result.fails.filter(([message]) => /names the production resource|consumes the production queue/.test(message));
       if (isolation.length) throw new Error(isolation.map(([message]) => message).join("; "));
+    }
+    const builtProduction = buildProductionConfigs(std, pkg, [{ file: configFile, cfg, primary: true }, ...extras]);
+    productionConfigs.push(...builtProduction);
+    if (!staged) {
+      const preview = builtProduction[0].previews ?? {};
+      const isolation = resourceFindings({ ...preview, migrations: preview.migrations ?? builtProduction[0].migrations }, productionConfigs);
+      if (isolation.length) throw new Error(`unsafe staging Preview resources: ${isolation.join("; ")}`);
     }
     if (staged) build(std, pkg, true);
     // Validate every staging target before deploying any of them. Secondary explicit configs

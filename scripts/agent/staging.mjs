@@ -80,6 +80,23 @@ export function resourceFindings(target, productionConfigs) {
     if (typeof c.queue !== "string" || !c.queue) errors.push("cannot safely read queues.consumers.queue");
     else if (prod.has(`queue:${c.queue}`)) errors.push(`consumes the production queue ${c.queue}`);
   }
+  // Transfers move stored objects out of their source Worker; bindings alone cannot reveal this.
+  for (const migration of entries(target, "migrations")) {
+    if (typeof migration.tag !== "string" || !migration.tag.trim()) errors.push("cannot safely read migrations.tag");
+    const allowed = ["tag", "new_classes", "new_sqlite_classes", "deleted_classes", "renamed_classes", "transferred_classes"];
+    if (Object.keys(migration).some((key) => !allowed.includes(key))) errors.push("cannot safely read unknown migration fields");
+    for (const key of ["new_classes", "new_sqlite_classes", "deleted_classes"]) if (migration[key] !== undefined &&
+      (!Array.isArray(migration[key]) || migration[key].some((name) => typeof name !== "string" || !name.trim())))
+      errors.push(`cannot safely read migrations.${key}`);
+    for (const rename of entries(migration, "renamed_classes")) if (["from", "to"].some((key) => typeof rename[key] !== "string" || !rename[key].trim()))
+      errors.push("cannot safely read migrations.renamed_classes");
+    for (const transfer of entries(migration, "transferred_classes")) {
+      if (["from_script", "from", "to"].some((key) => typeof transfer[key] !== "string" || !transfer[key].trim()))
+        errors.push("cannot safely read migrations.transferred_classes (from_script, from and to must be nonempty strings)");
+      else if (prodWorkers.has(transfer.from_script))
+        errors.push(`migrations.transferred_classes.from_script ${transfer.from_script} transfers Durable Objects from a production Worker`);
+    }
+  }
   return errors;
 }
 

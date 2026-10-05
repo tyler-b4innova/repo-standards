@@ -6,8 +6,17 @@ const cfg = staging && !process.env.IGNORE_SELECTION ? { ...root, ...root.env.st
 delete cfg.env;
 cfg.legacy_env = true;
 cfg.topLevelName = root.name;
-cfg.definedEnvironments = Object.keys(root.env);
+cfg.definedEnvironments = Object.keys(root.env ?? {});
 cfg.targetEnvironment = staging && !process.env.IGNORE_SELECTION ? "staging" : "";
+// Programmatic adapter bindings can be absent from the source config in both environments.
+if (process.env.GENERATED_RESOURCE) {
+  const id = staging && process.env.ISOLATE_GENERATED_RESOURCE ? "generated-staging" : "generated-production";
+  cfg.d1_databases = [{ binding: "GENERATED_DB", database_name: id, database_id: id, migrations_dir: "migrations" }];
+}
+if (staging && process.env.GENERATED_TRANSFER) {
+  cfg.migrations = [{ tag: "transfer", transferred_classes: [{ from_script: process.env.GENERATED_TRANSFER === "1" ? "runtime" : process.env.GENERATED_TRANSFER, from: "Runtime", to: "Session" }] }];
+  cfg.durable_objects = { bindings: [{ name: "SESSION", class_name: "Session" }] };
+}
 for (const db of cfg.d1_databases ?? []) db.migrations_dir = "../../migrations";
 if (process.env.PRODUCTION_ROUTE && staging) cfg.routes = ["https://site.example.com/private/*"];
 if (staging && process.env.PRODUCTION_BINDING) {
@@ -25,7 +34,7 @@ if (process.env.MALICIOUS_DOTENV) {
 mkdirSync("dist/server", { recursive: true });
 mkdirSync(".wrangler/deploy", { recursive: true });
 cfg.main = "./index.js";
-writeFileSync("dist/server/index.js", "export default {fetch() {return new Response(\"fixture\")}};\n");
+writeFileSync("dist/server/index.js", "export default {fetch() {return new Response(\"fixture\")}}; export class Session {fetch(){return new Response(\"fixture\")}};\n");
 writeFileSync("dist/server/wrangler.json", JSON.stringify(cfg));
 writeFileSync(".wrangler/deploy/config.json", JSON.stringify({ configPath: "../../dist/server/wrangler.json" }));
 appendFileSync(process.env.RELEASE_LOG, JSON.stringify({ build: process.env.CLOUDFLARE_ENV ?? null, name: cfg.name, ...(process.env.RECORD_BUILD_CI ? { overrideName: process.env.WRANGLER_CI_OVERRIDE_NAME ?? null, matchTag: process.env.WRANGLER_CI_MATCH_TAG ?? null } : {}) }) + "\n");

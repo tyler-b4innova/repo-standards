@@ -29,6 +29,9 @@ import assert from "node:assert/strict";
 const raw = existsSync(process.argv[2]) ? readFileSync(process.argv[2], "utf8").trim() : "";
 const lines = raw ? raw.split("\n").map(JSON.parse) : [];
 const kind = process.argv[3];
+if (["astro", "migrations"].includes(kind)) {
+  assert.deepEqual(lines.shift(), { build: null, name: "site" });
+}
 if (kind === "astro") {
   assert.equal(lines.length, 4);
   assert.deepEqual(lines[0], { build: "staging", name: "site-staging" });
@@ -68,14 +71,14 @@ if (kind === "astro") {
   }
   assert.deepEqual(calls.filter((line) => line.args[0] === "secret").map((line) => line.name), ["site-staging", "runtime-staging", primaryName, "runtime"]);
   const builds = lines.filter((line) => "build" in line);
-  assert.deepEqual(builds.map((line) => line.build), ["staging", null]);
+  assert.deepEqual(builds.map((line) => line.build), [null, "staging", null]);
   for (const build of builds) { assert.equal(build.overrideName, null); assert.equal(build.matchTag, null); }
 } else if (kind === "legacy") {
   const calls = lines.filter((line) => line.args);
   assert.deepEqual(calls.filter((line) => line.args[0] === "deploy").map((line) => line.name), ["runtime-staging"]);
   assert.deepEqual(calls.filter((line) => line.args[0] === "preview").map((line) => line.name), ["staging"]);
   assert.deepEqual(calls.filter((line) => line.args[0] === "versions").map((line) => line.name), ["site", "runtime"]);
-  assert.deepEqual(lines.filter((line) => "build" in line).map((line) => line.build), [null]);
+  assert.deepEqual(lines.filter((line) => "build" in line).map((line) => line.build), [null, null]);
 } else if (kind === "secret-failure") {
   assert.ok(lines.some((line) => line.args?.[0] === "secret" && line.name === "runtime-staging"));
   assert.ok(lines.every((line) => line.args?.[0] !== "versions"));
