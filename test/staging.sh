@@ -50,7 +50,8 @@ with "$A" "$GOOD"; o=$(check "$A") || why="$why; isolated data app failed: $o"
 # a staging Worker named like production, inherited production routes, or a production route
 with "$A" 'o.env.staging.name="app"'; o=$(check "$A"); has "env.staging.name is the production Worker" "$o" || why="$why; same name: $o"
 with "$A" 'delete o.env.staging.name; delete o.env.staging.routes'; o=$(check "$A"); has "inherits the production routes" "$o" || why="$why; inherited routes: $o"
-with "$A" 'o.env.staging.routes=[{pattern:"app.example.com",custom_domain:true}]'; o=$(check "$A"); has "a production route" "$o" || why="$why; prod route: $o"
+with "$A" 'o.env.staging.route="staging.app.example.com/*"'; o=$(check "$A"); has "inherits the production routes" "$o" || why="$why; route without routes: $o"
+with "$A" 'delete o.env.staging.route; o.env.staging.routes=[{pattern:"app.example.com",custom_domain:true}]'; o=$(check "$A"); has "a production route" "$o" || why="$why; prod route: $o"
 with "$A" 'o.env.staging.routes=["app.example.com/*"]; o.routes.push("app.example.com/*")'; o=$(check "$A"); has "a production route" "$o" || why="$why; string route: $o"
 # a Preview hostname route still serving production traffic (enabled) is a production route
 with "$A" 'o.routes=[{pattern:"p.example.com",custom_domain:true,previews_enabled:true}]; o.env.staging.routes=[{pattern:"p.example.com",custom_domain:true}]'; o=$(check "$A"); has "a production route" "$o" || why="$why; enabled preview route: $o"

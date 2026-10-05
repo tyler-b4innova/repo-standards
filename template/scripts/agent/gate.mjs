@@ -244,8 +244,10 @@ if (cmd === "instructions") {
   // uploaded production version), then name the extra browsers and the staging URL for the install and e2e steps.
   const get = ghApi(), sha = env.GITHUB_SHA ?? git("rev-parse", "HEAD").trim(), short = sha.slice(0, 7);
   // A push that changes only non-deployable paths (pack.json non_deploy_paths) leaves staging as it was: nothing to test.
+  // The whole push (the event's before..sha); a manual run, or a before no longer in history, skips nothing.
   let pushed = null;
-  try { pushed = git("diff", "--name-only", "--no-renames", "-z", `${sha}^1`, sha).split("\0").filter(Boolean); } catch {}
+  const before = event.before && !/^0+$/.test(event.before) ? event.before : null;
+  if (before) try { pushed = git("diff", "--name-only", "--no-renames", "-z", before, sha).split("\0").filter(Boolean); } catch {}
   const nd = (pack.non_deploy_paths ?? []).map(glob);
   if (pushed?.length && pushed.every((f) => nd.some((r) => r.test(f)))) {
     console.log(`::notice::release check skipped: only non-deployable paths changed (${pushed.join(", ")})`);

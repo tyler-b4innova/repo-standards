@@ -26,6 +26,7 @@ line="$*"; f=""; prev=""
 for a in "$@"; do [ "$prev" = --secrets-file ] && f=$a; prev=$a; done
 if [ -n "$f" ]; then line="$line | file $(node -p "(require(\"fs\").statSync(process.argv[1]).mode & 0o777).toString(8)" "$f") keys $(node -e 'console.log(Object.keys(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))).join(","))' "$f")"; echo "$f" >>"$FAKE/files"; fi
 echo "$line" >>"$FAKE/npx.log"
+case "$line" in *"deploy --env staging"*) echo "deploy --env staging: ${WRANGLER_CI_OVERRIDE_NAME:--} ${WRANGLER_CI_MATCH_TAG:--}" >>"$FAKE/envlog" ;; *"versions upload"*) echo "versions upload: ${WRANGLER_CI_OVERRIDE_NAME:--} ${WRANGLER_CI_MATCH_TAG:--}" >>"$FAKE/envlog" ;; esac
 case "$line" in
   *"secret list"*) echo "⛅️ wrangler 4.147.0"; echo "[WARNING] beta"; cat "$FAKE/listed" ;;
   *"preview delete"*) for n in $(cat "$FAKE/gone" 2>/dev/null); do case "$line" in *"--name $n "*) echo "X [ERROR] The Preview \"$n\" was not found." >&2; exit 1 ;; esac; done
@@ -74,6 +75,9 @@ rm -f "$T/failon"
 D=$(site db); printf '{ "name": "site", "main": "src/index.ts", "env": { "staging": { "d1_databases": [{ "binding": "DB", "database_name": "db-staging", "database_id": "d1-staging" }] } } }\n' >"$D/wrangler.jsonc"; mkdir -p "$D/migrations"; : >"$D/migrations/0001.sql"
 reset; o=$(rel "$D" main); [ "$(log | head -2)" = "wrangler d1 migrations apply DB --env staging --remote
 wrangler deploy --env staging" ] || why="$why; staging migrations: $o // $(log)"
+# the Builds override that targets the production Worker never reaches a staging command
+reset; rm -f "$T/envlog"; o=$(WRANGLER_CI_OVERRIDE_NAME=site WRANGLER_CI_MATCH_TAG=t rel "$R" main); has "exit=0" "$o" && [ "$(cat "$T/envlog")" = "deploy --env staging: - -
+versions upload: site t" ] || why="$why; ci override: $(cat "$T/envlog" 2>/dev/null)"
 if [ -z "$why" ]; then ok release-staging-env; else fail release-staging-env "$why"; fi
 
 # ---- secrets: re-supplied from 1Password on every staging and Preview deploy, never on the production upload, never printed

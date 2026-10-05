@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 2 # the parent commit tells whether this one's Workers Builds check is still to come
+          fetch-depth: 0 # the push's before commit (what the push changed) and the parent (whether a Workers Builds check is still to come)
           persist-credentials: false
       - name: package manager
         id: pm

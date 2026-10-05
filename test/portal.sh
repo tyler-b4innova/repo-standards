@@ -45,6 +45,9 @@ if ((await call(env(), { headers: { cookie: `a=b; __Host-portal_pass=${pass}` } 
 const r = await call(env(), { query: `&portal_pass=${pass}` });
 const loc = r?.headers.get("location"), sc = r?.headers.get("set-cookie") ?? "";
 if (!(r?.status === 302 && loc === "https://site-staging.example.com/a/b?x=1" && sc.startsWith(`__Host-portal_pass=${pass};`) && /HttpOnly/.test(sc) && /Secure/.test(sc) && /SameSite=None/.test(sc) && /Path=\//.test(sc) && /Max-Age=(59\d|600)\b/.test(sc))) why("v", `query: ${r?.status} ${loc} ${sc}`);
+// a fresh query pass replaces a still-valid cookie and leaves the URL
+const fresh = await sign(k1, { ...good, sub: "user:43" }), rc = await call(env(), { headers: { cookie: `__Host-portal_pass=${pass}` }, query: `&portal_pass=${fresh}` });
+if (!(rc?.status === 302 && (rc.headers.get("set-cookie") ?? "").startsWith(`__Host-portal_pass=${fresh};`))) why("v", `query beside a cookie: ${rc?.status}`);
 for (const [what, c] of [["aud list", { ...good, aud: ["other", "site-staging"] }], ["agent", { ...good, sub: "agent:launcher" }], ["test", { ...good, sub: "test:o/r#7" }]])
   if ((await call(env(), { headers: { authorization: `Bearer ${await sign(k1, c)}` } })) !== null) why("v", what);
 // rotation: an unknown kid refetches the JWKS exactly once; a second unknown kid within the minute does not refetch
