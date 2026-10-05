@@ -18,6 +18,7 @@
   "env": {
     "staging": {
       // a separate Worker, app-staging: its own host, data, queues, Workflow, cron and sandbox keys
+      "secrets": { "required": ["PAYMENT_KEY"] },
       "vars": { "ENVIRONMENT": "staging" },
       "routes": [{ "pattern": "staging.app.example.com", "custom_domain": true }],
       "d1_databases": [{ "binding": "DB", "database_name": "app-staging", "database_id": "<staging d1 id>", "migrations_dir": "migrations" }],

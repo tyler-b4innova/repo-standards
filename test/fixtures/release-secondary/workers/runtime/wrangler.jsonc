@@ -1,0 +1,17 @@
+{
+  "name": "runtime",
+  "main": "index.js",
+  "compatibility_date": "2025-01-01",
+  "secrets": { "required": ["RUNTIME_KEY"] },
+  "durable_objects": { "bindings": [{ "name": "SESSION", "class_name": "Runtime" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Runtime"] }],
+  "previews": {},
+  "env": {
+    "staging": {
+      "name": "runtime-staging",
+      "routes": [],
+      "secrets": { "required": ["RUNTIME_KEY"] },
+      "durable_objects": { "bindings": [{ "name": "SESSION", "class_name": "Runtime" }] }
+    }
+  }
+}

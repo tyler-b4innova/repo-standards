@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import { existsSync as has, mkdtempSync, readdirSync as ls, readFileSync as rd, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { scan } from "./jsscan.mjs";
+import { verifyGeneratedBuild } from "./release-config.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
 const SUBS = ["verdict", "plan", "classify", "install", "run", "preview", "release", "e2e", "secrets", "syntax", "instructions"], ok = SUBS.includes(cmd);
@@ -315,6 +316,10 @@ if (cmd === "instructions") {
   if (!s) console.log(`notice: no ${args.join(" or ")} script in package.json; skipped`);
   else {
     console.log(`run: ${pm} run ${s}`); must(pm, ["run", s]);
+    if (s === "build") {
+      try { verifyGeneratedBuild(std, pkg); }
+      catch (e) { fail(`generated Wrangler config: ${e.message}`, "make the build honor CLOUDFLARE_ENV=staging before releasing"); }
+    }
     if (s === "build" && pack.profile === "client" && has("dist")) scanBuilt();
   }
 } else if (cmd === "e2e") {

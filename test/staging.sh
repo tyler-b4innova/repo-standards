@@ -49,6 +49,7 @@ o=$(check "$A"); has "has no env.staging" "$o" && has "create them with the cf C
 with "$A" "$GOOD"; o=$(check "$A") || why="$why; isolated data app failed: $o"
 # a staging Worker named like production, inherited production routes, or a production route
 with "$A" 'o.env.staging.name="app"'; o=$(check "$A"); has "env.staging.name is the production Worker" "$o" || why="$why; same name: $o"
+with "$A" 'o.env.staging.name="app-stage"'; o=$(check "$A"); has "env.staging.name must be exactly" "$o" || why="$why; nonstandard name passed: $o"
 with "$A" 'delete o.env.staging.name; delete o.env.staging.routes'; o=$(check "$A"); has "inherits the production routes" "$o" || why="$why; inherited routes: $o"
 with "$A" 'o.env.staging.route="staging.app.example.com/*"'; o=$(check "$A"); has "inherits the production routes" "$o" || why="$why; route without routes: $o"
 with "$A" 'delete o.env.staging.route; o.env.staging.routes=[{pattern:"app.example.com",custom_domain:true}]'; o=$(check "$A"); has "a production route" "$o" || why="$why; prod route: $o"

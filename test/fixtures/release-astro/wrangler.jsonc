@@ -1,0 +1,8 @@
+{
+  "name": "site",
+  "compatibility_date": "2025-01-01",
+  "main": "dist/server/index.js",
+  "routes": [{ "pattern": "site.example.com", "custom_domain": true }],
+  "previews": {},
+  "env": { "staging": { "name": "site-staging", "routes": [], "workers_dev": true } }
+}

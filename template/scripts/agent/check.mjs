@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { scan } from "./jsscan.mjs";
 import { claudePins, codexPins } from "./pins.mjs";
+import { verifyGeneratedBuild, workerFiles, readConfig, effectiveConfig, assertStaging } from "./release-config.mjs";
 import { findings as stagingFindings, parse as parseWrangler } from "./staging.mjs";
 
 if (process.argv.includes("--help")) {
@@ -337,14 +338,30 @@ else {
     && [undefined, "1password", "secrets_store"].includes(sec.store)))
     fail(`standards.json secrets is ${JSON.stringify(sec)}`, '{"required": ["NAME", ...], "store": "1password" (our accounts) or "secrets_store" (a client-owned account)}');
   if (![undefined, false].includes(std?.staging)) fail(`standards.json staging is ${JSON.stringify(std.staging)}`, "remove it, or false for a Worker that is not released through staging (previews are still checked)");
-  const rootWrangler = ["wrangler.jsonc", "wrangler.json", "wrangler.toml"].find((f) => tracked.includes(f));
+  const rootWrangler = ["wrangler.json", "wrangler.jsonc", "wrangler.toml"].find((f) => tracked.includes(f));
+  let productionConfigs = [];
+  try {
+    const extras = workerFiles(std ?? {}, rootWrangler ?? null);
+    productionConfigs = extras.length ? [readConfig(rootWrangler), ...extras.map(readConfig)] : [];
+    if (extras.length && productionConfigs[0].env?.staging)
+      assertStaging(productionConfigs[0], effectiveConfig(rootWrangler, true, { redirect: false }), productionConfigs);
+    for (const file of extras) {
+      const cfg = readConfig(file);
+      assertStaging(cfg, effectiveConfig(file, true, { redirect: false }), productionConfigs);
+      const required = [...new Set(Array.isArray(cfg.secrets?.required) ? cfg.secrets.required : [])];
+      const result = stagingFindings(cfg, { file, std: std ?? {}, pack, required, productionConfigs });
+      result.fails.forEach(([m, f]) => fail(m, f)); result.warns.forEach(warn);
+    }
+  } catch (e) { fail(e.message, "list each secondary Worker's own config in standards.json release_workers and give it an isolated env.staging"); }
+  try { verifyGeneratedBuild(std ?? {}, json("package.json"), rootWrangler ?? null); }
+  catch (e) { fail(`generated Wrangler config: ${e.message}`, "make standards.json build or package.json scripts.build honor CLOUDFLARE_ENV=staging (use an adapter with environment selection), then rebuild without it for production"); }
   if (rootWrangler?.endsWith(".toml")) warn(`${rootWrangler} is not checked for staging isolation (TOML) | fix: convert it to wrangler.jsonc`);
   else if (rootWrangler) {
     const cfg = parseWrangler(read(rootWrangler) ?? "");
     if (!cfg || typeof cfg !== "object") fail(`${rootWrangler} does not parse`, "fix the JSON (comments and trailing commas are fine)");
     else {
       const required = [...new Set([...(Array.isArray(sec?.required) ? sec.required : []), ...(Array.isArray(cfg.secrets?.required) ? cfg.secrets.required : [])])];
-      const r = stagingFindings(cfg, { file: rootWrangler, std: std ?? {}, pack, required });
+      const r = stagingFindings(cfg, { file: rootWrangler, std: std ?? {}, pack, required, productionConfigs: productionConfigs.length ? productionConfigs : [cfg] });
       r.fails.forEach(([m, f]) => fail(m, f)); r.warns.forEach(warn);
       // the Worker calls the managed pass check (scripts/agent/portal-pass.mjs) before anything else
       if (pack.portal && !tracked.some((f) => /\.([cm]?[jt]sx?|svelte|astro)$/.test(f) && !f.startsWith("scripts/agent/") && !/(^|\/)(tests?|e2e|__tests__)\//.test(f)

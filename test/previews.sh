@@ -8,6 +8,7 @@ unset GITHUB_EVENT_PATH GITHUB_EVENT_NAME GH_TOKEN GITHUB_TOKEN WORKERS_CI_BRANC
 export CODEX_HOME=/nonexistent CLAUDE_CONFIG_DIR=/nonexistent
 ENGINE=$PWD OV=$PWD/examples/overlay.json
 T=$(mktemp -d)
+T=$(cd "$T" && pwd -P)
 trap '{ kill $STUB; wait $STUB; } 2>/dev/null; rm -rf "$T"' EXIT
 has() { case "$2" in *"$1"*) return 0 ;; esac; return 1; }
 gc() { git -c user.name=t -c user.email=t@t "$@"; }
@@ -22,12 +23,19 @@ WF=.github/workflows/std-preview-cleanup.yml
 mkdir -p "$T/bin"
 cat >"$T/bin/npx" <<'EOF'
 #!/usr/bin/env bash
+# The controlled dotenv file is an internal safety argument; verify it before recording business arguments.
+args=()
+for a in "$@"; do
+  case "$a" in --env-file=*) file=${a#--env-file=}; [ -f "$file" ] && [ ! -s "$file" ] || exit 8 ;; *) args+=("$a") ;; esac
+done
+set -- "${args[@]}"
 line="$*"; f=""; prev=""
 for a in "$@"; do [ "$prev" = --secrets-file ] && f=$a; prev=$a; done
 if [ -n "$f" ]; then line="$line | file $(node -p "(require(\"fs\").statSync(process.argv[1]).mode & 0o777).toString(8)" "$f") keys $(node -e 'console.log(Object.keys(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))).join(","))' "$f")"; echo "$f" >>"$FAKE/files"; fi
 echo "$line" >>"$FAKE/npx.log"
 case "$line" in *"deploy --env staging"*) echo "deploy --env staging: ${WRANGLER_CI_OVERRIDE_NAME:--} ${WRANGLER_CI_MATCH_TAG:--}" >>"$FAKE/envlog" ;; *"versions upload"*) echo "versions upload: ${WRANGLER_CI_OVERRIDE_NAME:--} ${WRANGLER_CI_MATCH_TAG:--}" >>"$FAKE/envlog" ;; esac
 case "$line" in
+  *"deploy --env staging"*) echo "Uploaded site-staging (1.0 sec)"; echo "Deployed site-staging triggers (1.0 sec)" ;;
   *"secret list"*) echo "⛅️ wrangler 4.147.0"; echo "[WARNING] beta"; cat "$FAKE/listed" ;;
   *"preview delete"*) for n in $(cat "$FAKE/gone" 2>/dev/null); do case "$line" in *"--name $n "*) echo "X [ERROR] The Preview \"$n\" was not found." >&2; exit 1 ;; esac; done
     for n in $(cat "$FAKE/broken" 2>/dev/null); do case "$line" in *"--name $n "*) echo "X [ERROR] Authentication error" >&2; exit 1 ;; esac; done ;;
@@ -63,7 +71,7 @@ site() { # a Worker repository with the pack, an env.staging (unless "legacy") a
 why=""
 R=$(site main); reset
 o=$(WORKERS_CI_COMMIT_SHA=abc1234 rel "$R" main)
-want="wrangler deploy --env staging
+want="wrangler deploy --env staging --config $R/wrangler.jsonc --name site-staging
 wrangler versions upload --tag abc1234 --message main abc1234 --var SENTRY_RELEASE:abc1234"
 [ "$(log)" = "$want" ] && has "exit=0" "$o" || why="main: $o // $(log)"
 reset; o=$(rel "$R" main); [ "$(log | tail -1)" = "wrangler versions upload" ] || why="$why; no sha: $(log)"
@@ -73,8 +81,8 @@ reset; echo "deploy --env staging" >"$T/failon"; o=$(rel "$R" main); has "exit=7
 rm -f "$T/failon"
 # staging's own D1 takes this commit's migrations before the staging deploy (never production's)
 D=$(site db); printf '{ "name": "site", "main": "src/index.ts", "env": { "staging": { "d1_databases": [{ "binding": "DB", "database_name": "db-staging", "database_id": "d1-staging" }] } } }\n' >"$D/wrangler.jsonc"; mkdir -p "$D/migrations"; : >"$D/migrations/0001.sql"
-reset; o=$(rel "$D" main); [ "$(log | head -2)" = "wrangler d1 migrations apply DB --env staging --remote
-wrangler deploy --env staging" ] || why="$why; staging migrations: $o // $(log)"
+reset; o=$(rel "$D" main); [ "$(log | head -2)" = "wrangler d1 migrations apply DB --env staging --config $D/wrangler.jsonc --remote
+wrangler deploy --env staging --config $D/wrangler.jsonc --name site-staging" ] || why="$why; staging migrations: $o // $(log)"
 # the Builds override that targets the production Worker never reaches a staging command
 reset; rm -f "$T/envlog"; o=$(WRANGLER_CI_OVERRIDE_NAME=site WRANGLER_CI_MATCH_TAG=t rel "$R" main); has "exit=0" "$o" && [ "$(cat "$T/envlog")" = "deploy --env staging: - -
 versions upload: site t" ] || why="$why; ci override: $(cat "$T/envlog" 2>/dev/null)"
@@ -85,8 +93,8 @@ why=""
 S=$(site secrets); jset "$S/standards.json" 'o.secrets={required:["MAIL_KEY","TURNSTILE_SECRET"],store:"1password"}'; commit "$S"
 reset '[{"name":"MAIL_KEY","type":"secret_text"},{"name":"TURNSTILE_SECRET","type":"secret_text"}]'
 o=$(OP_CLI=$T/bin/op OP_VAULT=client-a OP_SERVICE_ACCOUNT_TOKEN=t WORKERS_CI_COMMIT_SHA=abc1234 rel "$S" main)
-has "exit=0" "$o" && has "wrangler deploy --env staging --secrets-file " "$(log)" && has "| file 600 keys MAIL_KEY,TURNSTILE_SECRET" "$(log)" \
-  && has "wrangler secret list --env staging --format json" "$(log)" && has "wrangler secret list --format json" "$(log)" \
+has "exit=0" "$o" && has "wrangler deploy --env staging --config $S/wrangler.jsonc --name site-staging --secrets-file " "$(log)" && has "| file 600 keys MAIL_KEY,TURNSTILE_SECRET" "$(log)" \
+  && has "wrangler secret list --env staging --config $S/wrangler.jsonc --name site-staging --format json" "$(log)" && has "wrangler secret list --name site --format json" "$(log)" \
   && ! log | grep "versions upload" | grep -q secrets-file || why="main: $o // $(log)"
 o2=$(OP_CLI=$T/bin/op OP_VAULT=client-a OP_SERVICE_ACCOUNT_TOKEN=t WORKERS_CI_BRANCH=Feat/Login rel "$S" preview)
 has "exit=0" "$o2" && has "wrangler preview --name feat-login --secrets-file " "$(log)" && has "wrangler preview secret list --name feat-login --json" "$(log)" || why="$why; preview: $o2 // $(log)"
