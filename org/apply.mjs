@@ -146,14 +146,23 @@ export async function plan(gh, overlay) {
     match[i] ??= live.find((l) => !used.has(l.id) && !want.rulesets.some((x) => x.name === l.name) && same(l, w));
     if (match[i]) used.add(match[i].id);
   });
+  // A ruleset that replaces legacy ones (org/rulesets.json `replaces`) takes over the first one found, in place.
+  const replaces = (w) => DEF.rulesets.find((r) => r.name === w.name)?.replaces ?? [];
+  want.rulesets.forEach((w, i) => {
+    match[i] ??= replaces(w).map((n) => live.find((l) => l.name === n && !used.has(l.id))).find(Boolean);
+    if (match[i]) used.add(match[i].id);
+  });
   const deletes = [];
   for (let [i, w] of want.rulesets.entries()) {
-    const l = match[i];
+    const l = match[i], key = "require_extra_approval_for_unattributed_changes";
+    // Unset in the overlay, extra approval keeps the live value: the matched ruleset's, and when this one replaces
+    // legacy rulesets, the strictest of theirs, so a migration never loosens it.
+    const kept = [l, ...replaces(w).map((n) => live.find((x) => x.name === n))].filter(Boolean).map((x) => canon(x).rules.pull_request?.[key]).filter((v) => v !== undefined);
+    if (overlay.org_admin[key] === undefined && w.rules.pull_request && kept.length)
+      want.rulesets[i] = w = { ...w, rules: { ...w.rules, pull_request: { ...w.rules.pull_request, [key]: kept.some(Boolean) } } };
     if (!l) steps.push({ what: `ruleset "${w.name}": create`, detail: [], call: ["POST", `orgs/${org}/rulesets`, toApi(w)] });
     else {
-      const cl = canon(l), key = "require_extra_approval_for_unattributed_changes";
-      if (overlay.org_admin[key] === undefined && w.rules.pull_request && cl.rules.pull_request)
-        want.rulesets[i] = w = { ...w, rules: { ...w.rules, pull_request: { ...w.rules.pull_request, [key]: cl.rules.pull_request[key] } } };
+      const cl = canon(l);
       const d = fieldDiff(cl, w);
       if (d.length) steps.push({ what: `ruleset "${w.name}" #${l.id}: update${l.name === w.name ? "" : ` (was "${l.name}")`}`, detail: d, call: ["PUT", `orgs/${org}/rulesets/${l.id}`, toApi(w)] });
     }
