@@ -94,6 +94,26 @@ B=$(mkrepo); mail_site "$B"; put "$B" src/pages/api/contact.ts 'import { EmailMe
 export const POST = ({ request }) => { if (new URL(request.headers.get("origin")).host !== new URL(request.url).host) return new Response(null, { status: 403 });
   return env.SEND_EMAIL.send(new EmailMessage("a", "client@example.com", "")); };'; commit "$B"
 b=$(check "$B"); has "src/pages/api/contact.ts sends mail but never compares the request hostname with the production hosts" "$b" && ok client-mail-seam || fail client-mail-seam "no reroute: $b"
+# the seam may take the binding as an argument: routes that pass it on send nothing themselves, and a comment is no send
+G=$(mkrepo); mail_site "$G"; put "$G" src/lib/email.ts 'import { EmailMessage } from "cloudflare:email";
+const PRODUCTION_HOSTS = new Set(["example.com", "www.example.com"]);
+export async function sendFormEmail(mailer, request, to, raw) {
+  const live = PRODUCTION_HOSTS.has(new URL(request.url).hostname);
+  await mailer.send(new EmailMessage("form@example.com", live ? to : "test@example.com", raw));
+}'
+for r in contact order; do put "$G" src/pages/api/$r.ts 'import { env } from "cloudflare:workers"; import { sendFormEmail } from "../../lib/email";
+// never env.SEND_EMAIL.send(...) here: the seam reroutes
+export const POST = ({ request }) => sendFormEmail(env.SEND_EMAIL, request, "client@example.com", "");'; done; commit "$G"
+g=$(check "$G") && ok client-mail-seam || fail client-mail-seam "dependency-injected seam: $g"
+# logging the hostname beside a host constant routes nothing: the guard is a comparison or membership test
+B=$(mkrepo); mail_site "$B"; put "$B" src/pages/api/contact.ts 'const HOST = "example.com";
+export const POST = ({ request }) => { console.log(HOST, new URL(request.url).hostname); return env.SEND_EMAIL.send({ to: ["client@example.com"] }); };'; commit "$B"
+b=$(check "$B"); has "src/pages/api/contact.ts sends mail but never compares the request hostname with the production hosts" "$b" && ok client-mail-seam || fail client-mail-seam "logged host passed: $b"
+# a wrangler.toml [[send_email]] binding counts too, without any cloudflare:email import
+B=$(mkrepo); put "$B" wrangler.toml 'name = "site"
+[[send_email]]
+name = "MAILER"'; put "$B" src/pages/api/contact.ts 'export const POST = ({ locals }) => locals.runtime.env.MAILER.send({ to: ["client@example.com"] });'; commit "$B"
+b=$(check "$B"); has "src/pages/api/contact.ts sends mail but never compares the request hostname with the production hosts" "$b" && ok client-mail-seam || fail client-mail-seam "toml binding missed: $b"
 
 # ---- built output: after the build, dist/ HTML has no HTML comments, no comments in inline scripts, and no
 # source-platform names (gate.mjs run build)
