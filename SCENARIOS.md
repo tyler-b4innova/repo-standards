@@ -45,6 +45,8 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 
 - **`review-no-promotions`**: the review rule has no promotion path: a pull request from the default branch into another branch is judged like any other (a UI change needs its evidence comment; a person's approval is no substitute, since code-owner approval on `main` is the rulesets' business).
 
+- **`release-browsers-on-main`**: a repository's extra browsers (`standards.json` `e2e.browsers`, or the overlay's `e2e.release_browsers`) run on main, not on pull requests: apply ships `std-release-check.yml` (pushes to main and manual runs) only where some are named, `--check` then requires an https `staging_url`, and `gate.mjs release` waits for the commit's Workers Builds (failing on a failed or unfinished build) and hands the browsers and the staging URL to the install and e2e steps; the overlay's old `e2e.promotion_browsers` is refused. Stated rule: the extra browsers test the build staging runs, before a person deploys its uploaded production version.
+
 Retired in 0.6.0 with the staged flow: `promote-no-ui-auto`, `promote-ui-needs-human-approval`, `promote-approval-then-merges`, `promote-stale-approval-rejected`, `promotion-not-strict`, `engine-org-flow-property`.
 
 ## Repository contents
