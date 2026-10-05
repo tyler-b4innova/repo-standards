@@ -110,6 +110,13 @@ o=$(built client '<html><body><script>
   // tracks the old menu
   go();
 </script></body></html>'); has "exit=1" "$o" && has "dist/index.html: comment in an inline script" "$o" || why="$why; inline: $o"
+# a trailing comment counts; // and /* inside strings, template literals and regular expressions do not, nor does division
+o=$(built client '<html><body><script>go(); // the old menu
+</script></body></html>'); has "exit=1" "$o" && has "dist/index.html: comment in an inline script" "$o" || why="$why; trailing: $o"
+o=$(built client '<html><body><script>
+const a = "https://example.com/x", b = '"'"'/* not a comment */'"'"', c = `// ${a} /*`, d = /\/\*|\/\/[a-z]/g, e = 4 / 2 / 1;
+const f = [1, 2].map((x) => x / 2), g = a.replace(/\/\//g, "/");
+</script></body></html>'); has "exit=0" "$o" && has "built output: dist/ is clean" "$o" || why="$why; strings and regexes: $o"
 o=$(built client '<html><body><p>Site by Squarespace</p></body></html>'); has "exit=1" "$o" && has "dist/index.html: source-platform name Squarespace" "$o" || why="$why; platform: $o"
 o=$(built internal '<html><body><!-- note --></body></html>'); has "exit=0" "$o" && ! has "built output" "$o" || why="$why; internal scanned: $o"
 if [ -z "$why" ]; then ok client-built-output-clean; else fail client-built-output-clean "$why"; fi
