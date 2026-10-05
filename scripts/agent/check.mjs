@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { scan } from "./jsscan.mjs";
 import { claudePins, codexPins } from "./pins.mjs";
+import { verifyGeneratedBuild } from "./release-config.mjs";
 import { findings as stagingFindings, parse as parseWrangler } from "./staging.mjs";
 
 if (process.argv.includes("--help")) {
@@ -337,7 +338,9 @@ else {
     && [undefined, "1password", "secrets_store"].includes(sec.store)))
     fail(`standards.json secrets is ${JSON.stringify(sec)}`, '{"required": ["NAME", ...], "store": "1password" (our accounts) or "secrets_store" (a client-owned account)}');
   if (![undefined, false].includes(std?.staging)) fail(`standards.json staging is ${JSON.stringify(std.staging)}`, "remove it, or false for a Worker that is not released through staging (previews are still checked)");
-  const rootWrangler = ["wrangler.jsonc", "wrangler.json", "wrangler.toml"].find((f) => tracked.includes(f));
+  const rootWrangler = ["wrangler.json", "wrangler.jsonc", "wrangler.toml"].find((f) => tracked.includes(f));
+  try { verifyGeneratedBuild(std ?? {}, json("package.json"), rootWrangler ?? null); }
+  catch (e) { fail(`generated Wrangler config: ${e.message}`, "make standards.json build or package.json scripts.build honor CLOUDFLARE_ENV=staging (use an adapter with environment selection), then rebuild without it for production"); }
   if (rootWrangler?.endsWith(".toml")) warn(`${rootWrangler} is not checked for staging isolation (TOML) | fix: convert it to wrangler.jsonc`);
   else if (rootWrangler) {
     const cfg = parseWrangler(read(rootWrangler) ?? "");

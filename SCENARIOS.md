@@ -46,6 +46,13 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 
 ## One-branch releases
 
+- **`release-generated-builds`**: adapter-generated flattened Wrangler configs select staging with `CLOUDFLARE_ENV=staging`, then build production separately with it unset before versions upload. Incident: an adapter ignored deploy-time `--env staging` and deployed production.
+- **`release-generated-guard`**: release resolves the adapter redirect and aborts before any Wrangler command when the target is production rather than exactly `<name>-staging`.
+- **`release-production-route-guard`**: staging cannot bind a production hostname through a route or custom domain, even with a different path or scheme.
+- **`release-staging-output`**: Wrangler must confirm the staging Worker name; mismatched output aborts production upload.
+- **`release-plain-config`**: plain JSONC staging applies its environment and pins the checked config and staging name before deploying.
+- **`release-generated-check`**: the offline check requires exactly `<name>-staging`, and it and a fresh CI build reject redirected builds that ignore `CLOUDFLARE_ENV` and accepts builds that restore production after the staging probe.
+
 - **`review-no-promotions`**: the review rule has no promotion path: a pull request from the default branch into another branch is judged like any other (a UI change needs its evidence comment; a person's approval is no substitute, since code-owner approval on `main` is the rulesets' business).
 
 - **`release-browsers-on-main`**: a repository's extra browsers (`standards.json` `e2e.browsers`, or the overlay's `e2e.release_browsers`) run on main, not on pull requests: apply ships `std-release-check.yml` (pushes to main and manual runs) only where some are named and the repository has not opted out with `"e2e": false`, `--check` then requires an https `staging_url` (not under `"e2e": false`, which ships no release check), and `gate.mjs release` waits for the commit's Workers Builds (failing on a failed or unfinished build; where the parent commit had a build, a check not created yet is waited for within the window, not taken as absent) and hands the browsers and the staging URL to the install and e2e steps; the overlay's old `e2e.promotion_browsers` is refused. Stated rule: the extra browsers test the build staging runs, before a person deploys its uploaded production version.

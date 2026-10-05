@@ -1,0 +1,7 @@
+{
+  // Plain Wrangler environments, no generated config.
+  "name": "site",
+  "main": "src/index.js",
+  "routes": ["site.example.com/*"],
+  "env": { "staging": { "routes": [], "workers_dev": true } },
+}

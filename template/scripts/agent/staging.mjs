@@ -78,6 +78,7 @@ export function findings(cfg, { file, std = {}, pack = {}, required = [] }) {
     return { fails, warns };
   }
   if (stage.name !== undefined && stage.name === prodName) F("env.staging.name is the production Worker's name", `name it ${prodName}-staging, or remove it (that is the default)`);
+  else if (stage.name !== undefined && stage.name !== `${prodName}-staging`) F("env.staging.name must be exactly <production name>-staging", `name it ${prodName}-staging, or remove it (that is the default)`);
   const routes = (s) => [...(Array.isArray(s.routes) ? s.routes : []), ...(s.route ? [s.route] : [])].map((r) => (typeof r === "string" ? r : r?.pattern)).filter(Boolean);
   // routes and route are inherited separately, and an inherited routes wins over the staging route
   if ((cfg.routes !== undefined && stage.routes === undefined) || (cfg.route !== undefined && stage.route === undefined && stage.routes === undefined))

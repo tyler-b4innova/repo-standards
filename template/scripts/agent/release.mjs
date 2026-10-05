@@ -11,8 +11,9 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parse } from "./staging.mjs";
+import { build, rootFile, readConfig, effectiveConfig, assertStaging } from "./release-config.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
 const SUBS = ["main", "preview", "slug", "cleanup"];
@@ -35,22 +36,23 @@ if (cmd === "slug") {
 
 try { process.chdir(execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: "pipe" }).trim()); } catch {}
 const std = json("standards.json") ?? {};
-const configFile = ["wrangler.jsonc", "wrangler.json", "wrangler.toml"].find(existsSync);
-// The root wrangler config, parsed (JSON with comments and trailing commas); a TOML config only by its env tables.
+const configFile = rootFile();
 function config() {
   if (!configFile) fail("no wrangler config (wrangler.jsonc, wrangler.json or wrangler.toml)", "run this from a Worker repository");
-  const text = readFileSync(configFile, "utf8");
-  if (configFile.endsWith(".toml")) return { env: /^\s*\[env\.staging[\].]/m.test(text) ? { staging: {} } : {} };
-  return parse(text) ?? fail(`${configFile} does not parse`, "fix the config (JSON with comments and trailing commas)");
+  if (cmd !== "main" && configFile.endsWith(".toml")) return {};
+  return readConfig(configFile);
 }
+const pkg = json("package.json");
+const productionEnv = { ...env };
+delete productionEnv.CLOUDFLARE_ENV;
 // Workers Builds targets the production Worker through WRANGLER_CI_OVERRIDE_NAME (and guards it with
 // WRANGLER_CI_MATCH_TAG), which would also rename an --env staging command onto production: staging commands run without them.
-const STAGING_ENV = Object.fromEntries(Object.entries(env).filter(([k]) => !["WRANGLER_CI_OVERRIDE_NAME", "WRANGLER_CI_MATCH_TAG"].includes(k)));
+const STAGING_ENV = Object.fromEntries(Object.entries(productionEnv).filter(([k]) => !["WRANGLER_CI_OVERRIDE_NAME", "WRANGLER_CI_MATCH_TAG"].includes(k)));
 const wrangler = (a, { capture = false } = {}) => {
   console.log(`release: npx wrangler ${a.map((x) => (/^\//.test(x) ? "<file>" : x)).join(" ")}`);
   // The repository's own wrangler where it is installed (the build), else the current major (the clean-up job installs nothing).
   const bin = existsSync("node_modules/.bin/wrangler") ? ["wrangler"] : ["-y", "wrangler@4"];
-  const r = spawnSync("npx", [...bin, ...a], { encoding: "utf8", stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit", env: a.includes("--env") ? STAGING_ENV : env });
+  const r = spawnSync("npx", [...bin, ...a], { encoding: "utf8", stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit", env: a.includes("--env") ? STAGING_ENV : productionEnv });
   return { status: r.status ?? 1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
 };
 const must = (a) => { const r = wrangler(a); if (r.status) process.exit(r.status); };
@@ -135,16 +137,29 @@ async function deploy() {
     }
     const cfg = config(), staged = Boolean(cfg.env?.staging);
     if (staged) {
+      build(std, pkg, true);
+      const resolved = effectiveConfig(configFile, true), name = assertStaging(cfg, resolved);
+      // An explicit generated --config loses Wrangler's redirect context and rejects adapter metadata.
+      // Preserve redirect discovery for generated configs; plain configs can be pinned directly.
+      const configArgs = resolved.redirected ? [] : ["--config", resolved.file];
       // staging's own databases take this commit's migrations first (production's run when its version goes live)
-      for (const d of Array.isArray(cfg.env.staging.d1_databases) ? cfg.env.staging.d1_databases : [])
-        if (d?.binding && existsSync(d.migrations_dir ?? "migrations")) must(["d1", "migrations", "apply", d.binding, "--env", "staging", "--remote"]);
-      must(["deploy", "--env", "staging", ...sf]);
-      secretCheck("the staging Worker", ["secret", "list", "--env", "staging", "--format", "json"]);
+      for (const d of Array.isArray(resolved.cfg.d1_databases) ? resolved.cfg.d1_databases : [])
+        if (d?.binding && existsSync(resolve(dirname(resolved.file), d.migrations_dir ?? "migrations"))) must(["d1", "migrations", "apply", d.binding, "--env", "staging", ...configArgs, "--remote"]);
+      // Pin the checked name and strip CI overrides so staging cannot target production.
+      const deployed = wrangler(["deploy", "--env", "staging", ...configArgs, "--name", name, ...sf], { capture: true });
+      process.stdout.write(deployed.out);
+      if (deployed.status) process.exit(deployed.status);
+      const names = [...deployed.out.replace(/\x1b\[[0-9;]*m/g, "").matchAll(/^\s*(?:Uploaded|Deployed) ([a-zA-Z0-9_-]+)(?: triggers)? \(/gm)].map((m) => m[1]);
+      if (!names.length || names.some((n) => n !== name)) fail(`staging deploy output did not confirm ${name}`, "inspect the Wrangler deployment immediately; production upload aborted");
+      secretCheck("the staging Worker", ["secret", "list", "--env", "staging", ...configArgs, "--name", name, "--format", "json"]);
     } else {
       console.log(`::warning::${configFile} has no env.staging; deploying staging as the legacy "staging" Preview. Add env.staging (a separate <name>-staging Worker with its own data): see the standards README`);
       must(["preview", "--name", "staging", ...sf]);
       secretCheck("the staging Preview", ["preview", "secret", "list", "--name", "staging", "--json"]);
     }
+    build(std, pkg);
+    const production = effectiveConfig(configFile);
+    if (production.cfg.name !== cfg.name) fail("production build does not target the production Worker", "build without CLOUDFLARE_ENV before uploading");
     const sha = env.WORKERS_CI_COMMIT_SHA;
     must(["versions", "upload", ...(sha ? ["--tag", sha, "--message", `main ${sha}`, "--var", `SENTRY_RELEASE:${sha}`] : [])]);
     secretCheck("the production Worker", ["secret", "list", "--format", "json"]);
@@ -190,4 +205,5 @@ async function cleanup() {
   console.log(`cleanup: ${names.size ? "done" : "no closed pull requests"}`);
 }
 
-await (cmd === "cleanup" ? cleanup() : deploy());
+try { await (cmd === "cleanup" ? cleanup() : deploy()); }
+catch (e) { fail(e.message, "fix the build/config before retrying; staging must target only <production name>-staging with no production routes or custom domains"); }
