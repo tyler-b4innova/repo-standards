@@ -2,8 +2,7 @@
 # cloud-env action, rendered below). Not a required check. A cloud-env.json change on a pull request runs the offline
 # check (schema and consistency) with no token. A push to main, the production branch, applies the file with the
 # Cloudflare token read from the org's CI 1Password vault (the overlay's cloud_env.token_ref, through the org secret
-# OP_SERVICE_ACCOUNT_TOKEN); while that reference is unset it only posts a notice. A staged repository's integration
-# branch only checks: cloud changes go live through the promotion. A manual run checks, and on main also applies (a
+# OP_SERVICE_ACCOUNT_TOKEN); while that reference is unset it only posts a notice. A manual run checks, and on main also applies (a
 # cloud-env.json that predates this workflow is onboarded that way). Agents never hold this token.
 name: std-cloud-env
 on:
