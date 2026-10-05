@@ -35,6 +35,7 @@ jset "$R/standards.json" 'o.e2e={browsers:["firefox","webkit"]}'; apply "$R" >/d
 # "e2e": false opts out of the release check too, whatever browsers the repository or the org names
 R3=$T/optout; git init -q -b main "$R3"; apply "$R3" >/dev/null; jset "$R3/standards.json" 'o.e2e=false'; OVERLAY=$O apply "$R3" >/dev/null
 [ ! -e "$R3/$WF" ] || why="$why; shipped despite e2e false"
+commit "$R3"; out=$(check "$R3") || why="$why; e2e false still required staging_url: $out"
 commit "$R"; out=$(check "$R"); has "standards.json staging_url" "$out" || why="$why; browsers without staging_url passed: $out"
 jset "$R/standards.json" 'o.staging_url="http://staging.example.com"'; commit "$R"; out=$(check "$R"); has "standards.json staging_url" "$out" || why="$why; http staging_url passed"
 jset "$R/standards.json" 'o.staging_url="https://staging.preview.example.com/"'; commit "$R"; out=$(check "$R") || why="$why; check failed: $out"
