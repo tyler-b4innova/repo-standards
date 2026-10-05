@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// org-apply: make an organization's rulesets and `flow` property match org/rulesets.json, and create the org App.
+// org-apply: make an organization's rulesets match org/rulesets.json, and create the org App.
 //   org-apply --overlay <org.json> --dry-run        print the diff against the live org; sends only GETs
-//   org-apply --overlay <org.json>                  apply it: property, repo flows, create/update rulesets, then delete unlisted ones
+//   org-apply --overlay <org.json>                  apply it: repo settings, create/update rulesets, then delete unlisted ones
 //   org-apply create-app --overlay <org.json>       print the one-click link that registers the org App
 // Run by an org admin with their own gh login (GH_TOKEN, or `gh auth token`).
 import { execFileSync } from "node:child_process";
@@ -16,7 +16,6 @@ const byName = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 // Objects with keys in sorted order, recursively, so member order from GitHub never reads as a change.
 const keysSorted = (v) => (Array.isArray(v) ? v.map(keysSorted) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, keysSorted(v[k])])) : v);
 const sorted = (a) => [...(a ?? [])].map(keysSorted).sort((x, y) => byName(JSON.stringify(x), JSON.stringify(y)));
-const PROPERTY_FIELDS = ["value_type", "allowed_values", "required", "default_value", "values_editable_by", "description"];
 
 // Fill `$` placeholders from overlay.org_admin; a placeholder inside an array spreads a list value.
 export function render(overlay) {
@@ -26,6 +25,9 @@ export function render(overlay) {
   // Removed settings: `gate` is the only required check, and every PR ruleset requires resolved review threads.
   for (const k of ["codex_verdict_status", "review_status", "review_thread_resolution"])
     if (oa[k] !== undefined) throw new Error(`overlay org_admin.${k} is gone (gate is the only required check and review threads must always be resolved); remove it before running org-apply`);
+  // The staged flow is retired: one branch, main.
+  if (oa.staged !== undefined || oa.extra_checks?.staged_main !== undefined || oa.extra_checks?.staging !== undefined)
+    throw new Error("overlay org_admin.staged, extra_checks.staged_main and extra_checks.staging are gone (the staged flow is retired: one branch, main); remove them before running org-apply");
   if (oa.push_app_bypass !== undefined) throw new Error("overlay org_admin.push_app_bypass is gone (the App never bypasses push hygiene: a pack landing adds no secret or large file); remove it before running org-apply");
   if (oa.require_extra_approval_for_unattributed_changes !== undefined && typeof oa.require_extra_approval_for_unattributed_changes !== "boolean")
     throw new Error("overlay org_admin.require_extra_approval_for_unattributed_changes must be true or false when set");
@@ -33,8 +35,6 @@ export function render(overlay) {
     strict_status_checks: oa.strict_status_checks === true,
     gate_integration_id: oa.gate_integration_id ?? null, // null: `gate` is accepted from any source
     "extra_checks.default": oa.extra_checks?.default ?? [],
-    "extra_checks.staged_main": oa.extra_checks?.staged_main ?? [],
-    "extra_checks.staging": oa.extra_checks?.staging ?? [],
     extra_restricted_paths: oa.extra_restricted_paths ?? [],
     push_ignored_paths: oa.push_ignored_paths ?? [],
     max_file_size_mb: oa.max_file_size_mb ?? 50,
@@ -61,7 +61,6 @@ export function render(overlay) {
   // push_ruleset "external": the org keeps its own push ruleset; org-apply neither writes nor deletes push rulesets.
   const external = oa.push_ruleset === "external";
   return {
-    property: DEF.property,
     external,
     rulesets: DEF.rulesets.filter((r) => !(external && r.target === "push")).map((r) => canon({ ...fill(r), enforcement: "active", bypass_actors: bypass(r) }, prDefaults)),
   };
@@ -118,46 +117,21 @@ function fieldDiff(a, b, path = "") {
   return [...new Set([...Object.keys(a), ...Object.keys(b)])].sort().flatMap((k) => fieldDiff(a[k], b[k], path ? `${path}.${k}` : k));
 }
 
-// Everything that would change, in apply order: property, repo flows, create/update rulesets, deletes last.
+// Everything that would change, in apply order: repo settings, create/update rulesets, deletes last (the retired
+// flow property after the rulesets that read it).
 export async function plan(gh, overlay) {
   const org = overlay.org;
   const want = render(overlay);
   const steps = [];
 
-  const liveProp = await gh("GET", `orgs/${org}/properties/schema/${want.property.property_name}`, null, { allow404: true });
-  const pick = (p) => Object.fromEntries(PROPERTY_FIELDS.map((k) => [k, k === "allowed_values" ? sorted(p?.[k]) : p?.[k] ?? null]));
-  const propDiff = liveProp ? fieldDiff(pick(liveProp), pick(want.property)) : ["(absent) -> defined"];
-  if (propDiff.length) {
-    const { property_name: name, ...body } = want.property;
-    steps.push({ what: `property ${name}: ${liveProp ? "update" : "create"}`, detail: propDiff, call: ["PUT", `orgs/${org}/properties/schema/${name}`, body] });
-  }
-
   const repos = (await gh("GET", `orgs/${org}/repos?per_page=100&type=all`)).filter((r) => !r.archived).map((r) => r.name);
-  const staged = new Set(overlay.org_admin.staged ?? []);
-  // A ruleset can only narrow merge methods the repository allows: every repo needs squash, and a staged
-  // repo also needs merge commits for promotions into main. Every repo deletes a PR's branch when it merges.
+  // A ruleset can only narrow merge methods the repository allows: every repo needs squash. Every repo deletes a PR's
+  // branch when it merges.
   for (const r of repos) {
     const repo = await gh("GET", `repos/${org}/${r}`);
-    const need = { allow_squash_merge: true, delete_branch_on_merge: true, ...(staged.has(r) && { allow_merge_commit: true }) };
+    const need = { allow_squash_merge: true, delete_branch_on_merge: true };
     const off = Object.keys(need).filter((k) => repo[k] === false);
     if (off.length) steps.push({ what: `repo ${r}: enable ${off.join(", ")}`, detail: [], call: ["PATCH", `repos/${org}/${r}`, Object.fromEntries(off.map((k) => [k, true]))] });
-  }
-  for (const s of staged) if (!repos.includes(s)) console.error(`warning: org_admin.staged names ${s}, which is not an active repository in ${org}`);
-  const values = await gh("GET", `orgs/${org}/properties/values?per_page=100`);
-  const current = Object.fromEntries(values.map((v) => [v.repository_name, v.properties.find((p) => p.property_name === "flow")?.value ?? null]));
-  const moves = {};
-  for (const r of repos) {
-    const to = staged.has(r) ? "staged" : "direct";
-    if (current[r] !== to) (moves[to] ??= []).push(r);
-  }
-  for (const [to, names] of Object.entries(moves)) {
-    for (let i = 0; i < names.length; i += 30) {
-      const chunk = names.slice(i, i + 30);
-      steps.push({
-        what: `flow=${to}: ${chunk.join(", ")}`, detail: chunk.map((r) => `${r}: ${current[r] ?? "(unset)"} -> ${to}`),
-        call: ["PATCH", `orgs/${org}/properties/values`, { repository_names: chunk, properties: [{ property_name: "flow", value: to }] }],
-      });
-    }
   }
 
   const listed = await gh("GET", `orgs/${org}/rulesets?per_page=100`);
@@ -187,6 +161,9 @@ export async function plan(gh, overlay) {
   for (const l of live) {
     if (!used.has(l.id)) deletes.push({ what: `ruleset "${l.name}" #${l.id}: delete (not in org/rulesets.json)`, detail: [], call: ["DELETE", `orgs/${org}/rulesets/${l.id}`] });
   }
+  // The staged flow's `flow` property is retired; it goes after the rulesets that read it.
+  if (await gh("GET", `orgs/${org}/properties/schema/flow`, null, { allow404: true }))
+    deletes.push({ what: "property flow: delete (the staged flow is retired)", detail: [], call: ["DELETE", `orgs/${org}/properties/schema/flow`] });
   return [...steps, ...deletes];
 }
 
