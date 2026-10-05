@@ -41,12 +41,11 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 - **`jobs-have-timeouts`**: a workflow job without `timeout-minutes` fails `--check` (the default is 360 minutes).
 - **`secrets-scan-changes-only`**: the secret scan covers the pull request's own commits, including on a dispatch re-gate of the merge ref, so an old leak already on the base does not fail it.
 
-## Promotions (flow `staged`)
+## One-branch releases
 
-- **`promote-no-ui-auto`**: a promotion without UI changes passes the review rule with no approval, so auto-merge completes.
-- **`promote-ui-needs-human-approval`**: a promotion with UI changes fails until a human with write access approves; a bot's or a read-only user's approval does not count.
-- **`promote-approval-then-merges`**: the approval turns the review verdict green on the same head with no push (the rule is asked again before merging; no workflow listens for reviews).
-- **`promote-stale-approval-rejected`**: an approval on an older head, or one later dismissed, does not count.
+- **`review-no-promotions`**: the review rule has no promotion path: a pull request from the default branch into another branch is judged like any other (a UI change needs its evidence comment; a person's approval is no substitute, since code-owner approval on `main` is the rulesets' business).
+
+Retired in 0.6.0 with the staged flow: `promote-no-ui-auto`, `promote-ui-needs-human-approval`, `promote-approval-then-merges`, `promote-stale-approval-rejected`, `promotion-not-strict`, `engine-org-flow-property`.
 
 ## Repository contents
 
