@@ -32,7 +32,7 @@ const event = env.GITHUB_EVENT_PATH ? json(env.GITHUB_EVENT_PATH) ?? {} : {};
 const prNumber = event.pull_request?.number ?? (env.GITHUB_EVENT_NAME === "workflow_dispatch" && /^\d+$/.test(event.inputs?.pr ?? "") ? Number(event.inputs.pr) : null);
 const pack = json("scripts/agent/pack.json") ?? {};
 const e2eCfg = typeof std.e2e === "object" && std.e2e ? std.e2e : {}, e2eCmd = typeof std.e2e === "string" ? std.e2e : e2eCfg.command;
-// Browsers for this run: Chromium, plus the repo's (and overlay's) extra browsers on promotion PRs only (plan sets GATE_BROWSERS).
+// Browsers for this run: Chromium on pull requests; the release check sets the repo's (and overlay's) extra browsers.
 const browsers = () => (env.GATE_BROWSERS || "chromium").split(",").filter(Boolean);
 const output = (k, v) => { console.log(`${k}=${v}`); if (env.GITHUB_OUTPUT) writeFileSync(env.GITHUB_OUTPUT, `${k}=${v}\n`, { flag: "a" }); };
 const ghApi = () => {
@@ -131,15 +131,10 @@ if (cmd === "plan") {
   let mode = "full", why = "build and test this head";
   const pr = prNumber ? await get(`/pulls/${prNumber}`) : null;
   if (pr?.draft) { mode = "cheap"; why = "draft: the full gate runs from ready_for_review"; }
-  let list = ["chromium"];
-  if (pr) {
-    const info = (await get("", { need: false })) ?? {}, flow = std.flow ?? info.custom_properties?.flow;
-    if (flow === "staged" && pr.head?.repo?.full_name === env.GITHUB_REPOSITORY && pr.head.ref === info.default_branch && pr.base.ref !== info.default_branch)
-      list = [...new Set([...list, ...(e2eCfg.browsers ?? []), ...(pack.e2e_promotion_browsers ?? [])])];
-  }
+  // Pull requests run Chromium only; a repository's extra browsers run on main, against staging, before a release.
   console.log(`plan: ${mode} (${why})`);
   output("mode", mode);
-  output("browsers", list.join(","));
+  output("browsers", "chromium");
 } else if (cmd === "syntax") {
   // The cheap gate's stand-in for building: managed scripts and workflows must at least parse.
   const bad = [], yaml = spawnSync("python3", ["-c", "import yaml"]).status === 0;
@@ -231,7 +226,7 @@ if (cmd === "plan") {
   // standards.json "e2e": "<command>" names the suite; else a script, a tests/e2e or e2e dir, or a root Playwright config.
   const script = ["test:e2e", "e2e"].find((s) => pkg?.scripts?.[s]), dir = ["tests/e2e", "e2e"].find(has);
   const rootPw = ls(".").some((f) => /^playwright\.config\.[cm]?[jt]s$/.test(f)), pw = rootPw || (dir && ls(dir).some((f) => /^playwright\.config\.[cm]?[jt]s$/.test(f)));
-  // Playwright runs this run's browsers only (Chromium unless a promotion opts in more), when the config defines
+  // Playwright runs this run's browsers only (Chromium unless the release check opts in more), when the config defines
   // those projects; a config without projects runs as it is.
   const cfgFile = [...(rootPw ? ls(".") : []), ...(dir && !rootPw ? ls(dir).map((f) => `${dir}/${f}`) : [])].find((f) => /(^|\/)playwright\.config\.[cm]?[jt]s$/.test(f));
   const cfg = cfgFile ? rd(cfgFile, "utf8") : "", named = (b) => new RegExp(`name:\\s*['"\`]${b}['"\`]`).test(cfg);
