@@ -8,6 +8,8 @@ export function scan(text) {
   const comments = [], ranges = [];
   let code = "", i = 0, last = ""; // last: the previous significant token's final character, or a keyword
   const braces = []; // per open `{`: true when it opened a template literal's ${ } substitution
+  const parens = []; // per open `(`: true when it holds a control statement's condition (if, while, for, with)
+  let word = ""; // the identifier or keyword just before, when it is the previous token
   const regexAllowed = () => last === "" || /[(,=:[!&|?{};+\-*%<>~^]$/.test(last) || KEYWORDS.has(last);
   const blank = (s) => s.replace(/[^\n]/g, " ");
   const template = () => { // from just after a ` (or a substitution's closing }) to the closing ` or the next ${
@@ -47,9 +49,12 @@ export function scan(text) {
     else if (c === "}") braces.pop();
     if (/[A-Za-z_$]/.test(c)) {
       const w = text.slice(i).match(/^[\w$]+/)[0];
-      code += w; i += w.length; last = KEYWORDS.has(w) ? w : "a"; continue;
+      code += w; i += w.length; last = KEYWORDS.has(w) ? w : "a"; word = w; continue;
     }
-    if (!/\s/.test(c)) last = c === ")" || c === "]" ? "a" : c;
+    if (c === "(") parens.push(["if", "while", "for", "with"].includes(word));
+    // After a control statement's condition a statement starts, so a `/` there opens a regex; after any other `)` it divides.
+    if (!/\s/.test(c)) last = c === ")" ? (parens.pop() ? ";" : "a") : c === "]" ? "a" : c;
+    if (!/\s/.test(c)) word = "";
     code += c; i++;
   }
   let source = "", at = 0;

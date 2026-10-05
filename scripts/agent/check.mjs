@@ -24,11 +24,22 @@ const glob = (g) => new RegExp("^" + g.replace(/[.+^$()|[\]\\]/g, "\\$&").replac
 // quoted hosts (.includes / .has), or compared with a quoted host (=== / !==). Reading or logging the hostname is not one.
 const HOST = /["'`](?:[a-z0-9-]+\.)+[a-z]{2,}["'`]/i;
 function hostGuard(t) {
-  if (new RegExp(`\\.hostname\\s*[!=]==?\\s*${HOST.source}|${HOST.source}\\s*[!=]==?\\s*[\\w$.?()\\[\\]"'\`]*\\.hostname\\b`, "i").test(t)) return true;
+  // The hostname itself, or a variable holding it: const h = url.hostname, or const { hostname } = url (and aliases of those).
+  const aliases = new Set();
+  for (const m of t.matchAll(/\{([^{}]*)\}\s*=\s*[^;\n]+/g)) for (const p of m[1].split(",")) { const [k, v] = p.split(":").map((x) => x.trim()); if (k === "hostname") aliases.add(v || k); }
+  for (let grew = true; grew; ) {
+    grew = false;
+    const ref = `(?:\\.hostname\\b${[...aliases].map((a) => `|\\b${a.replace(/\$/g, "\\$")}\\b`).join("")})`;
+    for (const m of t.matchAll(new RegExp(`([A-Za-z_$][\\w$]*)\\s*=\\s*(?:new\\s+URL\\([^)]*\\)|[\\w$.?()\\[\\]]*?)${ref}\\s*[,;\\n)]`, "g")))
+      if (!aliases.has(m[1])) { aliases.add(m[1]); grew = true; }
+  }
+  const ref = `(?:[\\w$.?()\\[\\]"'\`]*\\.hostname\\b${[...aliases].map((a) => `|\\b${a.replace(/\$/g, "\\$")}\\b`).join("")})`;
+  if (new RegExp(`${ref}\\s*[!=]==?\\s*${HOST.source}|${HOST.source}\\s*[!=]==?\\s*${ref}`, "i").test(t)) return true;
   for (const m of t.matchAll(/(\]|[A-Za-z_$][\w$]*)\s*\)?\s*\.\s*(includes|has)\s*\(/g)) {
     let depth = 1, j = m.index + m[0].length;
     for (; j < t.length && depth; j++) depth += t[j] === "(" ? 1 : t[j] === ")" ? -1 : 0;
-    if (!/\.hostname\s*\)$/.test(t.slice(m.index + m[0].length, j))) continue;
+    const arg = t.slice(m.index + m[0].length, j - 1).trim();
+    if (!/\.hostname$/.test(arg) && !aliases.has(arg)) continue;
     if (m[1] === "]") { const open = t.lastIndexOf("[", m.index); if (open >= 0 && HOST.test(t.slice(open, m.index))) return true; continue; }
     const decl = t.match(new RegExp(`\\b(?:const|let|var)\\s+${m[1].replace(/\$/g, "\\$")}\\b[^=]*=\\s*(?:new\\s+Set\\s*\\(\\s*)?\\[([^\\]]*)\\]`));
     if (decl && HOST.test(decl[1])) return true;
@@ -254,14 +265,34 @@ else {
           fail(`${f}: html sets overflow-x to a scroll container`, "remove it; clip the overflowing element instead (overflow: clip)");
       }
     }
-    const wrangler = ["wrangler.jsonc", "wrangler.json", "wrangler.toml"].map(read).find((t) => t !== null) ?? "";
+    const wranglerFile = ["wrangler.jsonc", "wrangler.json", "wrangler.toml"].find((f) => read(f) !== null), wrangler = wranglerFile ? read(wranglerFile) : "";
+    // Every send_email binding name the config declares: JSON(C) at any depth (top level, previews, env.*), whatever
+    // other fields an entry has; TOML [[send_email]] / [[env.<name>.send_email]] tables and inline arrays.
+    function sendEmailBindings() {
+      const names = new Set();
+      if (/\.toml$/.test(wranglerFile ?? "")) {
+        for (const m of wrangler.matchAll(/^\s*\[\[(?:[\w.-]+\.)?send_email\]\]\s*\n((?:(?!\s*\[)[^\n]*\n?)*)/gm))
+          for (const n of m[1].matchAll(/^\s*name\s*=\s*["']([A-Za-z_]\w*)["']/gm)) names.add(n[1]);
+        for (const m of wrangler.matchAll(/^\s*send_email\s*=\s*\[/gm)) {
+          let depth = 0, j = m.index + m[0].length - 1;
+          for (; j < wrangler.length; j++) { depth += wrangler[j] === "[" ? 1 : wrangler[j] === "]" ? -1 : 0; if (!depth) break; }
+          for (const n of wrangler.slice(m.index, j).matchAll(/\bname\s*=\s*["']([A-Za-z_]\w*)["']/g)) names.add(n[1]);
+        }
+      } else if (wranglerFile) {
+        let cfg = null;
+        try { cfg = JSON.parse(scan(wrangler).source.replace(/,(\s*[}\]])/g, "$1")); } catch {}
+        const walk = (v) => { if (Array.isArray(v)) v.forEach(walk); else if (v && typeof v === "object")
+          for (const [k, x] of Object.entries(v)) { if (k === "send_email" && Array.isArray(x)) x.forEach((b) => typeof b?.name === "string" && names.add(b.name)); walk(x); } };
+        if (cfg) walk(cfg);
+        else for (const n of wrangler.matchAll(/["']name["']\s*:\s*["']([A-Za-z_]\w*)["']/g)) if (/send_email/.test(wrangler)) names.add(n[1]); // unparseable: every name, so no sender is missed
+      }
+      return [...names];
+    }
     // Mail: one seam sends it, and the seam compares the request hostname with the production hosts, so previews,
     // workers.dev and localhost never mail the client. A sender calls .send( on a send_email binding from the wrangler
     // config (JSON, or a TOML [[send_email]] table), or imports cloudflare:email and calls .send(; passing the binding
     // on is not a send.
-    const bindings = /^\s*\[\[send_email\]\]/m.test(wrangler)
-      ? [...wrangler.matchAll(/^\s*\[\[send_email\]\]\s*\n(?:(?!\s*\[)[^\n]*\n?)*/gm)].map((m) => m[0].match(/^\s*name\s*=\s*["']([A-Za-z_]\w*)["']/m)?.[1]).filter(Boolean)
-      : [...(wrangler.match(/["']?send_email["']?\s*:\s*\[[^\]]*\]/)?.[0] ?? "").matchAll(/["']?name["']?\s*:\s*["']([A-Za-z_]\w*)["']/g)].map((m) => m[1]);
+    const bindings = sendEmailBindings();
     const lexed = new Map(src.map((f) => [f, scan(read(f) ?? "")]));
     const sends = (f) => { const { code } = lexed.get(f), imports = /from\s+["']cloudflare:email["']/.test(read(f) ?? "");
       return bindings.some((b) => new RegExp(`\\b${b}\\s*\\)?\\s*\\.\\s*send\\s*\\(`).test(code)) || (imports && /\.\s*send\s*\(/.test(code)); };
