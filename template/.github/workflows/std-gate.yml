@@ -72,7 +72,7 @@ jobs:
       - name: syntax
         if: steps.plan.outputs.mode == 'cheap'
         run: node scripts/agent/gate.mjs syntax
-  # The tail runs in parallel once the checks pass, and only for the full gate (drafts run the checks alone).
+  # The tail runs in parallel once the checks pass, and only for the full gate.
   build:
     needs: checks
     if: needs.checks.outputs.mode == 'full'

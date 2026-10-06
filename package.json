@@ -1,6 +1,6 @@
 {
   "name": "repo-standards",
-  "version": "0.7.5",
+  "version": "0.7.6",
   "description": "Org-neutral engine for repo-scoped agent standards",
   "private": true,
   "type": "module",
@@ -20,13 +20,13 @@
     "node": ">=22"
   },
   "scripts": {
-    "test:e2e": "test/run.sh"
+    "test:e2e": "bash test/ci-env"
   },
   "repository": {
     "type": "git",
     "url": "https://github.com/tyler-b4innova/repo-standards"
   },
-  "breaking": false,
+  "breaking": true,
   "exports": {
     "./review": "./template/scripts/agent/review.mjs",
     "./package.json": "./package.json"

@@ -18,7 +18,7 @@ pr() {
   mkdir -p "$d/src" && echo "export {};" >"$d/src/index.ts" && gc -C "$d" add -A && gc -C "$d" commit -qm base
   local base; base=$(git -C "$d" rev-parse HEAD)
   gc -C "$d" switch -qc feature
-  for f in "$@"; do mkdir -p "$d/$(dirname "$f")"; echo "change" >>"$d/$f"; done
+  for f in "$@"; do mkdir -p "$d/$(dirname "$f")"; if [ "$f" = package.json ]; then echo '{"name":"fixture","private":true}' >"$d/$f"; else echo "change" >>"$d/$f"; fi; done
   gc -C "$d" add -A && gc -C "$d" commit -qm feature
   gc -C "$d" switch -q main && echo "elsewhere" >"$d/OTHER.txt" && gc -C "$d" add -A && gc -C "$d" commit -qm "base moved"
   gc -C "$d" merge -q --no-ff -m merge feature
@@ -39,7 +39,7 @@ R=$(pr README.md src/index.ts); e=$(G "$R" e2e); es=$?
 [ $es -eq 1 ] && has "no e2e suite" "$e" && ! has "non-deployable" "$e" || why="$why; mixed e2e=$es: $e"
 
 # Markdown that ships (content collections, public files) is deployable
-for f in src/content/blog/post.md public/notes.md; do
+for f in src/content/blog/post.md public/notes.md template/scripts/agent/rollback.mjs template/scripts/agent/check.mjs template/scripts/agent/gate.mjs lib/engine.mjs package.json; do
   R=$(pr "$f"); e=$(G "$R" e2e); es=$?; [ $es -eq 1 ] && has "no e2e suite" "$e" || why="$why; $f skipped: $e"
 done
 

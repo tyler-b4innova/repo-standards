@@ -55,7 +55,7 @@ function ui(files) {
 }
 
 // A pull request whose changed paths are all non-deployable (pack.json non_deploy_paths: docs, agent instructions and
-// config, templates) has nothing to preview or test end to end: its changed files, or null. The diff is the checked-out
+// config) has nothing to preview or test end to end: its changed files, or null. The diff is the checked-out
 // merge commit (pull_request and re-gate runs) against its base parent, or the PR head against the event's base.
 // The pull request's base point: the checked-out merge commit's base parent (pull_request and re-gate runs), or the
 // merge base of the PR head and the event's base. null when there is neither.
@@ -190,12 +190,14 @@ if (cmd === "instructions") {
   if (bad.length) fail(`gate: ${bad.join(", ")}`, "open the failed job's log; a skipped or cancelled job never passes gate");
   console.log(`gate: ${mode === "cheap" ? "checks passed (draft: the tail runs from ready_for_review)" : "checks, build, e2e and repo checks passed"}`);
 } else if (cmd === "plan") {
-  // full: build and test this head. cheap: a draft (the check, the secret scan and a syntax pass); the full gate
-  // runs from ready_for_review.
+  // full: build and test this head. cheap: a consumer draft (checks, secrets and syntax);
+  // consumer drafts run the full gate from ready_for_review.
   const get = ghApi();
   let mode = "full", why = "build and test this head";
   const pr = prNumber ? await get(`/pulls/${prNumber}`) : null;
-  if (pr?.draft) { mode = "cheap"; why = "draft: the full gate runs from ready_for_review"; }
+  // The engine must exercise its own fixtures for code changes, including on draft PRs.
+  const engineCode = pkg?.name === "repo-standards" && has("bin/repo-standards.mjs") && !docOnly();
+  if (pr?.draft && !engineCode) { mode = "cheap"; why = "draft: the full gate runs from ready_for_review"; }
   // Pull requests run Chromium only; a repository's extra browsers run on main, against staging, before a release.
   console.log(`plan: ${mode} (${why})`);
   output("mode", mode);
