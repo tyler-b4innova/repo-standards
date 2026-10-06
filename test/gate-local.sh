@@ -14,6 +14,9 @@ git -C "$R" init -q -b main
 cp test/fixtures/local-worker/* "$R/"
 printf 'node_modules/\n.wrangler/\n.dev.vars\n.gate-order\n' > "$R/.gitignore"
 printf 'LOCAL_VALUE=dummy\n' > "$R/.dev.vars"
+# CI repeatedly exceeded the suite budget on registry revalidation in this fixture.
+# Keep real installs; reuse cached third-party packages and avoid repeating npm's remote audit.
+printf 'prefer-offline=true\naudit=false\n' > "$R/.npmrc"
 # Build neutral rejected samples at runtime; no org/account ids in the source fixture.
 node - "$R" <<'JS'
 const fs=require('fs'),d=process.argv[2];

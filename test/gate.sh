@@ -79,7 +79,9 @@ jset "$R/package.json" 'o.scripts={"test:e2e":"playwright test"}'; e6=$(pwrun GA
 echo 'export default { use: {} };' > "$R/playwright.config.js"; e4=$(pwrun GATE_X=1)
 IB=$T/install-bin; mkpath "$IB"; shim "$IB" npm 'exit 0'
 : > "$T/pw.log"; (cd "$R" && PATH="$IB" GATE_BROWSERS=chromium node scripts/agent/gate.mjs install) >/dev/null 2>&1; i1=$(cat "$T/pw.log")
-if has "playwright test --project=chromium base=none budget=300000" "$e1" && has "test --project=chromium --project=firefox" "$e2" && has "base=https://feat.preview.example.test" "$e3" \
+# CI observed 299999ms: choosing the suite consumes part of the five-minute budget.
+b1=${e1##*budget=}
+if has "playwright test --project=chromium base=none budget=" "$e1" && [[ "$b1" =~ ^[0-9]+$ ]] && [ "$b1" -gt 299000 ] && [ "$b1" -le 300000 ] && has "test --project=chromium --project=firefox" "$e2" && has "base=https://feat.preview.example.test" "$e3" \
   && has "playwright test base=none" "$e4" && ! has "project" "$e4" && [ $x5 -eq 1 ] && has "defines projects but none named chromium" "$e5" && has "playwright test --project=chromium" "$e6" && ! has firefox "$e6" && has "install --with-deps chromium" "$i1" && ! has "firefox" "$i1"
 then ok e2e-chromium-default; else fail e2e-chromium-default "default=$e1 | two=$e2 | preview=$e3 | no-projects=$e4 | script=$e6 | install=$i1"; fi
 jset "$R/standards.json" 'o.e2e={command:"sleep 5",budget:0.02}'
