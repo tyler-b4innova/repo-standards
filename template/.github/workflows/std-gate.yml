@@ -57,6 +57,9 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/agent/gate.mjs plan
       - name: standards
+        env:
+          ROLLBACK_BASE: ${{ steps.plan.outputs.rollback_base }}
+          ROLLBACK_DRAFT: ${{ steps.plan.outputs.rollback_draft }}
         run: scripts/agent/setup.sh --check
       - name: instructions
         env:

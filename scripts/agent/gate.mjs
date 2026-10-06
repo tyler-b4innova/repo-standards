@@ -198,6 +198,10 @@ if (cmd === "instructions") {
   // Pull requests run Chromium only; a repository's extra browsers run on main, against staging, before a release.
   console.log(`plan: ${mode} (${why})`);
   output("mode", mode);
+  output("rollback_draft", String(pr?.draft === true));
+  let rollbackBase;
+  try { rollbackBase = prBase(); } catch {} // --check reports an unavailable comparison base.
+  output("rollback_base", rollbackBase || event.pull_request?.base?.sha || event.merge_group?.base_sha || pr?.base?.sha || "");
   output("browsers", "chromium");
 } else if (cmd === "syntax") {
   // The cheap gate's stand-in for building: managed scripts and workflows must at least parse.

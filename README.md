@@ -98,6 +98,20 @@ The brochure migration copies `secrets.required` into `env.staging` and repairs 
 - **Transport:** `Authorization: Bearer`, the `__Host-portal_pass` cookie, or a one-time `?portal_pass=` that redirects to the same URL without it and sets the cookie (HttpOnly; Secure; SameSite=None; Path=/).
 - **Failure:** an empty 401 with `WWW-Authenticate: Bearer realm="portal"`; a staging Worker missing its portal settings fails closed. The portal issues passes, agents' and test runs' included; the engine only verifies.
 
+### Rollback-safe releases (expand/contract)
+
+In 0.7.4, `checks` and `scripts/agent/setup.sh --check` compare production Wrangler configs and new D1 migrations against the PR base. Rolling production back deploys the previous Worker version, so its schema, Durable Object classes and bindings must still work. Draft PRs warn; ready PRs and merge queues fail. Locally the base is the merge base with `origin/HEAD`, `origin/main` or `main`; set `ROLLBACK_BASE=<commit>` to select it explicitly. CI passes the PR base and draft status from gate's plan step, including dispatch re-gates. A Worker repository without an available base fails with fetch guidance.
+
+Split into expand now, contract in a later release: add tables and nullable columns (or columns with non-null defaults), deploy code that stops using the old objects, then contract after that code is the previous release. The guard rejects DROP TABLE/COLUMN, table/column RENAME, unsupported ALTER type/constraint changes and DELETE, UPDATE and REPLACE rewrites of existing data. Updates to columns or tables introduced by the new migrations are expand steps. Historical migration edits or removals fail; add a new file. Migration directories come from each production D1 binding's `migrations_dir` (or config-level value), defaulting to `migrations`, relative to its Wrangler config (including `standards.json` `release_workers`); JSON, JSONC and TOML are supported.
+
+A deliberate SQL contract requires a header such as `-- contract: previous release stopped using users.old; issue #123` (an issue/PR number or GitHub issue/PR URL) and a repo-owned `rollback-contracts.json` list of exact affected objects per migration:
+
+```json
+{ "migrations/0003_contract.sql": ["users.old"] }
+```
+
+Use `users` for table deletion/rename or DELETE/UPDATE rewrites, and `users.old` for column changes. Accepted contracts print a note: verify that the previous release already stopped using every listed object. The guard cannot prove runtime usage; the linked issue or PR must supply that evidence. DO class export removals/renames and new `deleted_classes`/`renamed_classes` migrations fail while the class is bound by either release. Removed production D1/KV/R2/queue/service/DO bindings fail; keep them through the rollback window. Staging and preview binding changes do not count as production removals.
+
 ## Cloud configuration
 
 With the overlay's `"cloud_env": { "action": "<owner>/<repo>[/<path>]@<ref>", "token_ref": "op://<vault>/<item>/<field>" }`, apply ships `.github/workflows/std-cloud-env.yml` (the action rendered into it) to each repository that has a `cloud-env.json`, and retires it when the file goes. The action takes `args` and runs the org's cloud-env CLI on `cloud-env.json`; a private action repository must allow access from the organization's repositories. A `cloud-env.json` change on a pull request runs the check with `--check --offline` and no token. A push to `main` reads the Cloudflare token through `1password/load-secrets-action` (org secret `OP_SERVICE_ACCOUNT_TOKEN`, a CI-only service account) and applies. A manual run checks, and on `main` also applies, which onboards a `cloud-env.json` that predates the workflow. With `token_ref` `null` the apply step is skipped with a notice. The workflow is not a required check.

@@ -176,3 +176,14 @@ Retired in 0.6.0 with the staged flow: `promote-no-ui-auto`, `promote-ui-needs-h
 
 - **`release-generated-production-inventory`**: release builds and snapshots each resolved production config before staging; bindings introduced by adapters in both environments cannot escape isolation checks, including before remote D1 migrations. Safe isolated generated bindings still deploy, and production gets a fresh final build.
 - **`release-durable-object-transfer-guard`**: primary and secondary staging targets reject inherited and generated Durable Object transfers from any production Worker, and malformed migration/transfer declarations, before any remote command; a transfer from an isolated staging Worker remains allowed.
+
+## Rollback-safe releases (expand/contract)
+
+- **`rollback-expand`**: new expand-only SQL, including a rewrite of a newly added column, passes the real `--check`; comments, mixed case, quoted identifiers and semicolons inside strings are parsed safely.
+- **`rollback-drop-column`**: DROP COLUMN in a second SQL statement fails with expand/contract guidance.
+- **`rollback-rename`**: table and column RENAME fail.
+- **`rollback-contract`**: a header marker with issue/PR reference and repo-local affected-object list passes with a note; a missing link fails.
+- **`rollback-do-removal`**: removing a bound DO class export fails.
+- **`rollback-production-binding`**: removing a previous production binding fails.
+- **`rollback-draft`**: destructive SQL warns without failing a draft, and gate's checks job carries PR base and draft context into `--check`.
+- **`rollback-hazards`**: existing-data rewrites, type narrowing, unsafe constraints, unlisted contract objects, DO deletion/rename migrations and each production binding kind fail; new schema and staging-only binding changes pass.

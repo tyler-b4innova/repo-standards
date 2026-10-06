@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { rollbackFindings } from "./rollback.mjs";
 import { scan } from "./jsscan.mjs";
 import { claudePins, codexPins } from "./pins.mjs";
 import { verifyGeneratedBuild, workerFiles, readConfig, effectiveConfig, assertStaging, assertReleaseAccounts } from "./release-config.mjs";
@@ -52,6 +53,11 @@ const out = [];
 let fails = 0;
 const fail = (msg, fix) => { out.push(`FAIL: ${msg} | fix: ${fix}`); fails++; };
 const warn = (msg) => out.unshift(`WARN: ${msg}`);
+
+const rollback = rollbackFindings();
+for (const message of rollback.errors) { if (rollback.draft) warn(`${message} | fix: split into expand now, contract in a later release`); else fail(message, "split into expand now, contract in a later release"); }
+for (const note of rollback.notes) out.push(`NOTE: ${note}`);
+if (!rollback.errors.length) out.push("rollback-safe ok");
 
 const pack = json("scripts/agent/pack.json");
 if (!pack) fail("scripts/agent/pack.json missing or invalid", "re-apply the pack from the org standards repository");
