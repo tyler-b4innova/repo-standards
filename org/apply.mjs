@@ -126,12 +126,16 @@ export async function plan(gh, overlay) {
 
   const repos = (await gh("GET", `orgs/${org}/repos?per_page=100&type=all`)).filter((r) => !r.archived).map((r) => r.name);
   // A ruleset can only narrow merge methods the repository allows: every repo needs squash. Every repo deletes a PR's
-  // branch when it merges.
+  // branch when it merges. A squash commit carries the PR's title and description (its What, Why and linked issue), so
+  // the record survives outside the host; GitHub takes the two message settings only as a pair.
   for (const r of repos) {
     const repo = await gh("GET", `repos/${org}/${r}`);
     const need = { allow_squash_merge: true, delete_branch_on_merge: true };
     const off = Object.keys(need).filter((k) => repo[k] === false);
     if (off.length) steps.push({ what: `repo ${r}: enable ${off.join(", ")}`, detail: [], call: ["PATCH", `repos/${org}/${r}`, Object.fromEntries(off.map((k) => [k, true]))] });
+    const message = { squash_merge_commit_title: "PR_TITLE", squash_merge_commit_message: "PR_BODY" };
+    const stale = Object.keys(message).filter((k) => repo[k] !== undefined && repo[k] !== message[k]);
+    if (stale.length) steps.push({ what: `repo ${r}: squash commit takes the PR title and description`, detail: stale.map((k) => `${k}: ${repo[k]} -> ${message[k]}`), call: ["PATCH", `repos/${org}/${r}`, message] });
   }
 
   const listed = await gh("GET", `orgs/${org}/rulesets?per_page=100`);

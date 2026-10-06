@@ -36,7 +36,7 @@ createServer((req, res) => {
       const r = st.repos.find((x) => x.name === m[2]);
       if (!r) return send(404, { message: "Not Found" });
       if (req.method === "PATCH") { Object.assign(r, body); save(); }
-      return send(200, { name: r.name, archived: !!r.archived, allow_squash_merge: r.allow_squash_merge ?? true, allow_merge_commit: r.allow_merge_commit ?? true, delete_branch_on_merge: r.delete_branch_on_merge ?? true });
+      return send(200, { name: r.name, archived: !!r.archived, allow_squash_merge: r.allow_squash_merge ?? true, allow_merge_commit: r.allow_merge_commit ?? true, delete_branch_on_merge: r.delete_branch_on_merge ?? true, squash_merge_commit_title: r.squash_merge_commit_title ?? "COMMIT_OR_PR_TITLE", squash_merge_commit_message: r.squash_merge_commit_message ?? "COMMIT_MESSAGES" });
     }
     if (!(m = p.match(/^\/orgs\/([^/]+)\/(.+)$/)) || m[1] !== st.org) return send(404, { message: `stub: no route ${p}` });
     const rest = m[2];
