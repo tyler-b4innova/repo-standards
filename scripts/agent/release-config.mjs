@@ -81,13 +81,12 @@ export function buildCommand(std, pkg) {
   const pm = existsSync("pnpm-lock.yaml") ? "pnpm" : existsSync("yarn.lock") ? "yarn" : "npm";
   return [pm, ["run", "build"]];
 }
-export function build(std, pkg, staging = false, { quiet = false } = {}) {
-  const command = buildCommand(std, pkg);
+export function build(std, pkg, staging = false, { quiet = false, command = buildCommand(std, pkg), env = process.env } = {}) {
   if (!command) {
     if (existsSync(redirectFile)) throw new Error("generated Wrangler config requires a build command supporting CLOUDFLARE_ENV=staging; set standards.json build or package.json scripts.build");
     return;
   }
-  const buildEnv = { ...process.env };
+  const buildEnv = { ...env };
   delete buildEnv.CLOUDFLARE_ENV;
   delete buildEnv.WRANGLER_CI_OVERRIDE_NAME;
   delete buildEnv.WRANGLER_CI_MATCH_TAG;

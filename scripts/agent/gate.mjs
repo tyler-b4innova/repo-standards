@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import { existsSync as has, mkdtempSync, readdirSync as ls, readFileSync as rd, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { scan } from "./jsscan.mjs";
+import { rollbackFindings } from "./rollback.mjs";
 import { verifyGeneratedBuild } from "./release-config.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
@@ -198,6 +199,10 @@ if (cmd === "instructions") {
   // Pull requests run Chromium only; a repository's extra browsers run on main, against staging, before a release.
   console.log(`plan: ${mode} (${why})`);
   output("mode", mode);
+  output("rollback_draft", String(pr?.draft === true));
+  let rollbackBase;
+  try { rollbackBase = prBase(); } catch {} // --check reports an unavailable comparison base.
+  output("rollback_base", rollbackBase || event.pull_request?.base?.sha || event.merge_group?.base_sha || pr?.base?.sha || "");
   output("browsers", "chromium");
 } else if (cmd === "syntax") {
   // The cheap gate's stand-in for building: managed scripts and workflows must at least parse.
@@ -317,6 +322,12 @@ if (cmd === "instructions") {
   else {
     console.log(`run: ${pm} run ${s}`); must(pm, ["run", s]);
     if (s === "build") {
+      const rollback = rollbackFindings({ built: true });
+      for (const message of rollback.errors) {
+        if (rollback.draft) console.log(`::warning::${message}`);
+        else fail(message, "split into expand now, contract in a later release");
+      }
+      for (const note of rollback.notes) console.log(`NOTE: ${note}`);
       try { verifyGeneratedBuild(std, pkg); }
       catch (e) { fail(`generated Wrangler config: ${e.message}`, "make the build honor CLOUDFLARE_ENV=staging before releasing"); }
     }

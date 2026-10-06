@@ -34,6 +34,8 @@ jobs:
       sha: ${{ steps.head.outputs.sha }}
       mode: ${{ steps.plan.outputs.mode }}
       browsers: ${{ steps.plan.outputs.browsers }}
+      rollback_base: ${{ steps.plan.outputs.rollback_base }}
+      rollback_draft: ${{ steps.plan.outputs.rollback_draft }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -46,7 +48,7 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
-          package-manager-cache: false # checks installs nothing
+          package-manager-cache: false # rollback comparison installs build dependencies when needed
       # the tree every tail job checks out: a re-gate's merge ref can move while the checks run
       - name: head
         id: head
@@ -57,6 +59,9 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/agent/gate.mjs plan
       - name: standards
+        env:
+          ROLLBACK_BASE: ${{ steps.plan.outputs.rollback_base }}
+          ROLLBACK_DRAFT: ${{ steps.plan.outputs.rollback_draft }}
         run: scripts/agent/setup.sh --check
       - name: instructions
         env:
@@ -95,6 +100,9 @@ jobs:
       - name: typecheck
         run: node scripts/agent/gate.mjs run typecheck
       - name: build
+        env:
+          ROLLBACK_BASE: ${{ needs.checks.outputs.rollback_base }}
+          ROLLBACK_DRAFT: ${{ needs.checks.outputs.rollback_draft }}
         run: node scripts/agent/gate.mjs run build
   e2e:
     needs: checks
@@ -130,6 +138,9 @@ jobs:
       # a local e2e run (no preview URL) gets this job's own build, as it did when one job ran everything
       - name: build
         if: steps.preview.outputs.url == ''
+        env:
+          ROLLBACK_BASE: ${{ needs.checks.outputs.rollback_base }}
+          ROLLBACK_DRAFT: ${{ needs.checks.outputs.rollback_draft }}
         run: node scripts/agent/gate.mjs run build
       - name: e2e
         env:
