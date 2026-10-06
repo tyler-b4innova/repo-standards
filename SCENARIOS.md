@@ -192,3 +192,8 @@ Retired in 0.6.0 with the staged flow: `promote-no-ui-auto`, `promote-ui-needs-h
 - **`rollback-persistent-sql`**: view deletion, unique indexes, triggers with DELETE and unclassified SQL require exact affected-object contracts through setup.sh --check.
 - **`rollback-generated-production`**: clean-checkout builds of both revisions expose generated D1 migration directories and removed production bindings to setup.sh --check.
 - **`rollback-cross-worker-do`**: a caller switching classes cannot permit the host to remove a class or delete its namespace required by the previous release.
+
+- **`rollback-renamed-history`**: historical column/table renames retain existing targets; repeated CREATE cannot mark columns fresh, while genuinely added columns pass setup.sh --check.
+- **`rollback-schema-replace`**: plain inserts inheriting column or table ON CONFLICT REPLACE require a contract; explicit non-replacing INSERT policies pass setup.sh --check.
+- **`rollback-seed-do-nothing`**: targeted and bare ON CONFLICT DO NOTHING seeds pass setup.sh --check, including inherited REPLACE schemas; DO UPDATE remains a hazard.
+- **`rollback-build-bootstrap`**: with no pnpm on PATH, real dependency installation and both revision builds use the temporary Corepack environment through setup.sh --check, then clean it up.

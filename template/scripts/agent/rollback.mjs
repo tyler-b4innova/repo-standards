@@ -69,7 +69,7 @@ function tableAt(t, i) {
   if (t[i + 1] === ".") i += 2;
   return [name(t[i]), i + 1];
 }
-function sqlHazards(sql, freshTables, freshColumns, existingTables = new Set(), existingColumns = new Set()) {
+function sqlHazards(sql, freshTables, freshColumns, existingTables = new Set(), existingColumns = new Set(), replacingTables = new Set(), history = false) {
   const hazards = [];
   for (let t of typeof sql === "string" ? statements(sql) : sql) {
     // WITH statements execute the command after their parenthesized CTE bodies.
@@ -83,7 +83,10 @@ function sqlHazards(sql, freshTables, freshColumns, existingTables = new Set(), 
     }
     if (t[0] === "create" && t[1] === "table") {
       const [table, start] = tableAt(t, t.indexOf("table") + 1);
-      if (!existingTables.has(table)) freshTables.add(table);
+      // A repeated CREATE (including IF NOT EXISTS) cannot establish column freshness.
+      if (existingTables.has(table) || freshTables.has(table)) continue;
+      freshTables.add(table);
+      if (phrase(t, "conflict", "replace")) replacingTables.add(table);
       // Column starts at the first parenthesis or a top-level comma; table constraints are excluded.
       let depth = 0, columnStart = false;
       for (const v of t.slice(start)) {
@@ -102,12 +105,24 @@ function sqlHazards(sql, freshTables, freshColumns, existingTables = new Set(), 
       if (op === "add") {
         let col = i + 1; if (t[col] === "column") col++;
         const constraints = t.slice(col + 1), defaultAt = constraints.indexOf("default");
+        if (phrase(constraints, "conflict", "replace")) replacingTables.add(table);
         const defaultValue = constraints.slice(defaultAt + 1).find((v) => v !== "(");
         if (constraints.some((v) => ["unique", "primary", "check", "references", "generated"].includes(v))) hazards.push([`${table}.${name(t[col])}`, "ADD may narrow writes with a constraint"]);
         else if (phrase(constraints, "not", "null") && defaultAt < 0) hazards.push([`${table}.${name(t[col])}`, "ADD NOT NULL without a default"]);
         else if (phrase(constraints, "not", "null") && defaultValue === "null") hazards.push([`${table}.${name(t[col])}`, "ADD NOT NULL with a NULL default"]);
         else if (!existingColumns.has(`${table}.${name(t[col])}`)) freshColumns.add(`${table}.${name(t[col])}`);
       } else {
+        if (history && op === "rename") {
+          if (t[i + 1] === "to") {
+            const renamed = name(t[i + 2]);
+            freshTables.add(renamed);
+            for (const column of [...freshColumns]) if (column.startsWith(`${table}.`)) freshColumns.add(`${renamed}.${column.slice(table.length + 1)}`);
+            if (replacingTables.has(table)) replacingTables.add(renamed);
+          } else {
+            const col = i + 1 + (t[i + 1] === "column" ? 1 : 0);
+            if (t[col + 1] === "to") freshColumns.add(`${table}.${name(t[col + 2])}`);
+          }
+        }
         let col = i + 1; if (t[col] === "column") col++;
         const object = op === "rename" && t[i + 1] === "to" ? table : `${table}.${name(t[col])}`;
         // SQLite type changes require reconstruction; unsupported ALTER forms are never assumed expand-only.
@@ -152,15 +167,19 @@ function sqlHazards(sql, freshTables, freshColumns, existingTables = new Set(), 
       // subsequent body commands are ordinary statements in the outer loop.
       const bodyStart = t.findIndex((v, i) => i > t.indexOf("on") && v === "begin" && ["select", "insert", "update", "delete", "replace", "with"].includes(t[i + 1]));
       if (bodyStart < 0) hazards.push([table, "cannot positively classify trigger body"]);
-      else hazards.push(...sqlHazards([t.slice(bodyStart + 1)], freshTables, freshColumns, existingTables, existingColumns));
+      else hazards.push(...sqlHazards([t.slice(bodyStart + 1)], freshTables, freshColumns, existingTables, existingColumns, replacingTables, history));
     } else if (t[0] === "create" && t[1] === "unique" && t[2] === "index") {
       const table = tableAt(t, t.indexOf("on") + 1)[0];
       if (!freshTables.has(table)) hazards.push([table, "CREATE UNIQUE INDEX narrows valid writes"]);
     } else if (t[0] === "create" && ["index", "view"].includes(t[1])) {
       // A non-unique index or a new view does not constrain existing writes.
       continue;
-    } else if (t[0] === "insert" && t.includes("into") && !t.includes("conflict") && !t.includes("replace")) {
-      continue;
+    } else if (t[0] === "insert" && t.includes("into") && !t.includes("replace")) {
+      const table = tableAt(t, t.indexOf("into") + 1)[0];
+      const nonReplacing = t[1] === "or" && ["ignore", "abort", "fail", "rollback"].includes(t[2]);
+      const doNothing = phrase(t, "on", "conflict") && phrase(t, "do", "nothing") && !phrase(t, "do", "update");
+      if (t.includes("conflict") && !doNothing) hazards.push([table, "SQL is not positively classified as expand-only"]);
+      else if (replacingTables.has(table) && !nonReplacing && !doNothing) hazards.push([table, "INSERT may inherit ON CONFLICT REPLACE data rewrite"]);
     } else if (["begin", "commit", "end", "rollback", "savepoint", "release"].includes(t[0])) {
       continue;
     } else {
@@ -171,14 +190,15 @@ function sqlHazards(sql, freshTables, freshColumns, existingTables = new Set(), 
 }
 
 // Build each revision's production artifact; source-only inventory misses adapter bindings.
-function productionInventory({ built = false } = {}) {
+function productionInventory({ built = false, buildContext } = {}) {
   const root = rootFile();
   if (!root) return new Map();
   const std = JSON.parse(read("standards.json") ?? "{}"), pkg = JSON.parse(read("package.json") ?? "{}");
   const files = [root, ...workerFiles(std, root)];
   if (!built) {
-    if (buildCommand(std, pkg)) installBuildDependencies(pkg);
-    build(std, pkg, false, { quiet: true });
+    const command = buildCommand(std, pkg);
+    const options = command ? installBuildDependencies(pkg, command, buildContext) : {};
+    build(std, pkg, false, { quiet: true, ...options });
   }
   return new Map(files.map((file, i) => {
     const resolved = effectiveConfig(file, false, { redirect: i === 0 });
@@ -186,20 +206,20 @@ function productionInventory({ built = false } = {}) {
     return [relative(process.cwd(), file), { file: relative(process.cwd(), resolved.file).split("\\").join("/"), cfg: resolved.cfg }];
   }));
 }
-function installBuildDependencies(pkg) {
-  if (!Object.keys({ ...pkg.dependencies, ...pkg.devDependencies, ...pkg.optionalDependencies }).length || existsSync("node_modules")) return;
+function installBuildDependencies(pkg, buildCmd, context) {
   const pm = existsSync("pnpm-lock.yaml") ? "pnpm" : existsSync("yarn.lock") ? "yarn" : "npm";
-  const args = pm === "pnpm" ? ["install", "--frozen-lockfile"] : pm === "yarn" ? ["install", existsSync(".yarnrc.yml") ? "--immutable" : "--frozen-lockfile"] : existsSync("package-lock.json") ? ["ci"] : ["install", "--no-package-lock"];
-  const command = pm === "npm" ? "npm" : "npx";
-  const installArgs = pm === "npm" ? args : ["--yes", "--package", "corepack@0.34.6", "corepack", pm, ...args];
-  const corepackHome = pm === "npm" ? null : mkdtempSync(join(tmpdir(), "rollback-corepack-"));
-  try {
-    const env = corepackHome ? { ...process.env, COREPACK_HOME: corepackHome, COREPACK_ENABLE_AUTO_PIN: "0" } : process.env;
-    const result = spawnSync(command, installArgs, { stdio: "ignore", env });
+  const prefix = pm === "npm" ? [] : ["--yes", "--package", "corepack@0.34.6", "corepack", pm];
+  if (pm !== "npm" && !context.home) context.home = mkdtempSync(join(tmpdir(), "rollback-corepack-"));
+  const env = pm === "npm" ? process.env : { ...process.env, COREPACK_HOME: context.home, COREPACK_ENABLE_AUTO_PIN: "0" };
+  const command = buildCmd[0] === pm && pm !== "npm" ? ["npx", [...prefix, ...buildCmd[1]]] : buildCmd;
+  if (Object.keys({ ...pkg.dependencies, ...pkg.devDependencies, ...pkg.optionalDependencies }).length && !existsSync("node_modules")) {
+    const args = pm === "pnpm" ? ["install", "--frozen-lockfile"] : pm === "yarn" ? ["install", existsSync(".yarnrc.yml") ? "--immutable" : "--frozen-lockfile"] : existsSync("package-lock.json") ? ["ci"] : ["install", "--no-package-lock"];
+    const result = spawnSync(pm === "npm" ? "npm" : "npx", [...prefix, ...args], { stdio: "ignore", env });
     if (result.status !== 0) throw new Error("cannot install production build dependencies; resolved production rollback comparison is required");
-  } finally { if (corepackHome) rmSync(corepackHome, { recursive: true, force: true }); }
+  }
+  return { command, env };
 }
-function baseInventory(base, directory) {
+function baseInventory(base, directory, buildContext) {
   execFileSync("git", ["clone", "--shared", "--no-checkout", "--quiet", process.cwd(), directory], { stdio: "pipe" });
   execFileSync("git", ["-C", directory, "checkout", "--detach", "--quiet", base], { stdio: "pipe" });
   const cwd = process.cwd();
@@ -211,7 +231,7 @@ function baseInventory(base, directory) {
   if (existsSync("node_modules") && same) symlinkSync(join(cwd, "node_modules"), join(directory, "node_modules"), "dir");
   try {
     process.chdir(directory);
-    return productionInventory();
+    return productionInventory({ buildContext });
   } finally { process.chdir(cwd); }
 }
 
@@ -223,6 +243,7 @@ export function rollbackFindings({ built = false } = {}) {
   const files = git("ls-files", "--cached", "--others", "--exclude-standard", "-z").split("\0").filter(Boolean);
   const relevant = files.some((f) => configFile.test(f));
   let baseDirectory;
+  const buildContext = {};
   try {
     if (!base && process.env.GITHUB_EVENT_NAME === "workflow_dispatch") base = git("rev-parse", "HEAD^1").trim();
     if (!base) {
@@ -239,7 +260,7 @@ export function rollbackFindings({ built = false } = {}) {
     const declared = (text) => JSON.parse(text ?? "{}").release_workers ?? [];
     const configs = [...new Set([...oldFiles, ...files].filter((f) => configFile.test(f)).concat(declared(before(base, "standards.json")), declared(read("standards.json"))))];
     baseDirectory = mkdtempSync(join(tmpdir(), "rollback-base-"));
-    const newProduction = productionInventory({ built }), oldProduction = baseInventory(base, baseDirectory);
+    const newProduction = productionInventory({ built, buildContext }), oldProduction = baseInventory(base, baseDirectory, buildContext);
     const pairs = configs.map((file) => ({ label: file, afile: file, bfile: file, a: config(before(base, file), file), b: config(read(file), file) }));
     for (const file of new Set([...oldProduction.keys(), ...newProduction.keys()])) {
       const a = oldProduction.get(file), b = newProduction.get(file);
@@ -303,7 +324,7 @@ export function rollbackFindings({ built = false } = {}) {
     const contracts = JSON.parse(read("rollback-contracts.json") ?? "{}");
     const freshTables = new Set(), freshColumns = new Set();
     // New tables/columns are expand targets only when absent from all base migration history.
-    const oldTables = new Set(), oldColumns = new Set();
+    const oldTables = new Set(), oldColumns = new Set(), replacingTables = new Set();
     const migrations = (root) => {
       const found = [];
       const walk = (dir) => {
@@ -321,7 +342,7 @@ export function rollbackFindings({ built = false } = {}) {
     };
     const oldMigrations = migrations(baseDirectory), newMigrations = migrations(".");
     for (const f of oldMigrations) {
-      sqlHazards(read(join(baseDirectory, f)), oldTables, oldColumns);
+      sqlHazards(read(join(baseDirectory, f)), oldTables, oldColumns, new Set(), new Set(), replacingTables, true);
       if (!newMigrations.includes(f)) errors.push(`${f}: historical D1 migration removed; retain migration history`);
     }
     for (const f of newMigrations) {
@@ -329,7 +350,7 @@ export function rollbackFindings({ built = false } = {}) {
         if (read(f) !== read(join(baseDirectory, f))) errors.push(`${f}: historical D1 migration changed; add a new expand-only migration`);
         continue;
       }
-      const sql = read(f), hazards = sqlHazards(sql, freshTables, freshColumns, oldTables, oldColumns);
+      const sql = read(f), hazards = sqlHazards(sql, freshTables, freshColumns, oldTables, oldColumns, replacingTables);
       for (const t of oldTables) freshTables.delete(t);
       for (const c of oldColumns) freshColumns.delete(c);
       const header = sql.match(/^(?:\s|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*/)?.[0] ?? "";
@@ -343,6 +364,9 @@ export function rollbackFindings({ built = false } = {}) {
       }
     }
   } catch (e) { errors.push(e.message); }
-  finally { if (baseDirectory) rmSync(baseDirectory, { recursive: true, force: true }); }
+  finally {
+    if (baseDirectory) rmSync(baseDirectory, { recursive: true, force: true });
+    if (buildContext.home) rmSync(buildContext.home, { recursive: true, force: true });
+  }
   return { errors: errors.map((e) => `rollback: ${e}`), notes, draft };
 }

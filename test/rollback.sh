@@ -28,6 +28,87 @@ casecheck() {
 repo expand
 printf '%s\n' '-- DROP TABLE users; ignored' 'AlTeR /* comment */ TABLE "users" ADD COLUMN extra TEXT;' "INSERT INTO users (extra) VALUES ('semi; DROP COLUMN old');" 'UPDATE users SET extra = old;' > "$R/db/0002.sql"
 casecheck rollback-expand 0 'rollback-safe ok'
+repo renamed-history
+why=""
+for table in users people; do
+  printf '%s\n' 'CREATE TABLE users(id INTEGER, old TEXT);' 'ALTER TABLE users RENAME COLUMN old TO current;' > "$R/db/0001.sql"
+  [ "$table" = users ] || echo 'ALTER TABLE users RENAME TO people;' >> "$R/db/0001.sql"
+  git -C "$R" add -A; git -C "$R" commit -qm renamed; BASE=$(git -C "$R" rev-parse HEAD)
+  for sql in "CREATE TABLE IF NOT EXISTS $table(id INTEGER, current TEXT); UPDATE $table SET current=NULL;" "CREATE TABLE $table(id INTEGER, unknown TEXT); UPDATE $table SET unknown=NULL;" "ALTER TABLE $table ADD COLUMN current TEXT; UPDATE $table SET current=NULL;"; do
+    echo "$sql" > "$R/db/0002.sql"
+    out=$(check); rc=$?
+    [ "$rc" -eq 1 ] && [[ "$out" == *'UPDATE data rewrite'* ]] || why="$why; renamed history permitted rewrite: $out"
+  done
+  echo "ALTER TABLE $table ADD COLUMN extra TEXT; UPDATE $table SET extra=NULL;" > "$R/db/0002.sql"
+  out=$(check); [ "$?" -eq 0 ] || why="$why; fresh column blocked: $out"
+  rm "$R/db/0002.sql"
+done
+if [ -z "$why" ]; then ok rollback-renamed-history; else fail rollback-renamed-history "$why"; fi
+repo schema-replace
+why=""
+for schema in 'CREATE TABLE settings(key TEXT PRIMARY KEY ON CONFLICT REPLACE, value TEXT);' 'CREATE TABLE settings(key TEXT, value TEXT, CONSTRAINT unique_key UNIQUE(key) ON CONFLICT REPLACE);' 'CREATE TABLE settings(key TEXT); ALTER TABLE settings ADD COLUMN value TEXT NOT NULL ON CONFLICT REPLACE DEFAULT 1;'; do
+  echo "$schema ALTER TABLE settings RENAME TO preferences;" > "$R/db/0001.sql"
+  git -C "$R" add -A; git -C "$R" commit -qm policy; BASE=$(git -C "$R" rev-parse HEAD)
+  echo "INSERT INTO preferences VALUES('theme','default');" > "$R/db/0002.sql"
+  out=$(check); rc=$?
+  [ "$rc" -eq 1 ] && [[ "$out" == *'ON CONFLICT REPLACE data rewrite preferences'* ]] || why="$why; inherited replacement passed: $out"
+  printf '%s\n' '-- contract: previous release retired preferences; issue #123' "INSERT INTO preferences VALUES('theme','default');" > "$R/db/0002.sql"
+  echo '{"db/0002.sql":["preferences"]}' > "$R/rollback-contracts.json"
+  out=$(check); [ "$?" -eq 0 ] && [[ "$out" == *'NOTE: contract'* ]] || why="$why; replacement contract blocked: $out"
+  rm "$R/rollback-contracts.json"
+  for policy in IGNORE ABORT FAIL ROLLBACK; do
+    echo "INSERT OR $policy INTO preferences VALUES('theme','default');" > "$R/db/0002.sql"
+    out=$(check); [ "$?" -eq 0 ] || why="$why; explicit $policy blocked: $out"
+  done
+  rm "$R/db/0002.sql"
+done
+if [ -z "$why" ]; then ok rollback-schema-replace; else fail rollback-schema-replace "$why"; fi
+repo seeds
+why=""
+for definition in 'id INTEGER PRIMARY KEY, old TEXT' 'id INTEGER PRIMARY KEY ON CONFLICT REPLACE, old TEXT'; do
+  echo "CREATE TABLE users($definition);" > "$R/db/0001.sql"
+  git -C "$R" add -A; git -C "$R" commit -qm seeds; BASE=$(git -C "$R" rev-parse HEAD)
+  for clause in 'ON CONFLICT(id) DO NOTHING' 'ON CONFLICT DO NOTHING'; do
+    echo "INSERT INTO users(id,old) VALUES(1,'seed') $clause;" > "$R/db/0002.sql"
+    out=$(check); [ "$?" -eq 0 ] && [[ "$out" == *'rollback-safe ok'* ]] || why="$why; safe seed blocked: $out"
+  done
+  echo "INSERT INTO users(id,old) VALUES(1,'seed') ON CONFLICT(id) DO UPDATE SET old='seed';" > "$R/db/0002.sql"
+  out=$(check); [ "$?" -eq 1 ] && [[ "$out" == *'rollback:'* ]] || why="$why; updating seed passed: $out"
+  rm "$R/db/0002.sql"
+done
+if [ -z "$why" ]; then ok rollback-seed-do-nothing; else fail rollback-seed-do-nothing "$why"; fi
+repo bootstrap
+# Real Corepack/pnpm, with only system tools and Node/npm on PATH (no global pnpm/yarn).
+mkdir -p "$T/clean-bin" "$R/dependency"
+for tool in node npm npx; do ln -s "$(command -v "$tool")" "$T/clean-bin/$tool"; done
+CLEAN_PATH="$T/clean-bin:/usr/bin:/bin"
+cat > "$R/package.json" <<'PKG'
+{"private":true,"packageManager":"pnpm@10.0.0","dependencies":{"local-dependency":"file:./dependency"},"scripts":{"build":"node build.mjs"}}
+PKG
+echo '{"name":"local-dependency","version":"1.0.0","main":"index.js"}' > "$R/dependency/package.json"
+echo 'module.exports = 1;' > "$R/dependency/index.js"
+cat > "$R/build.mjs" <<'JS'
+import { appendFileSync, existsSync } from 'node:fs';
+import dependency from 'local-dependency';
+if (dependency !== 1 || !existsSync(process.env.COREPACK_HOME)) throw new Error('bootstrap environment lost');
+appendFileSync(process.env.ROLLBACK_BUILD_LOG, `${process.cwd()}|${process.env.COREPACK_HOME}\n`);
+JS
+printf 'node_modules/\n' >> "$R/.gitignore"
+(cd "$R" && PATH="$CLEAN_PATH" COREPACK_ENABLE_AUTO_PIN=0 npx --yes --package corepack@0.34.6 corepack pnpm install --lockfile-only) > "$T/lock.log" 2>&1 || fail rollback-build-bootstrap "cannot generate real lockfile: $(cat "$T/lock.log")"
+git -C "$R" add -A; git -C "$R" commit -qm bootstrap; BASE=$(git -C "$R" rev-parse HEAD)
+export ROLLBACK_BUILD_LOG="$T/builds.log"
+out=$(PATH="$CLEAN_PATH" check); rc=$?
+why=""
+[ "$rc" -eq 0 ] && [[ "$out" == *'rollback-safe ok'* ]] || why="clean PATH comparison failed: $out"
+node - "$ROLLBACK_BUILD_LOG" "$R" <<'JS'
+const fs=require('node:fs'), assert=require('node:assert/strict');
+const rows=fs.readFileSync(process.argv[2],'utf8').trim().split('\n').map(s=>s.split('|'));
+assert.equal(rows.length,2); assert.equal(rows[0][0],fs.realpathSync(process.argv[3])); assert.notEqual(rows[1][0],rows[0][0]);
+assert.equal(rows[0][1],rows[1][1]); assert.ok(!fs.existsSync(rows[0][1]), 'temporary Corepack environment must be cleaned');
+JS
+[ "$?" -eq 0 ] || why="$why; both revision builds did not retain the bootstrap environment"
+if [ -z "$why" ]; then ok rollback-build-bootstrap; else fail rollback-build-bootstrap "$why"; fi
+unset ROLLBACK_BUILD_LOG
 repo nested-update
 echo "ALTER TABLE users ADD COLUMN extra TEXT; UPDATE users SET extra = (SELECT 'new' WHERE 1), old = NULL;" > "$R/db/0002.sql"
 casecheck rollback-nested-update 1 'UPDATE data rewrite'
