@@ -120,6 +120,21 @@ case "$blk" in *"- name: issue"*"GITHUB_TOKEN: \${{ github.token }}"*"gate.mjs i
 case "$blk" in *"if:"*) why="$why; issue step is conditional" ;; esac
 if [ -z "$why" ]; then ok gate-issue-quoted; else fail gate-issue-quoted "$why"; fi
 
+# issue-section-fence-aware: a `## ` line inside a fenced block (an issue quoting an example `## Issue #99` heading)
+# is text, not a section boundary: pr.sh quotes the whole fenced block, gate accepts it, and a refresh leaves one
+# section with no stale tail.
+why=""
+mut "S.issues[3].body='## Goal\n\nShip x, with this example:\n\n\u0060\u0060\u0060md\n## Issue #99\n\n## Other\n\u0060\u0060\u0060\n\n## Acceptance criteria\n\n- [ ] x.txt exists\n'"
+"$PR" open "Add x" "$T/body.md" >/dev/null 2>&1 || why="fenced open failed"
+b=$(state 'S.pulls[0].body')
+case "$b" in *$'```md\n## Issue #99\n\n## Other\n```'*) ;; *) why="$why; fenced block not quoted whole: $b" ;; esac
+gi "fenced example" 0 "quotes issue #3"
+"$PR" open "Add x" "$T/body.md" >/dev/null 2>&1 || why="$why; refresh failed"
+[ "$(state 'S.pulls[0].body')" = "$b" ] || why="$why; refresh changed the body: $(state 'JSON.stringify(S.pulls[0].body)')"
+mut "S.issues[3].body='## Goal\n\nShip x.\n\n## Acceptance criteria\n\n- [ ] x.txt exists\n'"
+"$PR" open "Add x" "$T/body.md" >/dev/null 2>&1
+if [ -z "$why" ]; then ok issue-section-fence-aware; else fail issue-section-fence-aware "$why"; fi
+
 # pr-status-done: DONE only when open or merged, the body closes an issue, gate is green on the head SHA, and no review
 # thread is open.
 HEAD_SHA=$(git rev-parse HEAD) MAIN_SHA=$(git rev-parse main)

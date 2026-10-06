@@ -60,8 +60,10 @@ quote_issue() {
       const d = JSON.parse(raw), p = parts(d.body || "");
       sec = [`## Issue #${n}`, d.title, ...(p.length ? p.map(([t, l]) => `### ${t}\n\n${demote(l)}`) : [demote((d.body || "").split(/\r?\n/))])].filter(Boolean).join("\n\n");
     }
-    const lines = body.split("\n"), i = lines.findIndex((l) => new RegExp(`^## Issue #(${n})?\\s*$`).test(l));
-    let j = lines.findIndex((l, k) => i >= 0 && k > i && /^##\s/.test(l)); if (j < 0) j = lines.length;
+    // headings inside ``` or ~~~ fences are text, not section boundaries
+    const lines = body.split("\n"), fenced = ((f) => lines.map((l) => { const was = f; if (/^\s*(```|~~~)/.test(l)) f = !f; return was || f; }))(false);
+    const i = lines.findIndex((l, k) => !fenced[k] && new RegExp(`^## Issue #(${n})?\\s*$`).test(l));
+    let j = lines.findIndex((l, k) => i >= 0 && k > i && !fenced[k] && /^##\s/.test(l)); if (j < 0) j = lines.length;
     console.log(i < 0 ? body.replace(/\s*$/, "") + "\n\n" + sec : [...lines.slice(0, i), sec, ...(j < lines.length ? ["", ...lines.slice(j)] : [])].join("\n"));
   ' -- "$1" "$2"
 }

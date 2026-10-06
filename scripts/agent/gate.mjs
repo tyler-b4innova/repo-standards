@@ -206,9 +206,11 @@ if (cmd === "instructions") {
   if (!parts.length) parts.push({ name: "body", lines: (issue.body ?? "").split(/\r?\n/) });
   // compared without heading markers, checkbox state or whitespace differences
   const norm = (lines) => lines.map((l) => l.replace(/^\s*#{1,6}\s+/, "").replace(/^(\s*[-*+]\s+)\[[ xX]\]/, "$1[ ]")).join(" ").replace(/\s+/g, " ").trim();
-  const lines = body.split(/\r?\n/), i = lines.findIndex((l) => new RegExp(`^##\\s+Issue #${n}\\s*$`).test(l));
+  // headings inside ``` or ~~~ fences are text, not section boundaries
+  const lines = body.split(/\r?\n/), fenced = ((f) => lines.map((l) => { const was = f; if (/^\s*(```|~~~)/.test(l)) f = !f; return was || f; }))(false);
+  const i = lines.findIndex((l, k) => !fenced[k] && new RegExp(`^##\\s+Issue #${n}\\s*$`).test(l));
   if (i < 0) fail(`issue: the description has no \`## Issue #${n}\` section quoting issue #${n}`, `${redo} \`## Issue #${n}\``);
-  const j = lines.findIndex((l, k) => k > i && /^##\s/.test(l));
+  const j = lines.findIndex((l, k) => k > i && !fenced[k] && /^##\s/.test(l));
   const quoted = norm(lines.slice(i + 1, j < 0 ? undefined : j));
   const missing = parts.filter((p) => !quoted.includes(norm(p.lines))).map((p) => p.name === "body" ? "the issue body" : `its current ${p.name}`);
   if (missing.length) fail(`issue: the \`## Issue #${n}\` section lacks ${missing.join(" and ")} (issue #${n} may have changed since the section was written)`, `${redo} \`## Issue #${n}\``);
