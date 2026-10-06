@@ -79,7 +79,9 @@ jset "$R/package.json" 'o.scripts={"test:e2e":"playwright test"}'; e6=$(pwrun GA
 echo 'export default { use: {} };' > "$R/playwright.config.js"; e4=$(pwrun GATE_X=1)
 IB=$T/install-bin; mkpath "$IB"; shim "$IB" npm 'exit 0'
 : > "$T/pw.log"; (cd "$R" && PATH="$IB" GATE_BROWSERS=chromium node scripts/agent/gate.mjs install) >/dev/null 2>&1; i1=$(cat "$T/pw.log")
-if has "playwright test --project=chromium base=none budget=300000" "$e1" && has "test --project=chromium --project=firefox" "$e2" && has "base=https://feat.preview.example.test" "$e3" \
+# CI observed 299999ms: choosing the suite consumes part of the five-minute budget.
+b1=${e1##*budget=}
+if has "playwright test --project=chromium base=none budget=" "$e1" && [[ "$b1" =~ ^[0-9]+$ ]] && [ "$b1" -gt 299000 ] && [ "$b1" -le 300000 ] && has "test --project=chromium --project=firefox" "$e2" && has "base=https://feat.preview.example.test" "$e3" \
   && has "playwright test base=none" "$e4" && ! has "project" "$e4" && [ $x5 -eq 1 ] && has "defines projects but none named chromium" "$e5" && has "playwright test --project=chromium" "$e6" && ! has firefox "$e6" && has "install --with-deps chromium" "$i1" && ! has "firefox" "$i1"
 then ok e2e-chromium-default; else fail e2e-chromium-default "default=$e1 | two=$e2 | preview=$e3 | no-projects=$e4 | script=$e6 | install=$i1"; fi
 jset "$R/standards.json" 'o.e2e={command:"sleep 5",budget:0.02}'
@@ -245,8 +247,8 @@ if [ $y1 -eq 0 ] && has "evidence: accepted" "$d1" && [ $y5 -eq 1 ] && has "miss
 else fail evidence-document-pages "docs=$y1 mixed=$y2 no-before=$y3 unpaired=$y4 web-on-docs=$y5 mixed-web-only=$y6 mixed-both=$y7 viewport-as-pages=$y8 ($d8): $d1 | $d2 | $d3 | $d4 | $d5 | $d6 | $d7"; fi
 
 # secrets-scan-changes-only: a dispatch re-gate (the fresh merge ref) scans only the pull request's own commits, so an
-# old leak already on the base does not fail it (linux x64 only: the scanner is the pinned gitleaks build)
-if [ "$(uname -s)-$(uname -m)" = Linux-x86_64 ]; then
+# old leak already on the base does not fail it (the scanner is checksum-pinned on macOS and Linux)
+if node -e 'process.exit(["linux", "darwin"].includes(process.platform) && ["x64", "arm64"].includes(process.arch) ? 0 : 1)'; then
   W=$(mkrepo)
   echo "token = ghp_$(printf 'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0hJ3lN6')" > "$W/old.txt" && commit "$W" "old leak"
   gc -C "$W" checkout -qb feat; echo ok > "$W/clean.txt" && commit "$W" clean
@@ -257,5 +259,5 @@ if [ "$(uname -s)-$(uname -m)" = Linux-x86_64 ]; then
   gc -C "$W" checkout -q feat; echo "token = ghp_$(printf 'Zy8xW7vU6tS5rQ4pO3nM2lK1jI0hG9fE8dC7')" > "$W/new.txt" && commit "$W" "new leak"; mr; o2=$(se); x2=$?
   if [ $x1 -eq 0 ] && has "HEAD^1..HEAD^2" "$o1" && [ $x2 -eq 1 ]; then ok secrets-scan-changes-only
   else fail secrets-scan-changes-only "clean=$x1 leak=$x2: $o1 | $o2"; fi
-else echo "skip secrets-scan-changes-only (the pinned gitleaks build runs on linux x64; gate's CI runs it)"; fi
+else echo "skip secrets-scan-changes-only (no pinned gitleaks build for this platform)"; fi
 done_cases

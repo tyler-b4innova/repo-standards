@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { rollbackFindings } from "./rollback.mjs";
 import { scan } from "./jsscan.mjs";
+import { localConfig } from "./local.mjs";
 import { claudePins, codexPins } from "./pins.mjs";
 import { verifyGeneratedBuild, workerFiles, readConfig, effectiveConfig, assertStaging, assertReleaseAccounts } from "./release-config.mjs";
 import { findings as stagingFindings, parse as parseWrangler } from "./staging.mjs";
@@ -68,6 +69,7 @@ else {
   const std = json("standards.json");
   if (!std) fail("standards.json missing or not JSON", restore("standards.json"));
   else {
+    try { localConfig(std.local); } catch (e) { fail(e.message, 'use local: false for no Worker, or {"command":"node_modules/.bin/wrangler dev --local", "url":"http://127.0.0.1:8787", "ready":"/"}'); }
     const one = (k, vals) => vals.includes(std[k]) || fail(`standards.json ${k} is ${JSON.stringify(std[k])}`, `use one of ${vals.join("|")}`);
     one("pack", [pack.pack]); one("profile", ["internal", "client"]); one("dispatch", ["auto", "manual", "off"]);
     one("sensitive", [true, false]); const e = std.e2e, eo = e && typeof e === "object" && !Array.isArray(e);
