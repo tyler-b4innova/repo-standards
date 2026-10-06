@@ -7,7 +7,7 @@ description: Open, file or update a draft pull request over the REST API, or han
 
 Before opening it, run `std-autoreview` (the one independent review; `codex review --base <base>` for Claude-written work).
 
-Title: Conventional Commit in plain language. Body (file outside the repo), per `.github/PULL_REQUEST_TEMPLATE.md`: What, Why with `Closes #N`, Evidence (the `std-evidence` comment, or the command you ran and its result).{pr_model_line}
+Title: Conventional Commit in plain language. Body (file outside the repo), per `.github/PULL_REQUEST_TEMPLATE.md`: What, Why with `Closes #N`, Evidence (the `std-evidence` comment, or the command you ran and its result). `pr.sh open` copies the linked issue's Goal and Acceptance criteria into the body under `## Issue #N`; gate requires them.{pr_model_line}
 
 ## With a token (Claude cloud, laptop)
 

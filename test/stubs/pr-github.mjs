@@ -9,10 +9,11 @@ import { createServer } from "node:http";
 const [portFile, logFile, origin] = process.argv.slice(2);
 const R = "/repos/acme/demo";
 const git = (...a) => { try { return execFileSync("git", ["--git-dir", origin, ...a], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { return null; } };
-const S = { pulls: [], issueComments: {}, reviewComments: {}, reviews: {}, checks: {} };
+// S.issues: the issues pr.sh open quotes (every case links #3); an entry with pull_request set is a pull request
+const S = { pulls: [], issues: { 3: { number: 3, title: "Add x", body: "## Goal\n\nShip x.\n\n## Acceptance criteria\n\n- [ ] x.txt exists\n" } }, issueComments: {}, reviewComments: {}, reviews: {}, checks: {} };
 let nextId = 1000;
 
-const pr = (x) => ({ ...x, html_url: `https://github.com/acme/demo/pull/${x.number}`, head: { ref: x.head, sha: git("rev-parse", `refs/heads/${x.head}`), repo: { full_name: "acme/demo" } }, base: { ref: x.base } });
+const pr = (x) => ({ ...x, html_url: `https://github.com/acme/demo/pull/${x.number}`, user: { login: x.user ?? "agent" }, head: { ref: x.head, sha: git("rev-parse", `refs/heads/${x.head}`), repo: { full_name: "acme/demo" } }, base: { ref: x.base } });
 
 createServer((req, res) => {
   let raw = "";
@@ -67,6 +68,7 @@ createServer((req, res) => {
       const date = git("show", "-s", "--format=%cI", m[1]);
       return date ? send(200, { sha: m[1], commit: { committer: { date: new Date(date).toISOString().replace(/\.000Z$/, "Z") } } }) : send(404, {});
     }
+    if ((m = p.match(/^\/repos\/acme\/demo\/issues\/(\d+)$/))) return S.issues[m[1]] ? send(200, S.issues[m[1]]) : send(404, { message: "Not Found" });
     if ((m = p.match(/^\/repos\/acme\/demo\/issues\/(\d+)\/comments$/))) {
       const list = (S.issueComments[m[1]] ??= []);
       if (req.method === "GET") return send(200, list);

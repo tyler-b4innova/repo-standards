@@ -50,6 +50,76 @@ done
 [ "$(state 'S.pulls.length+":"+S.pulls[0].draft+":"+S.pulls[0].title')" = "1:true:Add x (2)" ] || why="$why; state $(state 'JSON.stringify(S.pulls)')"
 if [ -z "$why" ]; then ok pr-open-verified; else fail pr-open-verified "$why"; fi
 
+# pr-quotes-issue: open sends the body with a `## Issue #3` section from the issue's Goal and Acceptance criteria
+# (the opens above already did); a re-run replaces a stale section or the template's placeholder; an issue with neither
+# section is quoted whole; the body file is never rewritten; a dry run stays offline; a pull request number is refused.
+why=""
+QUOTE=$'## Issue #3\n\nAdd x\n\n### Goal\n\nShip x.\n\n### Acceptance criteria\n\n- [ ] x.txt exists'
+[ "$(state 'S.pulls[0].body')" = $'Adds x.\n\nCloses #3\n\n'"$QUOTE" ] || why="appended section: $(state 'JSON.stringify(S.pulls[0].body)')"
+[ "$(cat "$T/body.md")" = $'Adds x.\n\nCloses #3' ] || why="$why; body file rewritten: $(cat "$T/body.md")"
+n=$(lines); out=$("$PR" open "Add x" "$T/body.md" --dry-run 2>&1)
+[ "$(lines)" = "$n" ] || why="$why; dry-run sent a request"
+case "$out" in *'## Issue #3\n\n(filled from issue #3'*) ;; *) why="$why; dry-run lacks the placeholder: $out" ;; esac
+printf 'Adds x.\n\nCloses #3\n\n## Issue #3\n\nold goal\n\n## Evidence\n\nran it\n' >"$T/stale.md"; cp "$T/stale.md" "$T/stale.orig"
+"$PR" open "Add x" "$T/stale.md" >/dev/null 2>&1 || why="$why; stale open failed"
+[ "$(state 'S.pulls[0].body')" = $'Adds x.\n\nCloses #3\n\n'"$QUOTE"$'\n\n## Evidence\n\nran it' ] || why="$why; stale section kept: $(state 'JSON.stringify(S.pulls[0].body)')"
+cmp -s "$T/stale.md" "$T/stale.orig" || why="$why; stale body file rewritten"
+sed 's/^Closes #$/Closes #3/' .github/PULL_REQUEST_TEMPLATE.md >"$T/tpl.md"
+"$PR" open "Add x" "$T/tpl.md" >/dev/null 2>&1 || why="$why; template open failed"
+b=$(state 'S.pulls[0].body')
+case "$b" in *"$QUOTE"$'\n\n## Evidence'*) ;; *) why="$why; template placeholder not filled: $b" ;; esac
+[ "$(grep -c '^## Issue #' <<<"$b")" = 1 ] || why="$why; template body has more than one Issue heading"
+mut "S.issues[3].body='Just do x.\n\n# Notes\n\n## More\n\nmore'"
+"$PR" open "Add x" "$T/body.md" >/dev/null 2>&1 || why="$why; whole-body open failed"
+[ "$(state 'S.pulls[0].body')" = $'Adds x.\n\nCloses #3\n\n## Issue #3\n\nAdd x\n\nJust do x.\n\n### Notes\n\n### More\n\nmore' ] || why="$why; whole body: $(state 'JSON.stringify(S.pulls[0].body)')"
+mut "S.issues[3].body='## Goal\n\nShip x.\n\n## Acceptance criteria\n\n- [ ] x.txt exists\n'"
+mut "S.issues[4]={number:4,title:'a PR',pull_request:{url:'u'}}"
+printf 'Closes #4\n' >"$T/pr4.md"; out=$("$PR" open "Add x" "$T/pr4.md" 2>&1) && why="$why; a pull request number was quoted"
+case "$out" in *"#4 is a pull request"*) ;; *) why="$why; PR-number refusal: $out" ;; esac
+printf 'Fixes #9\n' >"$T/pr9.md"; out=$("$PR" open "Add x" "$T/pr9.md" 2>&1) && why="$why; a missing issue was accepted"
+case "$out" in *"issue #9 is not in acme/demo"*) ;; *) why="$why; missing-issue refusal: $out" ;; esac
+"$PR" open "Add x" "$T/body.md" >/dev/null 2>&1 || why="$why; restoring open failed"
+if [ -z "$why" ]; then ok pr-quotes-issue; else fail pr-quotes-issue "$why"; fi
+
+# gate-issue-quoted: gate's issue step, through the real step against the same stub: the section pr.sh wrote passes,
+# and so does a hand-pasted one (other heading levels, whitespace, a ticked box); a missing section (even with a good
+# body in the event: the PR is read fresh), an outdated Goal and no Closes link fail with the fix; no pull request
+# passes with a notice; the sync App's standards/v* pull request is exempt, a person on that branch is not; dependabot[bot]
+# and renovate[bot] are exempt without a link, a login merely containing dependabot is not.
+why=""
+GI() { (GITHUB_REPOSITORY=acme/demo GITHUB_EVENT_PATH=$1 node scripts/agent/gate.mjs issue) 2>&1; }
+printf '{"pull_request":{"number":1,"body":"Closes #3\\n\\n%s"}}' "${QUOTE//$'\n'/\\n}" >"$T/ev1.json"
+gi() { # gi <label> <want exit> <needle> [event]
+  local o s; o=$(GI "${4:-$T/ev1.json}"); s=$?
+  [ $s -eq "$2" ] && case "$o" in *"$3"*) true ;; *) false ;; esac || why="$why; $1 (exit $s): $o"
+}
+gi "pr.sh section" 0 "quotes issue #3's Goal and Acceptance criteria"
+export B=$'Closes #3\n\n## Issue #3\n\n#### Goal\nShip    x.\n\nAcceptance criteria\n\n- [x] x.txt   exists\n\n## Evidence\n\nran it'
+mut "S.pulls[0].body=process.env.B"; gi "pasted section" 0 "quotes issue #3"
+mut "S.pulls[0].body='Closes #3'"; gi "missing section, good event body" 1 'no `## Issue #3` section'
+gi "fix line" 1 "scripts/agent/pr.sh open again"
+"$PR" open "Add x" "$T/body.md" >/dev/null 2>&1
+mut "S.issues[3].body='## Goal\n\nShip x and y.\n\n## Acceptance criteria\n\n- [ ] x.txt exists\n'"
+o=$(GI "$T/ev1.json"); s=$?
+[ $s -eq 1 ] && case "$o" in *"lacks its current Goal (issue #3"*) true ;; *) false ;; esac && case "$o" in *"current Goal and"*) false ;; *) true ;; esac || why="$why; outdated Goal (exit $s): $o"
+mut "S.issues[3].body='## Goal\n\nShip x.\n\n## Acceptance criteria\n\n- [ ] x.txt exists\n'"
+export B=$'Adds x.\n\n'"$QUOTE"
+mut "S.pulls[0].body=process.env.B"; gi "no Closes" 1 'add `Closes #N`'
+o=$(GI ""); s=$?; [ $s -eq 0 ] && case "$o" in *"not a pull request"*) true ;; *) false ;; esac || why="$why; no PR (exit $s): $o"
+mut "S.pulls.push({number:9,title:'standards',body:'',head:'standards/v0.7.0',base:'main',state:'open',user:'example-sync[bot]'})"
+printf '{"pull_request":{"number":9}}' >"$T/ev9.json"
+gi "sync App" 0 "exempt" "$T/ev9.json"
+mut "S.pulls.find(p=>p.number===9).user='alice'"; gi "person on standards/v*" 1 "links no issue" "$T/ev9.json"
+mut "S.pulls.find(p=>p.number===9).user='dependabot[bot]';S.pulls.find(p=>p.number===9).head='dependabot/npm/x'"; gi "dependabot, no Closes" 0 "exempt, dependabot[bot]" "$T/ev9.json"
+mut "S.pulls.find(p=>p.number===9).user='renovate[bot]'"; gi "renovate, no Closes" 0 "exempt, renovate[bot]" "$T/ev9.json"
+mut "S.pulls.find(p=>p.number===9).user='dependabot-fan'"; gi "login containing dependabot" 1 "links no issue" "$T/ev9.json"
+mut "S.pulls=S.pulls.filter(p=>p.number!==9)"
+"$PR" open "Add x" "$T/body.md" >/dev/null 2>&1
+blk=$(awk '/- name: instructions/{f=1} f&&/- name: secrets/{exit} f' .github/workflows/std-gate.yml)
+case "$blk" in *"- name: issue"*"GITHUB_TOKEN: \${{ github.token }}"*"gate.mjs issue"*) ;; *) why="$why; workflow step: $blk" ;; esac
+case "$blk" in *"if:"*) why="$why; issue step is conditional" ;; esac
+if [ -z "$why" ]; then ok gate-issue-quoted; else fail gate-issue-quoted "$why"; fi
+
 # pr-status-done: DONE only when open or merged, the body closes an issue, gate is green on the head SHA, and no review
 # thread is open.
 HEAD_SHA=$(git rev-parse HEAD) MAIN_SHA=$(git rev-parse main)

@@ -67,6 +67,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/agent/gate.mjs instructions
+      # the description quotes its linked issue's Goal and Acceptance criteria (pr.sh open writes it)
+      - name: issue
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/agent/gate.mjs issue
       - name: secrets
         run: node scripts/agent/gate.mjs secrets
       - name: syntax
