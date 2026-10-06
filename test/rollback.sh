@@ -355,7 +355,7 @@ export ROLLBACK_DRAFT=true
 casecheck rollback-draft 0 'WARN: rollback'
 unset ROLLBACK_DRAFT
 # The checks job carries plan context into the same real offline entry point.
-if ! rg -q 'ROLLBACK_BASE:.*steps.plan.outputs.rollback_base' "$R/.github/workflows/std-gate.yml"; then fail rollback-draft 'checks job lacks PR context'; fi
+if ! grep -q 'ROLLBACK_BASE:.*steps.plan.outputs.rollback_base' "$R/.github/workflows/std-gate.yml"; then fail rollback-draft 'checks job lacks PR context'; fi
 why=""
 repo hazards
 for sql in 'WITH ids AS (SELECT 1 AS id) INSERT OR REPLACE INTO users (id, old) SELECT id, 2 FROM ids;' 'ALTER TABLE users ADD COLUMN "default" TEXT NOT NULL;' 'INSERT OR REPLACE INTO users (id, old) VALUES (1, 2);' 'DROP TABLE users;' 'UPDATE users SET old = id;' 'DELETE FROM users;' 'ALTER TABLE users ALTER COLUMN old TYPE INTEGER;' 'ALTER TABLE users ADD COLUMN required TEXT NOT NULL;' 'ALTER TABLE users ADD COLUMN required TEXT NOT NULL DEFAULT NULL;' 'WITH ids AS (SELECT id FROM users) UPDATE users SET old = id;' 'CREATE TABLE IF NOT EXISTS users (id INTEGER, old TEXT); UPDATE users SET old = id;'; do
