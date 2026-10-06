@@ -31,18 +31,23 @@ function main() {
   const raw = env.STD_FRESH_TIMEOUT_MS ?? "", asked = /^\d+$/.test(raw) ? Number(raw) : NaN;
   const timeout = asked >= 100 && asked <= 30000 ? asked : 3000;
   // Never prompt: no askpass program (an empty GIT_ASKPASS also stops git falling back to core.askPass or
-  // SSH_ASKPASS), no credential helper, and ssh in batch mode even under an inherited GIT_SSH_COMMAND.
-  const inherited = env.GIT_SSH_COMMAND?.trim();
-  const batch = !inherited ? "ssh -o BatchMode=yes"
-    : /^\S*ssh(\s|$)/.test(inherited) ? inherited.replace(/^(\S*ssh)(\s|$)/, "$1 -o BatchMode=yes$2") : `${inherited} -o BatchMode=yes`;
+  // SSH_ASKPASS), no credential helper, ssh in batch mode. A custom ssh command (GIT_SSH_COMMAND or GIT_SSH) can't be
+  // made non-interactive reliably (quoting, wrappers, Plink), so the fetch is skipped and freshness left unchecked.
+  if (env.GIT_SSH_COMMAND?.trim() || env.GIT_SSH?.trim()) {
+    say(`NOTE: fresh-base: freshness unchecked: custom ssh command (GIT_SSH_COMMAND or GIT_SSH) is set`);
+    return checks(def);
+  }
   try {
     git(["-c", "credential.helper=", "-c", "credential.interactive=never", "-c", "core.askPass=",
       "fetch", "--quiet", "--no-tags", "origin", `+refs/heads/${def}:refs/remotes/origin/${def}`], {
       timeout, killSignal: "SIGKILL",
-      env: { ...env, GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "", SSH_ASKPASS: "", SSH_ASKPASS_REQUIRE: "never", GIT_SSH_COMMAND: batch } });
+      env: { ...env, GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "", SSH_ASKPASS: "", SSH_ASKPASS_REQUIRE: "never", GIT_SSH_COMMAND: "ssh -o BatchMode=yes" } });
   } catch {
     say(`NOTE: fresh-base: could not fetch origin/${def} within ${timeout}ms; freshness unchecked`);
   }
+  checks(def);
+}
+function checks(def) {
   const fix = `git worktree add -b <branch> <path> origin/${def}`;
   const behind = Number(tryGit("rev-list", "--count", `HEAD..refs/remotes/origin/${def}`) ?? 0);
   if (behind > 0)

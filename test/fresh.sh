@@ -33,9 +33,9 @@ then ok fresh-base-warns-primary-checkout; else fail fresh-base-warns-primary-ch
 
 # fresh-base-never-blocks: an origin that never answers -> one notice within the timeout, status kept; in CI nothing
 # runs (origin is never asked)
-printf '#!/bin/sh\ntouch "%s/asked"\nsleep 30\n' "$T" > "$T/hang-ssh"; chmod +x "$T/hang-ssh"
+mkdir -p "$T/hang"; printf '#!/bin/sh\ntouch "%s/asked"\nsleep 30\n' "$T" > "$T/hang/ssh"; chmod +x "$T/hang/ssh"
 git -C "$T/work" remote set-url origin "ssh://nowhere.invalid/x.git"
-export GIT_SSH_COMMAND="$T/hang-ssh"
+PATH0=$PATH; export PATH="$T/hang:$PATH"   # the default "ssh -o BatchMode=yes" resolves to the stalled ssh
 t0=$(date +%s); out=$(run "$T/work"); st=$?; dt=$(( $(date +%s) - t0 ))
 notes=$(grep -c "^NOTE: fresh-base: could not fetch origin/main" <<<"$out")
 asked=$([ -f "$T/asked" ] && echo yes || echo no); rm -f "$T/asked"
@@ -43,9 +43,10 @@ out2=$(CI=true run "$T/work"); st2=$?
 asked2=$([ -f "$T/asked" ] && echo yes || echo no)
 if [ $st -eq 0 ] && [ "$notes" = 1 ] && [ "$asked" = yes ] && [ $dt -le 5 ] && [ $st2 -eq 0 ] && [ "$asked2" = no ] && ! has "fresh-base" "$out2"
 then ok fresh-base-never-blocks; else fail fresh-base-never-blocks "st=$st notes=$notes asked=$asked ${dt}s ci=$st2/$asked2 :: $out | $out2"; fi
+export PATH=$PATH0
 # fresh-base-never-prompts: the fetch never runs an askpass program or credential helper, even when the environment
-# or git config names one (an HTTP origin that answers 401), and ssh gets BatchMode=yes even under an inherited
-# GIT_SSH_COMMAND
+# or git config names one (an HTTP origin that answers 401); the default ssh gets BatchMode=yes; a custom
+# GIT_SSH_COMMAND or GIT_SSH skips the fetch with a notice
 unset GIT_SSH_COMMAND
 printf '#!/bin/sh\ntouch "%s/prompted"\necho secret\n' "$T" > "$T/askpass"; chmod +x "$T/askpass"
 git config --global credential.helper "!$T/askpass"
@@ -55,20 +56,24 @@ git -C "$T/work" remote set-url origin "http://127.0.0.1:$(cat "$T/port")/x.git"
 out=$(GIT_ASKPASS="$T/askpass" SSH_ASKPASS="$T/askpass" run "$T/work"); st=$?
 kill $SRV 2>/dev/null; wait $SRV 2>/dev/null
 prompted=$([ -f "$T/prompted" ] && echo yes || echo no); rm -f "$T/prompted"; git config --global --unset credential.helper
-printf '#!/bin/sh\necho "$@" >> "%s/ssh-args"\nexit 255\n' "$T" > "$T/rec-ssh"; chmod +x "$T/rec-ssh"
+mkdir -p "$T/rec"; printf '#!/bin/sh\necho "$@" >> "%s/ssh-args"\nexit 255\n' "$T" > "$T/rec/ssh"; chmod +x "$T/rec/ssh"
 git -C "$T/work" remote set-url origin "ssh://nowhere.invalid/x.git"
-out2=$(GIT_SSH_COMMAND="$T/rec-ssh -o ConnectTimeout=1" run "$T/work"); st2=$?
-args=$(cat "$T/ssh-args" 2>/dev/null)
-if [ $st -eq 0 ] && [ "$prompted" = no ] && has "NOTE: fresh-base: could not fetch" "$out" && [ $st2 -eq 0 ] && has "BatchMode=yes" "$args" && has "ConnectTimeout=1" "$args"
-then ok fresh-base-never-prompts; else fail fresh-base-never-prompts "st=$st prompted=$prompted st2=$st2 args=$args :: $out | $out2"; fi
+out2=$(PATH="$T/rec:$PATH" run "$T/work"); st2=$?
+args=$(cat "$T/ssh-args" 2>/dev/null); rm -f "$T/ssh-args"
+out3=$(PATH="$T/rec:$PATH" GIT_SSH_COMMAND="ssh -o BatchMode=no" run "$T/work"); st3=$?
+out4=$(PATH="$T/rec:$PATH" GIT_SSH="$T/rec/ssh" run "$T/work"); st4=$?
+called=$([ -f "$T/ssh-args" ] && echo yes || echo no)
+if [ $st -eq 0 ] && [ "$prompted" = no ] && has "NOTE: fresh-base: could not fetch" "$out" && [ $st2 -eq 0 ] && has "BatchMode=yes" "$args" \
+  && [ $st3 -eq 0 ] && has "freshness unchecked: custom ssh command" "$out3" && [ $st4 -eq 0 ] && has "freshness unchecked: custom ssh command" "$out4" && [ "$called" = no ]
+then ok fresh-base-never-prompts; else fail fresh-base-never-prompts "st=$st prompted=$prompted st2=$st2 args=$args st3=$st3 st4=$st4 called=$called :: $out | $out2 | $out3 | $out4"; fi
 
 # fresh-base-timeout-bounded: an empty, zero, non-numeric or too-large STD_FRESH_TIMEOUT_MS falls back to 3000 ms, so a
 # stalled transport is still cut off (otherwise '' and '0' mean no deadline)
-export GIT_SSH_COMMAND="$T/hang-ssh"; why=""
+export PATH="$T/hang:$PATH"; why=""
 for v in "" 0 abc 999999; do
   t0=$(date +%s); out=$(STD_FRESH_TIMEOUT_MS="$v" run "$T/work"); st=$?; dt=$(( $(date +%s) - t0 ))
   [ $st -eq 0 ] && [ $dt -le 6 ] && has "within 3000ms" "$out" || why="$why; '$v': st=$st ${dt}s :: $out"
 done
-unset GIT_SSH_COMMAND
+export PATH=$PATH0
 if [ -z "$why" ]; then ok fresh-base-timeout-bounded; else fail fresh-base-timeout-bounded "$why"; fi
 done_cases
