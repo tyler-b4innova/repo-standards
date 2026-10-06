@@ -134,7 +134,9 @@ export async function plan(gh, overlay) {
     const off = Object.keys(need).filter((k) => repo[k] === false);
     if (off.length) steps.push({ what: `repo ${r}: enable ${off.join(", ")}`, detail: [], call: ["PATCH", `repos/${org}/${r}`, Object.fromEntries(off.map((k) => [k, true]))] });
     const message = { squash_merge_commit_title: "PR_TITLE", squash_merge_commit_message: "PR_BODY" };
-    const stale = Object.keys(message).filter((k) => repo[k] !== undefined && repo[k] !== message[k]);
+    // A repo read without the merge settings (the token is not a repo admin) is reported, never taken as compliant.
+    if (Object.keys(message).some((k) => repo[k] === undefined)) { console.log(`warning: repo ${r}: squash commit settings not readable; grant the App administration read`); continue; }
+    const stale = Object.keys(message).filter((k) => repo[k] !== message[k]);
     if (stale.length) steps.push({ what: `repo ${r}: squash commit takes the PR title and description`, detail: stale.map((k) => `${k}: ${repo[k]} -> ${message[k]}`), call: ["PATCH", `repos/${org}/${r}`, message] });
   }
 
