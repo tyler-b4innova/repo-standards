@@ -80,6 +80,24 @@ PRE='{"pull_request":{"number":7}}'
 put "{pr:{number:7,draft:true,head:{sha:\"$HEAD1\",ref:\"feat\"},base:{ref:\"main\"}}}"; d1=$(pl pull_request "$PRE")
 put "{pr:{number:7,draft:false,head:{sha:\"$HEAD1\",ref:\"feat\"},base:{ref:\"main\"}}}"; d2=$(pl pull_request "$PRE")
 if [ "$d1 $d2" = "cheap full" ] && grep -q "if: steps.plan.outputs.mode == 'cheap'" "$GWF"; then ok draft-cheap-ready-full; else fail draft-cheap-ready-full "draft=$d1 ready=$d2"; fi
+# Clone the real engine and apply the changed templates; compare real code and docs commits.
+ED=$T/engine-plan
+git clone -q --shared "$PWD" "$ED"
+node bin/repo-standards.mjs apply --target "$ED" --overlay examples/overlay.json --version 0.7.6 >/dev/null
+git -C "$ED" add -A; git -C "$ED" commit -qm applied
+EB=$(git -C "$ED" rev-parse HEAD)
+for kind in code docs; do
+  git -C "$ED" checkout -q --detach "$EB"
+  if [ "$kind" = code ]; then echo '// fixture change' >> "$ED/bin/repo-standards.mjs"; else echo 'fixture note' > "$ED/README.note.md"; fi
+  git -C "$ED" add -A; git -C "$ED" commit -qm "$kind"
+  EH=$(git -C "$ED" rev-parse HEAD)
+  printf '{"pull_request":{"number":7,"head":{"sha":"%s"},"base":{"sha":"%s"}}}' "$EH" "$EB" > "$T/engine-event.json"
+  put "{pr:{number:7,draft:true,head:{sha:\"$EH\",ref:\"feat\"},base:{ref:\"main\"}}}"
+  engine_plan=$(cd "$ED" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_EVENT_PATH="$T/engine-event.json" GITHUB_OUTPUT= node scripts/agent/gate.mjs plan 2>&1)
+  expected=full; [ "$kind" != docs ] || expected=cheap
+  if [[ "$engine_plan" == *"mode=$expected"* ]]; then ok draft-cheap-ready-full; else fail draft-cheap-ready-full "engine $kind draft: $engine_plan"; fi
+done
+put "{pr:{number:7,draft:false,head:{sha:\"$HEAD1\",ref:\"feat\"},base:{ref:\"main\"}}}"
 # skip-never-greens-gate: no job-level if; a dispatch re-gate plans the pull request it names, never "not a pull request"
 # the required gate job never skips: its only job-level if is always() (the tail's skips are judged by its verdict)
 jobif=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8"),g=y.slice(y.indexOf("\n  gate:"));console.log(!/^ {4}if: always\(\)$/m.test(g)||/^ {4}if: (?!always\(\)$)/m.test(g))' "$GWF")

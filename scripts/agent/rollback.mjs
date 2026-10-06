@@ -1,6 +1,6 @@
 // Compare production source, build output and migrations with the PR base; never access Cloudflare.
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, mkdtempSync, rmSync, symlinkSync, readdirSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, realpathSync, readFileSync, mkdtempSync, rmSync, symlinkSync, readdirSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, posix, join, relative } from "node:path";
 import { parse } from "./staging.mjs";
@@ -251,16 +251,30 @@ function baseInventory(base, directory, buildContext) {
   } finally { process.chdir(cwd); }
 }
 
+// Actions event data belongs only to the workflow's checkout, never to sync targets or fixtures.
+function workflowCheckout() {
+  try {
+    if (!process.env.GITHUB_WORKSPACE || realpathSync(git("rev-parse", "--show-toplevel").trim()) !== realpathSync(process.env.GITHUB_WORKSPACE)) return false;
+    let origin = "";
+    try { origin = git("remote", "get-url", "origin").trim(); } catch {}
+    // HTTPS, ssh:// and scp-style origins; local paths have no owner/name identity.
+    const match = origin.match(/^(?:(?:https?|ssh|git):\/\/[^/]+\/|[^/\s]+@[^/:]+:)([^/]+\/[^/]+?)\/?$/i);
+    const repository = match?.[1].replace(/\.git$/, "");
+    return !repository || repository.toLowerCase() === process.env.GITHUB_REPOSITORY?.toLowerCase();
+  } catch { return false; }
+}
+
 export function rollbackFindings({ built = false } = {}) {
   const errors = [], notes = [];
-  const event = JSON.parse(read(process.env.GITHUB_EVENT_PATH ?? "") ?? "{}");
+  const ownCheckout = workflowCheckout();
+  const event = ownCheckout ? JSON.parse(read(process.env.GITHUB_EVENT_PATH ?? "") ?? "{}") : {};
   let draft = process.env.ROLLBACK_DRAFT === "true" || (!process.env.ROLLBACK_DRAFT && event.pull_request?.draft === true);
   let base = process.env.ROLLBACK_BASE || event.pull_request?.base?.sha || event.merge_group?.base_sha;
   const files = git("ls-files", "--cached", "--others", "--exclude-standard", "-z").split("\0").filter(Boolean);
   let baseDirectory;
   const buildContext = {};
   try {
-    if (!base && process.env.GITHUB_EVENT_NAME === "workflow_dispatch") base = git("rev-parse", "HEAD^1").trim();
+    if (!base && ownCheckout && process.env.GITHUB_EVENT_NAME === "workflow_dispatch") base = git("rev-parse", "HEAD^1").trim();
     if (!base) {
       for (const ref of ["origin/HEAD", "origin/main", "main"]) {
         try { base = git("merge-base", ref, "HEAD").trim(); break; } catch {}

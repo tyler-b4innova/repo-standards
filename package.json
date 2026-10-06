@@ -20,7 +20,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "test:e2e": "test/run.sh"
+    "test:e2e": "bash test/ci-env"
   },
   "repository": {
     "type": "git",

@@ -102,6 +102,35 @@ else fail rollback-push-base "push hazard skipped: $out (exit=$rc)"; fi
 git -C "$R" cat-file -e "$PUSH_BASE^{commit}" 2>/dev/null || fail rollback-push-base 'default base was not fetched'
 unset GITHUB_EVENT_NAME GITHUB_EVENT_PATH
 
+# Event bases are scoped to the real workflow checkout. Use a foreign SHA absent from the target.
+repo event-scope
+BASE=
+git -C "$R" remote add origin "file://$SOURCE"
+printf '{"pull_request":{"base":{"sha":"%s"}}}' 1111111111111111111111111111111111111111 > "$T/event.json"
+export GITHUB_ACTIONS=true GITHUB_EVENT_PATH="$T/event.json" GITHUB_EVENT_NAME=pull_request GITHUB_WORKSPACE="$ENGINE" GITHUB_REPOSITORY=example-org/engine
+casecheck rollback-push-base 0 'rollback-safe ok'
+# Canonical workspace paths allow the checkout's own event; setup also accepts subdirectory callers.
+ln -s "$R" "$T/workspace-link"
+export GITHUB_WORKSPACE="$T/workspace-link"
+casecheck rollback-hazards 1 'cannot fetch comparison base 1111111111111111111111111111111111111111 from origin:'
+# A parsed origin with a different identity rejects the event even in the same workspace.
+for url in https://example.com/example-org/target.git git@example.com:example-org/target.git ssh://git@example.com/example-org/target.git; do
+  git -C "$R" remote set-url origin "$url"
+  casecheck rollback-push-base 0 'rollback-safe ok'
+done
+export GITHUB_REPOSITORY=example-org/target
+EVENT_BASE=$(git -C "$R" rev-parse HEAD)
+echo 'DROP TABLE users;' > "$R/db/0002.sql"
+git -C "$R" add -A; git -C "$R" commit -qm destructive
+printf '{"pull_request":{"base":{"sha":"%s"}}}' "$EVENT_BASE" > "$T/event.json"
+out=$(cd "$R/src" && ROLLBACK_BASE= ../scripts/agent/setup.sh --check 2>&1); rc=$?
+if [ "$rc" -eq 1 ] && [[ "$out" == *'DROP TABLE users'* ]]; then ok rollback-hazards; else fail rollback-hazards "own checkout subdirectory: $out"; fi
+printf '{"merge_group":{"base_sha":"%s"}}' "$EVENT_BASE" > "$T/event.json"
+casecheck rollback-hazards 1 'DROP TABLE users'
+export GITHUB_WORKSPACE="$ENGINE"
+casecheck rollback-push-base 0 'rollback-safe ok'
+unset GITHUB_ACTIONS GITHUB_EVENT_PATH GITHUB_EVENT_NAME GITHUB_WORKSPACE GITHUB_REPOSITORY
+
 repo unfetchable-base
 BASE=1111111111111111111111111111111111111111
 git -C "$R" remote add origin "file://$SOURCE"
