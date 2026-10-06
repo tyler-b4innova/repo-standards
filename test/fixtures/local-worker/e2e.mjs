@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { record } from "./record.mjs";
 record("e2e");
 assert.equal(process.env.CLOUDFLARE_API_TOKEN, undefined);
+assert.equal(process.env.CLOUDFLARE_ACCOUNT_ID, undefined);
+assert.match(process.env.WRANGLER_HOME, /gate-local-.*\/wrangler$/);
+assert.match(process.env.XDG_CONFIG_HOME, /gate-local-.*\/xdg$/);
 assert.equal(process.env.GATE_PREVIEW_URL, undefined);
 const { BASE_URL, PLAYWRIGHT_BASE_URL, FAIL_E2E, NO_WORKER } = process.env;
 if (NO_WORKER) {

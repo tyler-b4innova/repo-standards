@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Steps of the `gate` job (std-gate.yml), also runnable locally:
-//   local | plan | classify [base] | install | run <script>... | preview | release | e2e | secrets | syntax | instructions | verdict
+//   local [--base <ref>] | plan | classify [base] | install | run <script>... | preview | release | e2e | secrets | syntax | instructions | verdict
 // UI paths: pack.json defaults; standards.json "ui_paths" as a list replaces the include globs,
 // as {include, ignore} replaces include and adds ignore. e2e: none fails unless "e2e": false.
 import { execFileSync as ex, spawn, spawnSync } from "node:child_process";
@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 import { existsSync as has, mkdtempSync, readdirSync as ls, readFileSync as rd, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createConnection } from "node:net";
-import { localConfig } from "./local.mjs";
+import { localConfig, localWorkerConfig } from "./local.mjs";
 import { scan } from "./jsscan.mjs";
 import { rollbackFindings } from "./rollback.mjs";
 import { verifyGeneratedBuild } from "./release-config.mjs";
@@ -160,15 +160,21 @@ function ownersBlock(rev) {
 
 if (cmd === "local") {
   const steps = ["setup --check", "instructions", "secrets", "syntax", "install", "typecheck", "build", "gate.local.sh", "worker", "e2e"], results = new Map(steps.map((s) => [s, "not run"]));
-  const head = git("rev-parse", "HEAD").trim(), dir = mkdtempSync(`${tmpdir()}/gate-local-`);
-  let base = head, worker, active, interrupted = 0;
-  for (const ref of ["origin/HEAD", "main", "master"]) {
+  const head = git("rev-parse", "HEAD").trim();
+  let base, worker, active, address, interrupted = 0;
+  if (args.length && (args.length !== 2 || args[0] !== "--base" || !args[1] || args[1].startsWith("-")))
+    fail("local: expected local [--base <ref>]", "supply a comparison branch or commit with --base");
+  for (const ref of args.length ? [args[1]] : ["origin/HEAD", "origin/main", "origin/master", "main", "master"]) {
     try { base = git("merge-base", ref, "HEAD").trim(); break; } catch {}
   }
-  const eventFile = `${dir}/event.json`;
+  if (!base) {
+    fail(`local: cannot resolve a comparison base${args.length ? ` from ${args[1]}` : " (origin/HEAD, origin/main, origin/master, main, master)"}`,
+      "fetch the default branch or run local --base <ref>; HEAD is never used as a fallback");
+  }
+  const dir = mkdtempSync(`${tmpdir()}/gate-local-`), eventFile = `${dir}/event.json`;
   writeFileSync(eventFile, JSON.stringify({ pull_request: { number: 1, base: { sha: base }, head: { sha: head, ref: git("branch", "--show-current").trim() }, user: { login: "local" } } }));
   const localEnv = { ...env, CI: "true", GITHUB_EVENT_NAME: "pull_request", GITHUB_EVENT_PATH: eventFile, GITHUB_SHA: head,
-    PATH: `${process.cwd()}/node_modules/.bin:${env.PATH}`, GATE_BROWSERS: "chromium", WRANGLER_SEND_METRICS: "false", WRANGLER_CHECK_FOR_UPDATES: "false" };
+    PATH: `${process.cwd()}/node_modules/.bin:${env.PATH}`, GATE_BROWSERS: "chromium", WRANGLER_SEND_METRICS: "false", WRANGLER_CHECK_FOR_UPDATES: "false", WRANGLER_HOME: `${dir}/wrangler`, XDG_CONFIG_HOME: `${dir}/xdg` };
   for (const k of ["GH_TOKEN", "GITHUB_TOKEN", "GITHUB_OUTPUT", "GATE_PREVIEW_URL", "BASE_URL", "PLAYWRIGHT_BASE_URL", "CLOUDFLARE_ENV", "RANGE", "ROLLBACK_BASE", "ROLLBACK_DRAFT"])
     delete localEnv[k];
   for (const k of Object.keys(localEnv)) if (/^(CLOUDFLARE_|CF_)/.test(k)) delete localEnv[k];
@@ -179,9 +185,21 @@ if (cmd === "local") {
     if (child.exitCode === null && child.signalCode === null) await new Promise((r) => setTimeout(r, 300));
     signalGroup(child, "SIGKILL");
   };
-  const onSignal = (signal) => { interrupted = signal === "SIGINT" ? 130 : 143; signalGroup(active, "SIGTERM"); signalGroup(worker, "SIGTERM"); setTimeout(() => { signalGroup(active, "SIGKILL"); signalGroup(worker, "SIGKILL"); }, 1000).unref(); };
-  const onInt = () => onSignal("SIGINT"), onTerm = () => onSignal("SIGTERM");
-  process.on("SIGINT", onInt); process.on("SIGTERM", onTerm);
+  const occupied = async () => address && new Promise((resolve) => {
+    const socket = createConnection({ host: address.hostname.replace(/^\[|\]$/g, ""), port: Number(address.port || (address.protocol === "https:" ? 443 : 80)) });
+    const done = (used) => { socket.destroy(); resolve(used); };
+    socket.once("connect", () => done(true)); socket.once("error", () => done(false)); socket.setTimeout(500, () => done(true));
+  });
+  let abort;
+  const cancelled = new Promise((_, reject) => { abort = reject; });
+  const onSignal = (signal) => {
+    interrupted ||= { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }[signal];
+    signalGroup(active, "SIGTERM"); signalGroup(worker, "SIGTERM");
+    abort(new Error(`interrupted by ${signal}`));
+  };
+  const onException = (error) => { interrupted ||= 1; abort(error); };
+  const handlers = { SIGINT: () => onSignal("SIGINT"), SIGTERM: () => onSignal("SIGTERM"), SIGHUP: () => onSignal("SIGHUP"), uncaughtException: onException };
+  for (const [signal, handler] of Object.entries(handlers)) process.on(signal, handler);
   const run = async (name, command, argv) => {
     if (interrupted) throw new Error("interrupted");
     console.log(`local: ${name} starting`);
@@ -192,7 +210,7 @@ if (cmd === "local") {
     if (code || interrupted) throw new Error(`${name} failed (exit ${code})`);
     results.set(name, "PASS"); console.log(`local: ${name} PASS`);
   };
-  try {
+  const execute = async () => {
     await run("setup --check", "scripts/agent/setup.sh", ["--check"]);
     const config = localConfig(std.local);
     for (const step of ["instructions", "secrets", "syntax", "install"]) await run(step, process.execPath, ["scripts/agent/gate.mjs", step, ...(step === "instructions" ? ["--local"] : [])]);
@@ -206,15 +224,12 @@ if (cmd === "local") {
       if (!(wait > 0 && Number.isFinite(wait))) throw new Error("GATE_LOCAL_WAIT_S must be finite seconds above 0");
       const ready = new URL(config.ready, config.url).href;
       const probe = async () => { try { const r = await fetch(ready, { redirect: "manual", signal: AbortSignal.timeout(500) }); await r.body?.cancel(); return r.status; } catch { return 0; } };
-      const address = new URL(config.url);
-      const occupied = await new Promise((resolve) => {
-        const socket = createConnection({ host: address.hostname.replace(/^\[|\]$/g, ""), port: Number(address.port || (address.protocol === "https:" ? 443 : 80)) });
-        const done = (used) => { socket.destroy(); resolve(used); };
-        socket.once("connect", () => done(true)); socket.once("error", () => done(false)); socket.setTimeout(500, () => done(false));
-      });
-      if (occupied) throw new Error(`local Worker address already in use: ${config.url}; stop that server first`);
-      console.log(`local: worker starting: ${config.command}`);
-      worker = spawn("bash", ["-c", config.command], { stdio: "inherit", env: localEnv, detached: true });
+      const argv = localWorkerConfig(config);
+      address = new URL(config.url);
+      if (await occupied()) throw new Error(`local Worker address already in use: ${config.url}; stop that server first`);
+      if (interrupted) throw new Error("interrupted");
+      console.log(`local: worker starting: node_modules/.bin/wrangler ${argv.join(" ")}`);
+      worker = spawn("node_modules/.bin/wrangler", argv, { stdio: "inherit", env: localEnv, detached: true });
       let error; worker.once("error", (e) => { error = e; });
       const deadline = Date.now() + wait * 1000;
       let status = 0;
@@ -230,12 +245,18 @@ if (cmd === "local") {
     }
     await run("e2e", process.execPath, ["scripts/agent/gate.mjs", "e2e", "--local"]);
     if (worker && (worker.exitCode !== null || worker.signalCode !== null)) { results.set("worker", "FAIL"); throw new Error("local Worker exited during e2e"); }
-  } catch (e) { console.error(`local: ${e.message}`); process.exitCode = interrupted || 1; }
+  };
+  try { await Promise.race([execute(), cancelled]); } catch (e) { console.error(`local: ${e.message}`); process.exitCode = interrupted || 1; }
   finally {
     await stop(active); await stop(worker);
-    if (worker) console.log("local: worker stopped");
+    if (worker) {
+      const deadline = Date.now() + 2000;
+      while (await occupied() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+      if (await occupied()) { console.error(`local: Worker port was not freed: ${address.href}`); process.exitCode = 1; }
+      else console.log("local: worker stopped; port freed");
+    }
     rmSync(dir, { recursive: true, force: true });
-    process.off("SIGINT", onInt); process.off("SIGTERM", onTerm);
+    for (const [signal, handler] of Object.entries(handlers)) process.off(signal, handler);
     if (interrupted) process.exitCode = interrupted;
     console.log(`local gate ${head}: ${steps.map((s) => `${s}=${results.get(s)}`).join("; ")}`);
   }

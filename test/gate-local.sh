@@ -36,6 +36,17 @@ s.once('connect',()=>{s.destroy();process.exit(1)});
 s.once('error',()=>process.exit(0));s.setTimeout(500,()=>{s.destroy();process.exit(1)});
 JS
 }
+# Feature-only checkouts cannot silently reduce instruction/secret checks to HEAD..HEAD.
+git -C "$R" branch -m feature
+run no-base; nb=$?
+if [ "$nb" -ne 0 ] && has 'cannot resolve a comparison base' no-base && ! has 'instructions PASS' no-base; then ok gate-local-base-required
+else fail gate-local-base-required "no-base=$nb"; cat "$T/no-base.log"; fi
+(cd "$R" && node scripts/agent/gate.mjs local --base missing-ref) > "$T/bad-base.log" 2>&1; bb=$?
+# Explicit bases and remote default refs work without a local main branch.
+(cd "$R" && GATE_LOCAL_WAIT_S=20 node scripts/agent/gate.mjs local --base "$(git rev-parse HEAD)") > "$T/explicit-base.log" 2>&1; eb=$?
+if [ "$bb" -ne 0 ] && has 'cannot resolve a comparison base from missing-ref' bad-base && [ "$eb" -eq 0 ]; then ok gate-local-base-required
+else fail gate-local-base-required "bad=$bb explicit=$eb"; cat "$T/explicit-base.log"; fi
+git -C "$R" update-ref refs/remotes/origin/main HEAD
 run default; d=$?
 # The clear per-step start/result output proves ordering through the orchestration entry point.
 order=$(sed -n 's/^local: \(.*\) starting$/\1/p' "$T/default.log" | paste -sd, -)
@@ -43,30 +54,50 @@ summary=$(tail -1 "$T/default.log")
 sha=$(git -C "$R" rev-parse HEAD)
 if [ "$d" -eq 0 ] && [ "$order" = 'setup --check,instructions,secrets,syntax,install,typecheck,build,gate.local.sh,e2e' ] && has "local gate $sha:" default && has 'worker=PASS; e2e=PASS' default && has 'standards ok:' default && has 'secrets: gitleaks git' default && has 'syntax: scripts and workflows parse' default; then ok gate-local-runs-ci-steps
 else fail gate-local-runs-ci-steps "exit=$d order=$order summary=$summary"; cat "$T/default.log"; fi
-if [ "$d" -eq 0 ] && has 'wrangler dev --local --ip 127.0.0.1 --port 8787' default && has 'worker stopped' default && closed; then ok gate-local-starts-and-stops-worker
+if [ "$d" -eq 0 ] && has 'wrangler dev --ip 127.0.0.1 --port 8787 --local --config' default && has 'worker stopped' default && closed; then ok gate-local-starts-and-stops-worker
 else fail gate-local-starts-and-stops-worker "default=$d or Worker leaked"; fi
 FAIL_E2E=1 run failing; f=$?
 if [ "$d" -eq 0 ] && has 'HTTP entry point + local KV' default && [ "$f" -ne 0 ] && has 'deliberately failing e2e' failing && has 'e2e=FAIL' failing && closed; then ok gate-local-e2e-against-local-url
 else fail gate-local-e2e-against-local-url "default=$d failing=$f or Worker leaked"; fi
 # Custom local command, readiness path and port. Inherited preview context must not escape local.
-jset 'o.local={command:"wrangler dev --local --ip 127.0.0.1 --port "+process.env.LOCAL_FIXTURE_PORT,url:"http://127.0.0.1:"+process.env.LOCAL_FIXTURE_PORT,ready:"/health"}'
-GATE_PREVIEW_URL=https://preview.example.com BASE_URL=https://example.com GITHUB_EVENT_PATH=/nonexistent CLOUDFLARE_API_TOKEN=dummy run custom; c=$?
+jset 'o.local={command:"wrangler dev --ip 127.0.0.1 --port "+process.env.LOCAL_FIXTURE_PORT,url:"http://127.0.0.1:"+process.env.LOCAL_FIXTURE_PORT,ready:"/health"}'
+mkdir -p "$T/oauth/config/default"
+printf 'oauth_token = "dummy"\n' > "$T/oauth/config/default.toml"
+GATE_PREVIEW_URL=https://preview.example.com BASE_URL=https://example.com GITHUB_EVENT_PATH=/nonexistent CLOUDFLARE_API_TOKEN=dummy CLOUDFLARE_ACCOUNT_ID=dummy WRANGLER_HOME="$T/oauth" XDG_CONFIG_HOME="$T/oauth" run custom; c=$?
 if [ "$c" -eq 0 ] && has "local KV at http://127.0.0.1:$LOCAL_FIXTURE_PORT" custom && closed "$LOCAL_FIXTURE_PORT"; then ok gate-local-no-secrets
 else fail gate-local-no-secrets "custom=$c"; cat "$T/custom.log"; fi
-# Readiness never succeeds on an error response; an early process exit is also bounded.
+# A selected config with remote bindings must fail before Worker startup, even with --local.
+node - "$R" <<'JS'
+const fs=require('fs'),d=process.argv[2],cfg=JSON.parse(fs.readFileSync(d+'/wrangler.json'));
+cfg.kv_namespaces[0].remote=true;
+fs.writeFileSync(d+'/remote.jsonc','// selected config\n'+JSON.stringify(cfg));
+JS
+jset 'o.local.command="wrangler dev --config remote.jsonc --port "+process.env.LOCAL_FIXTURE_PORT'
+run remote-binding; rb=$?
+if [ "$rb" -ne 0 ] && has 'remote: true binding refused' remote-binding && ! has 'local: worker starting:' remote-binding && closed "$LOCAL_FIXTURE_PORT"; then ok gate-local-remote-refused
+else fail gate-local-remote-refused "remote-binding=$rb"; cat "$T/remote-binding.log"; fi
+rm "$R/remote.jsonc"
+bad=0
+for command in 'wrangler dev --remote' 'wrangler dev -r' 'wrangler dev --local=false' 'wrangler dev --local false' 'wrangler dev --x-remote-bindings' 'npm run dev' 'npx wrangler dev' 'wrangler dev; echo unsafe'; do
+  LOCAL_BAD_COMMAND="$command" jset 'o.local.command=process.env.LOCAL_BAD_COMMAND'
+  run remote-command; rc=$?
+  [ "$rc" -ne 0 ] && ! has 'local: worker starting:' remote-command || bad=$((bad + 1))
+done
+if [ "$bad" -eq 0 ]; then ok gate-local-remote-refused; else fail gate-local-remote-refused "$bad unsafe commands accepted"; fi
+# Wrapper commands are refused before startup.
 jset 'o.local={command:"node -e \"process.exit(7)\"",url:"http://127.0.0.1:"+process.env.LOCAL_FIXTURE_PORT,ready:"/health"}'
 run early; e=$?
-if [ "$e" -ne 0 ] && has 'worker=FAIL; e2e=not run' early; then ok gate-local-starts-and-stops-worker; else fail gate-local-starts-and-stops-worker 'early exit passed'; fi
-jset 'o.local={command:"wrangler dev --local --ip 127.0.0.1 --port "+process.env.LOCAL_FIXTURE_PORT,url:"http://127.0.0.1:"+process.env.LOCAL_FIXTURE_PORT,ready:"/health"}'
+if [ "$e" -ne 0 ] && has 'wrappers require local: false' early; then ok gate-local-starts-and-stops-worker; else fail gate-local-starts-and-stops-worker 'wrapper accepted'; fi
+jset 'o.local={command:"wrangler dev --ip 127.0.0.1 --port "+process.env.LOCAL_FIXTURE_PORT,url:"http://127.0.0.1:"+process.env.LOCAL_FIXTURE_PORT,ready:"/health"}'
 FAIL_REPO=1 run repo; rc=$?
 if [ "$rc" -ne 0 ] && has 'gate.local.sh=FAIL; worker=not run; e2e=not run' repo && closed "$LOCAL_FIXTURE_PORT"; then ok gate-local-runs-ci-steps; else fail gate-local-runs-ci-steps 'failed repo check ran tail'; fi
 # A real Worker that redirects readiness must time out without following a remote URL.
-jset 'o.local={command:"wrangler dev --local --ip 127.0.0.1 --port "+process.env.LOCAL_FIXTURE_PORT,url:"http://127.0.0.1:"+process.env.LOCAL_FIXTURE_PORT,ready:"/redirect"}'
+jset 'o.local={command:"wrangler dev --ip 127.0.0.1 --port "+process.env.LOCAL_FIXTURE_PORT,url:"http://127.0.0.1:"+process.env.LOCAL_FIXTURE_PORT,ready:"/redirect"}'
 GATE_LOCAL_WAIT_S=4 run timeout; to=$?
 if [ "$to" -ne 0 ] && has 'worker=FAIL; e2e=not run' timeout && closed "$LOCAL_FIXTURE_PORT"; then ok gate-local-starts-and-stops-worker
 else fail gate-local-starts-and-stops-worker "readiness timeout=$to or Worker leaked"; fi
 # Interrupt a live real Worker during e2e; TCP occupancy must refuse even a hanging readiness path.
-jset 'o.local={command:"wrangler dev --local --ip 127.0.0.1 --port "+process.env.LOCAL_FIXTURE_PORT,url:"http://127.0.0.1:"+process.env.LOCAL_FIXTURE_PORT,ready:"/health"}'
+jset 'o.local={command:"wrangler dev --ip 127.0.0.1 --port "+process.env.LOCAL_FIXTURE_PORT,url:"http://127.0.0.1:"+process.env.LOCAL_FIXTURE_PORT,ready:"/health"}'
 rm -f "$R/.gate-order"
 (cd "$R" && exec env LINGER=1 GATE_LOCAL_WAIT_S=20 node scripts/agent/gate.mjs local) > "$T/interrupted.log" 2>&1 & PID=$!
 ready=0
@@ -76,10 +107,10 @@ for i in $(seq 1 400); do
   sleep 0.1
 done
 if [ "$ready" -eq 1 ]; then jset 'o.local.ready="/hang"'; run occupied; busy=$?; else busy=0; fi
-kill -TERM "$PID" 2>/dev/null || true
+kill -HUP "$PID" 2>/dev/null || true
 wait "$PID"; interrupted=$?; PID=""
-if [ "$ready" -eq 1 ] && [ "$busy" -ne 0 ] && has 'address already in use' occupied && [ "$interrupted" -eq 143 ] && has 'worker stopped' interrupted && closed "$LOCAL_FIXTURE_PORT"; then ok gate-local-starts-and-stops-worker
-else fail gate-local-starts-and-stops-worker "ready=$ready occupied=$busy interrupt=$interrupted or Worker leaked"; cat "$T/interrupted.log"; fi
+if [ "$ready" -eq 1 ] && [ "$busy" -ne 0 ] && has 'address already in use' occupied && [ "$interrupted" -eq 129 ] && has 'worker stopped' interrupted && closed "$LOCAL_FIXTURE_PORT"; then ok gate-local-hup-cleanup
+else fail gate-local-hup-cleanup "ready=$ready occupied=$busy interrupt=$interrupted or Worker leaked"; cat "$T/interrupted.log"; fi
 # local:false skips the server, never the suite. Apply keeps the repo-owned opt-out.
 jset 'o.local=false'
 node bin/repo-standards.mjs apply --target "$R" --overlay examples/overlay.json --version 0.7.11 >/dev/null
