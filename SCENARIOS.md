@@ -187,3 +187,8 @@ Retired in 0.6.0 with the staged flow: `promote-no-ui-auto`, `promote-ui-needs-h
 - **`rollback-production-binding`**: removing a previous production binding fails.
 - **`rollback-draft`**: destructive SQL warns without failing a draft, and gate's checks job carries PR base and draft context into `--check`.
 - **`rollback-hazards`**: existing-data rewrites, type narrowing, unsafe constraints, unlisted contract objects, DO deletion/rename migrations and each production binding kind fail; new schema and staging-only binding changes pass.
+
+- **`rollback-nested-update`**: a nested WHERE cannot hide a later assignment to an existing column from setup.sh --check.
+- **`rollback-persistent-sql`**: view deletion, unique indexes, triggers with DELETE and unclassified SQL require exact affected-object contracts through setup.sh --check.
+- **`rollback-generated-production`**: clean-checkout builds of both revisions expose generated D1 migration directories and removed production bindings to setup.sh --check.
+- **`rollback-cross-worker-do`**: a caller switching classes cannot permit the host to remove a class or delete its namespace required by the previous release.

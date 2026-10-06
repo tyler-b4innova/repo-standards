@@ -28,6 +28,89 @@ casecheck() {
 repo expand
 printf '%s\n' '-- DROP TABLE users; ignored' 'AlTeR /* comment */ TABLE "users" ADD COLUMN extra TEXT;' "INSERT INTO users (extra) VALUES ('semi; DROP COLUMN old');" 'UPDATE users SET extra = old;' > "$R/db/0002.sql"
 casecheck rollback-expand 0 'rollback-safe ok'
+repo nested-update
+echo "ALTER TABLE users ADD COLUMN extra TEXT; UPDATE users SET extra = (SELECT 'new' WHERE 1), old = NULL;" > "$R/db/0002.sql"
+casecheck rollback-nested-update 1 'UPDATE data rewrite'
+repo persistent-sql
+why=""
+for spec in 'legacy_users|DROP VIEW legacy_users;' 'users|CREATE UNIQUE INDEX unique_old ON users(old);' 'users|CREATE TRIGGER erase AFTER INSERT ON users BEGIN DELETE FROM users; END;' 'users|REINDEX users;' 'users|CREATE TABLE trigger (begin TEXT); DROP TABLE users;' 'users|CREATE VIEW trigger AS SELECT 1 AS begin; DELETE FROM users;' 'users|CREATE TABLE things (begin TEXT); CREATE TRIGGER begin AFTER INSERT ON things WHEN new.begin = 1 BEGIN UPDATE things SET begin = 2; END; DROP TABLE users;' 'users|CREATE TABLE things (begin TEXT); CREATE TRIGGER erase AFTER INSERT ON things WHEN new.begin = 1 BEGIN DELETE FROM users; END;'; do
+  object=${spec%%|*}; sql=${spec#*|}
+  echo "$sql" > "$R/db/0002.sql"; git -C "$R" add -A
+  out=$(check); [ "$?" -eq 1 ] && [[ "$out" == *'contract requires'* ]] || why="$why; unsafe SQL passed: $sql"
+  printf '%s\n' '-- contract: previous release retired object; issue #123' "$sql" > "$R/db/0002.sql"
+  printf '{"db/0002.sql":["%s"]}\n' "$object" > "$R/rollback-contracts.json"
+  out=$(check); [ "$?" -eq 0 ] && [[ "$out" == *'NOTE: contract'* ]] || why="$why; listed contract failed: $out"
+  rm "$R/rollback-contracts.json"
+done
+# A trigger on a fresh table still needs a contract for existing data touched by its body.
+printf '%s\n' '-- contract: previous release retired things; issue #123' 'CREATE TABLE things (id INTEGER); CREATE TRIGGER erase AFTER INSERT ON things BEGIN DELETE FROM users; END;' > "$R/db/0002.sql"
+echo '{"db/0002.sql":["things"]}' > "$R/rollback-contracts.json"
+out=$(check); [ "$?" -eq 1 ] && [[ "$out" == *'DELETE data rewrite users'* ]] || why="$why; trigger body target skipped: $out"
+echo '{"db/0002.sql":["things","users"]}' > "$R/rollback-contracts.json"
+out=$(check); [ "$?" -eq 0 ] && [[ "$out" == *'NOTE: contract'* ]] || why="$why; complete trigger contract failed: $out"
+printf '%s\n' 'CREATE TABLE things (id INTEGER); CREATE UNIQUE INDEX unique_id ON things(id); CREATE TRIGGER fill AFTER INSERT ON things BEGIN UPDATE things SET id = 1; END;' > "$R/db/0002.sql"
+rm "$R/rollback-contracts.json"
+out=$(check); [ "$?" -eq 0 ] || why="$why; new-table constraints failed: $out"
+if [ -z "$why" ]; then ok rollback-persistent-sql; else fail rollback-persistent-sql "$why"; fi
+repo generated
+cp "$ENGINE/test/fixtures/release-astro/"{build.mjs,package.json,wrangler.jsonc} "$R/"
+mv "$R/db" "$R/migrations"
+printf 'dist/\n.wrangler/\nnode_modules/\n' >> "$R/.gitignore"
+export RELEASE_LOG=$T/generated.log GENERATED_RESOURCE=1 ISOLATE_GENERATED_RESOURCE=1
+git -C "$R" add -A; git -C "$R" commit -qm generated; BASE=$(git -C "$R" rev-parse HEAD)
+echo 'DROP TABLE users;' > "$R/migrations/0002.sql"
+casecheck rollback-generated-production 1 'DROP TABLE users'
+out=$(cd "$R" && ROLLBACK_BASE=$BASE node scripts/agent/gate.mjs run build 2>&1); rc=$?
+[ "$rc" -eq 1 ] && [[ "$out" == *'DROP TABLE users'* ]] || fail rollback-generated-production "gate build skipped comparison: $out (exit=$rc)"
+rm "$R/migrations/0002.sql"
+# Removing a build-only binding must compare against the base build, even without a redirect at entry.
+sed '/if (process.env.GENERATED_RESOURCE)/s/process.env.GENERATED_RESOURCE/false/' "$R/build.mjs" > "$T/build"; cp "$T/build" "$R/build.mjs"
+rm -rf "$R/dist" "$R/.wrangler"
+out=$(check); [ "$?" -eq 1 ] && [[ "$out" == *'removed production binding d1_databases GENERATED_DB'* ]] || fail rollback-generated-production "base build binding skipped: $out"
+# Build-emitted SQL must retain base history as well as expose new destructive files.
+git -C "$R" checkout "$BASE" -- build.mjs
+node - "$R/build.mjs" <<'JS'
+const fs=require('fs'), f=process.argv[2];
+let s=fs.readFileSync(f,'utf8');
+s='import { cpSync } from "node:fs";\n'+s;
+s=s.replace('writeFileSync("dist/server/wrangler.json",', 'cpSync("migrations", "dist/server/db", { recursive: true }); for (const db of cfg.d1_databases ?? []) db.migrations_dir = "db";\nwriteFileSync("dist/server/wrangler.json",');
+fs.writeFileSync(f,s);
+JS
+git -C "$R" add -A; git -C "$R" commit -qm emitted; BASE=$(git -C "$R" rev-parse HEAD)
+echo 'DROP TABLE users;' > "$R/migrations/0002.sql"
+out=$(check); rc=$?
+[ "$rc" -eq 1 ] && [[ "$out" == *'dist/server/db/0002.sql: DROP TABLE users'* ]] || fail rollback-generated-production "emitted SQL skipped: $out (exit=$rc)"
+echo 'UPDATE users SET old = NULL;' > "$R/migrations/0002.sql"
+out=$(check); rc=$?
+[ "$rc" -eq 1 ] && [[ "$out" == *'UPDATE data rewrite'* ]] || fail rollback-generated-production "emitted base history skipped: $out (exit=$rc)"
+unset GENERATED_RESOURCE ISOLATE_GENERATED_RESOURCE RELEASE_LOG
+repo cross-worker
+mkdir -p "$R/workers"
+cat > "$R/workers/host.jsonc" <<'CFG'
+{"name":"host","main":"../src/index.js","migrations":[{"tag":"v1","new_classes":["Counter"]}],"previews":{},"env":{"staging":{"routes":[]}}}
+CFG
+node -e 'const fs=require("fs"),f=process.argv[1],o=JSON.parse(fs.readFileSync(f));o.release_workers=["workers/host.jsonc"];fs.writeFileSync(f,JSON.stringify(o))' "$R/standards.json"
+node -e 'const fs=require("fs"),f=process.argv[1],o=JSON.parse(fs.readFileSync(f));o.durable_objects.bindings[0].script_name="host";o.env.staging.durable_objects.bindings[0].script_name="host-staging";fs.writeFileSync(f,JSON.stringify(o))' "$R/wrangler.jsonc"
+git -C "$R" add -A; git -C "$R" commit -qm dependency; BASE=$(git -C "$R" rev-parse HEAD)
+node -e 'const fs=require("fs"),f=process.argv[1],o=JSON.parse(fs.readFileSync(f));o.durable_objects.bindings[0].class_name="NewCounter";o.env.staging.durable_objects.bindings[0].class_name="NewCounter";fs.writeFileSync(f,JSON.stringify(o))' "$R/wrangler.jsonc"
+echo 'export class NewCounter {}' > "$R/src/index.js"
+node -e 'const fs=require("fs"),f=process.argv[1],o=JSON.parse(fs.readFileSync(f));o.migrations.push({tag:"v2",deleted_classes:["Counter"]});fs.writeFileSync(f,JSON.stringify(o))' "$R/workers/host.jsonc"
+casecheck rollback-cross-worker-do 1 'removed or renamed Durable Object class Counter'
+# Namespace migrations must fail even if the previous class export is retained.
+echo 'export class Counter {}; export class NewCounter {}' > "$R/src/index.js"
+for migration in '{"tag":"v2","deleted_classes":["Counter"]}' '{"tag":"v2","renamed_classes":[{"from":"Counter","to":"NewCounter"}]}'; do
+  node -e 'const fs=require("fs"),f=process.argv[1],o=JSON.parse(fs.readFileSync(f));o.migrations[1]=JSON.parse(process.argv[2]);fs.writeFileSync(f,JSON.stringify(o))' "$R/workers/host.jsonc" "$migration"
+  out=$(check); rc=$?
+  [ "$rc" -eq 1 ] && [[ "$out" == *'Counter deleted_classes/renamed_classes'* ]] || fail rollback-cross-worker-do "host namespace migration passed: $out (exit=$rc)"
+done
+# An unnamed env.production host resolves as <name>-production.
+git -C "$R" checkout "$BASE" -- workers/host.jsonc wrangler.jsonc src/index.js
+node -e 'const fs=require("fs"),f=process.argv[1],o=JSON.parse(fs.readFileSync(f));o.env.production={};fs.writeFileSync(f,JSON.stringify(o))' "$R/workers/host.jsonc"
+node -e 'const fs=require("fs"),f=process.argv[1],o=JSON.parse(fs.readFileSync(f));o.durable_objects.bindings[0].script_name="host-production";fs.writeFileSync(f,JSON.stringify(o))' "$R/wrangler.jsonc"
+git -C "$R" add -A; git -C "$R" commit -qm environment; BASE=$(git -C "$R" rev-parse HEAD)
+node -e 'const fs=require("fs"),f=process.argv[1],o=JSON.parse(fs.readFileSync(f));o.env.production.migrations=[...o.migrations,{tag:"v2",deleted_classes:["Counter"]}];fs.writeFileSync(f,JSON.stringify(o))' "$R/workers/host.jsonc"
+out=$(check); rc=$?
+[ "$rc" -eq 1 ] && [[ "$out" == *'Counter deleted_classes/renamed_classes'* ]] || fail rollback-cross-worker-do "production environment dependency skipped: $out (exit=$rc)"
 repo drop
 echo 'ALTER TABLE users ADD COLUMN extra TEXT; aLtEr TABLE [users] DROP /* x */ COLUMN `old`;' > "$R/db/0002.sql"
 casecheck rollback-drop-column 1 'split into expand now, contract in a later release'

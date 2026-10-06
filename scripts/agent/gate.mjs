@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import { existsSync as has, mkdtempSync, readdirSync as ls, readFileSync as rd, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { scan } from "./jsscan.mjs";
+import { rollbackFindings } from "./rollback.mjs";
 import { verifyGeneratedBuild } from "./release-config.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
@@ -321,6 +322,12 @@ if (cmd === "instructions") {
   else {
     console.log(`run: ${pm} run ${s}`); must(pm, ["run", s]);
     if (s === "build") {
+      const rollback = rollbackFindings({ built: true });
+      for (const message of rollback.errors) {
+        if (rollback.draft) console.log(`::warning::${message}`);
+        else fail(message, "split into expand now, contract in a later release");
+      }
+      for (const note of rollback.notes) console.log(`NOTE: ${note}`);
       try { verifyGeneratedBuild(std, pkg); }
       catch (e) { fail(`generated Wrangler config: ${e.message}`, "make the build honor CLOUDFLARE_ENV=staging before releasing"); }
     }
