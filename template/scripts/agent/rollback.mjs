@@ -267,8 +267,26 @@ export function rollbackFindings({ built = false } = {}) {
       }
     }
     if (!base) {
-      notes.push("rollback: no comparison base (empty base ref); skipped");
-      return { errors, notes, draft };
+      const remotes = git("remote").trim().split("\n").filter(Boolean);
+      if (!remotes.length) {
+        notes.push("rollback: no comparison base (no remotes); skipped");
+        return { errors, notes, draft };
+      }
+      // Shallow push checkouts may have no default-branch refs or merge base.
+      // Fetch the remote default tip directly instead of exempting the checkout.
+      const tried = "merge-base origin/HEAD, origin/main, main (no event PR/merge-group base supplied)";
+      if (!remotes.includes("origin")) {
+        draft = false;
+        throw new Error(`no comparison base; tried ${tried}; origin remote is unavailable`);
+      }
+      try {
+        git("fetch", "--no-tags", "--depth=1", "origin", "HEAD");
+        base = git("rev-parse", "--verify", "FETCH_HEAD^{commit}").trim();
+        if (!base) throw new Error("empty fetched base");
+      } catch (e) {
+        draft = false;
+        throw new Error(`no comparison base; tried ${tried}, git fetch --no-tags --depth=1 origin HEAD: ${e.message}`);
+      }
     }
     try { base = git("rev-parse", "--verify", "--end-of-options", `${base}^{commit}`).trim(); }
     catch {
