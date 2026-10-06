@@ -1,6 +1,6 @@
 // Compare production source, build output and migrations with the PR base; never access Cloudflare.
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, mkdtempSync, rmSync, symlinkSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, mkdtempSync, rmSync, symlinkSync, readdirSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, posix, join, relative } from "node:path";
 import { parse } from "./staging.mjs";
@@ -69,6 +69,13 @@ function tableAt(t, i) {
   if (t[i + 1] === ".") i += 2;
   return [name(t[i]), i + 1];
 }
+function recordReplacingTables(sql, replacingTables) {
+  for (const t of statements(sql)) {
+    const tableAtIndex = ["temp", "temporary"].includes(t[1]) ? 2 : 1;
+    if (t[0] === "create" && t[tableAtIndex] === "table" && phrase(t, "conflict", "replace"))
+      replacingTables.add(tableAt(t, tableAtIndex + 1)[0]);
+  }
+}
 function sqlHazards(sql, freshTables, freshColumns, existingTables = new Set(), existingColumns = new Set(), replacingTables = new Set(), history = false) {
   const hazards = [];
   for (let t of typeof sql === "string" ? statements(sql) : sql) {
@@ -86,7 +93,6 @@ function sqlHazards(sql, freshTables, freshColumns, existingTables = new Set(), 
       // A repeated CREATE (including IF NOT EXISTS) cannot establish column freshness.
       if (existingTables.has(table) || freshTables.has(table)) continue;
       freshTables.add(table);
-      if (phrase(t, "conflict", "replace")) replacingTables.add(table);
       // Column starts at the first parenthesis or a top-level comma; table constraints are excluded.
       let depth = 0, columnStart = false;
       for (const v of t.slice(start)) {
@@ -179,7 +185,7 @@ function sqlHazards(sql, freshTables, freshColumns, existingTables = new Set(), 
       const nonReplacing = t[1] === "or" && ["ignore", "abort", "fail", "rollback"].includes(t[2]);
       const doNothing = phrase(t, "on", "conflict") && phrase(t, "do", "nothing") && !phrase(t, "do", "update");
       if (t.includes("conflict") && !doNothing) hazards.push([table, "SQL is not positively classified as expand-only"]);
-      else if (replacingTables.has(table) && !nonReplacing && !doNothing) hazards.push([table, "INSERT may inherit ON CONFLICT REPLACE data rewrite"]);
+      else if (replacingTables.has(table) && !nonReplacing) hazards.push([table, "INSERT may inherit ON CONFLICT REPLACE data rewrite"]);
     } else if (["begin", "commit", "end", "rollback", "savepoint", "release"].includes(t[0])) {
       continue;
     } else {
@@ -197,7 +203,7 @@ function productionInventory({ built = false, buildContext } = {}) {
   const files = [root, ...workerFiles(std, root)];
   if (!built) {
     const command = buildCommand(std, pkg);
-    const options = command ? installBuildDependencies(pkg, command, buildContext) : {};
+    const options = command ? installBuildDependencies(pkg, buildContext) : {};
     build(std, pkg, false, { quiet: true, ...options });
   }
   return new Map(files.map((file, i) => {
@@ -206,18 +212,25 @@ function productionInventory({ built = false, buildContext } = {}) {
     return [relative(process.cwd(), file), { file: relative(process.cwd(), resolved.file).split("\\").join("/"), cfg: resolved.cfg }];
   }));
 }
-function installBuildDependencies(pkg, buildCmd, context) {
+function installBuildDependencies(pkg, context) {
   const pm = existsSync("pnpm-lock.yaml") ? "pnpm" : existsSync("yarn.lock") ? "yarn" : "npm";
-  const prefix = pm === "npm" ? [] : ["--yes", "--package", "corepack@0.34.6", "corepack", pm];
-  if (pm !== "npm" && !context.home) context.home = mkdtempSync(join(tmpdir(), "rollback-corepack-"));
-  const env = pm === "npm" ? process.env : { ...process.env, COREPACK_HOME: context.home, COREPACK_ENABLE_AUTO_PIN: "0" };
-  const command = buildCmd[0] === pm && pm !== "npm" ? ["npx", [...prefix, ...buildCmd[1]]] : buildCmd;
+  let env = process.env;
+  if (pm !== "npm") {
+    if (!context.home) {
+      context.home = mkdtempSync(join(tmpdir(), "rollback-corepack-"));
+      const bin = join(context.home, "bin");
+      mkdirSync(bin);
+      for (const manager of ["pnpm", "yarn"])
+        writeFileSync(join(bin, manager), `#!/bin/sh\nexec npx --yes --package corepack@0.34.6 corepack ${manager} "$@"\n`, { mode: 0o755 });
+    }
+    env = { ...process.env, PATH: `${join(context.home, "bin")}:${process.env.PATH ?? ""}`, COREPACK_HOME: context.home, COREPACK_ENABLE_AUTO_PIN: "0" };
+  }
   if (Object.keys({ ...pkg.dependencies, ...pkg.devDependencies, ...pkg.optionalDependencies }).length && !existsSync("node_modules")) {
     const args = pm === "pnpm" ? ["install", "--frozen-lockfile"] : pm === "yarn" ? ["install", existsSync(".yarnrc.yml") ? "--immutable" : "--frozen-lockfile"] : existsSync("package-lock.json") ? ["ci"] : ["install", "--no-package-lock"];
-    const result = spawnSync(pm === "npm" ? "npm" : "npx", [...prefix, ...args], { stdio: "ignore", env });
+    const result = spawnSync(pm, args, { stdio: "ignore", env });
     if (result.status !== 0) throw new Error("cannot install production build dependencies; resolved production rollback comparison is required");
   }
-  return { command, env };
+  return { env };
 }
 function baseInventory(base, directory, buildContext) {
   execFileSync("git", ["clone", "--shared", "--no-checkout", "--quiet", process.cwd(), directory], { stdio: "pipe" });
@@ -341,6 +354,9 @@ export function rollbackFindings({ built = false } = {}) {
       return [...new Set(found)].sort();
     };
     const oldMigrations = migrations(baseDirectory), newMigrations = migrations(".");
+    // Policies belong to names across all history, regardless of recreation or statement order.
+    for (const f of oldMigrations) recordReplacingTables(read(join(baseDirectory, f)), replacingTables);
+    for (const f of newMigrations) recordReplacingTables(read(f), replacingTables);
     for (const f of oldMigrations) {
       sqlHazards(read(join(baseDirectory, f)), oldTables, oldColumns, new Set(), new Set(), replacingTables, true);
       if (!newMigrations.includes(f)) errors.push(`${f}: historical D1 migration removed; retain migration history`);

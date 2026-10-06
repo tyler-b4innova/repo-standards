@@ -46,7 +46,7 @@ done
 if [ -z "$why" ]; then ok rollback-renamed-history; else fail rollback-renamed-history "$why"; fi
 repo schema-replace
 why=""
-for schema in 'CREATE TABLE settings(key TEXT PRIMARY KEY ON CONFLICT REPLACE, value TEXT);' 'CREATE TABLE settings(key TEXT, value TEXT, CONSTRAINT unique_key UNIQUE(key) ON CONFLICT REPLACE);' 'CREATE TABLE settings(key TEXT); ALTER TABLE settings ADD COLUMN value TEXT NOT NULL ON CONFLICT REPLACE DEFAULT 1;'; do
+for schema in 'CREATE TABLE settings(key TEXT PRIMARY KEY ON CONFLICT REPLACE, value TEXT);' 'CREATE TABLE settings(key TEXT, value TEXT, CONSTRAINT unique_key UNIQUE(key) ON CONFLICT REPLACE);' 'CREATE TABLE settings(key TEXT); ALTER TABLE settings ADD COLUMN value TEXT NOT NULL ON CONFLICT REPLACE DEFAULT 1;' 'CREATE TABLE settings(key TEXT); ALTER TABLE settings RENAME TO archived_settings; CREATE TABLE settings(key TEXT PRIMARY KEY ON CONFLICT REPLACE, value TEXT);' 'CREATE TABLE settings(key TEXT); DROP TABLE settings; CREATE TABLE settings(key TEXT, value TEXT, UNIQUE(key) ON CONFLICT REPLACE);'; do
   echo "$schema ALTER TABLE settings RENAME TO preferences;" > "$R/db/0001.sql"
   git -C "$R" add -A; git -C "$R" commit -qm policy; BASE=$(git -C "$R" rev-parse HEAD)
   echo "INSERT INTO preferences VALUES('theme','default');" > "$R/db/0002.sql"
@@ -65,12 +65,17 @@ done
 if [ -z "$why" ]; then ok rollback-schema-replace; else fail rollback-schema-replace "$why"; fi
 repo seeds
 why=""
-for definition in 'id INTEGER PRIMARY KEY, old TEXT' 'id INTEGER PRIMARY KEY ON CONFLICT REPLACE, old TEXT'; do
+for definition in 'id INTEGER PRIMARY KEY, old TEXT' 'id INTEGER PRIMARY KEY ON CONFLICT REPLACE, old TEXT' 'id INTEGER PRIMARY KEY, old TEXT UNIQUE ON CONFLICT REPLACE'; do
   echo "CREATE TABLE users($definition);" > "$R/db/0001.sql"
   git -C "$R" add -A; git -C "$R" commit -qm seeds; BASE=$(git -C "$R" rev-parse HEAD)
   for clause in 'ON CONFLICT(id) DO NOTHING' 'ON CONFLICT DO NOTHING'; do
     echo "INSERT INTO users(id,old) VALUES(1,'seed') $clause;" > "$R/db/0002.sql"
-    out=$(check); [ "$?" -eq 0 ] && [[ "$out" == *'rollback-safe ok'* ]] || why="$why; safe seed blocked: $out"
+    out=$(check); rc=$?
+    if [[ "$definition" == *REPLACE* ]]; then
+      [ "$rc" -eq 1 ] && [[ "$out" == *'ON CONFLICT REPLACE data rewrite users'* ]] || why="$why; replacing seed passed: $out"
+    else
+      [ "$rc" -eq 0 ] && [[ "$out" == *'rollback-safe ok'* ]] || why="$why; safe seed blocked: $out"
+    fi
   done
   echo "INSERT INTO users(id,old) VALUES(1,'seed') ON CONFLICT(id) DO UPDATE SET old='seed';" > "$R/db/0002.sql"
   out=$(check); [ "$?" -eq 1 ] && [[ "$out" == *'rollback:'* ]] || why="$why; updating seed passed: $out"
@@ -95,6 +100,12 @@ appendFileSync(process.env.ROLLBACK_BUILD_LOG, `${process.cwd()}|${process.env.C
 JS
 printf 'node_modules/\n' >> "$R/.gitignore"
 (cd "$R" && PATH="$CLEAN_PATH" COREPACK_ENABLE_AUTO_PIN=0 npx --yes --package corepack@0.34.6 corepack pnpm install --lockfile-only) > "$T/lock.log" 2>&1 || fail rollback-build-bootstrap "cannot generate real lockfile: $(cat "$T/lock.log")"
+node - "$R/standards.json" <<'JS'
+const fs = require('node:fs'), file = process.argv[2];
+const std = JSON.parse(fs.readFileSync(file));
+std.build = 'pnpm run build';
+fs.writeFileSync(file, JSON.stringify(std));
+JS
 git -C "$R" add -A; git -C "$R" commit -qm bootstrap; BASE=$(git -C "$R" rev-parse HEAD)
 export ROLLBACK_BUILD_LOG="$T/builds.log"
 out=$(PATH="$CLEAN_PATH" check); rc=$?
