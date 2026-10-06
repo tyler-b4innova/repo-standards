@@ -52,7 +52,7 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 - **`release-production-route-guard`**: staging cannot bind a production hostname through a route or custom domain, even with a different path or scheme.
 - **`release-staging-output`**: Wrangler must confirm the staging Worker name; mismatched output aborts production upload.
 - **`release-plain-config`**: plain JSONC staging applies its environment and pins the checked config and staging name before deploying.
-- **`release-generated-check`**: the offline check requires exactly `<name>-staging`, and it and a fresh CI build reject redirected builds that ignore `CLOUDFLARE_ENV` and accepts builds that restore production after the staging probe.
+- **`release-generated-check`**: the offline check requires exactly `<name>-staging`, and it and a fresh CI build reject redirected builds that ignore `CLOUDFLARE_ENV` and accepts builds that restore production after the staging probe. Quiet build failures suppress all build output, including undeclared database credentials, and name the local reproduction command, environment selection, package-manager bootstrap and exit status or signal.
 
 - **`review-no-promotions`**: the review rule has no promotion path: a pull request from the default branch into another branch is judged like any other (a UI change needs its evidence comment; a person's approval is no substitute, since code-owner approval on `main` is the rulesets' business).
 
