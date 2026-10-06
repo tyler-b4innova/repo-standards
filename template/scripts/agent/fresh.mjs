@@ -26,11 +26,20 @@ function main() {
     def = known[0];
   }
   if (head !== def) return;
-  const timeout = Number(env.STD_FRESH_TIMEOUT_MS ?? 3000);
+  // A bounded deadline always: only a whole number of milliseconds from 100 to 30000 is taken, else 3000
+  // ('' and '0' would otherwise mean no deadline at all).
+  const raw = env.STD_FRESH_TIMEOUT_MS ?? "", asked = /^\d+$/.test(raw) ? Number(raw) : NaN;
+  const timeout = asked >= 100 && asked <= 30000 ? asked : 3000;
+  // Never prompt: no askpass program (an empty GIT_ASKPASS also stops git falling back to core.askPass or
+  // SSH_ASKPASS), no credential helper, and ssh in batch mode even under an inherited GIT_SSH_COMMAND.
+  const inherited = env.GIT_SSH_COMMAND?.trim();
+  const batch = !inherited ? "ssh -o BatchMode=yes"
+    : /^\S*ssh(\s|$)/.test(inherited) ? inherited.replace(/^(\S*ssh)(\s|$)/, "$1 -o BatchMode=yes$2") : `${inherited} -o BatchMode=yes`;
   try {
-    git(["fetch", "--quiet", "--no-tags", "origin", `+refs/heads/${def}:refs/remotes/origin/${def}`], {
+    git(["-c", "credential.helper=", "-c", "credential.interactive=never", "-c", "core.askPass=",
+      "fetch", "--quiet", "--no-tags", "origin", `+refs/heads/${def}:refs/remotes/origin/${def}`], {
       timeout, killSignal: "SIGKILL",
-      env: { ...env, GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: env.GIT_SSH_COMMAND ?? "ssh -o BatchMode=yes" } });
+      env: { ...env, GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "", SSH_ASKPASS: "", SSH_ASKPASS_REQUIRE: "never", GIT_SSH_COMMAND: batch } });
   } catch {
     say(`NOTE: fresh-base: could not fetch origin/${def} within ${timeout}ms; freshness unchecked`);
   }
