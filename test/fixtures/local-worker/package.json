@@ -1,0 +1,13 @@
+{
+  "name": "local-gate-fixture",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "node --check worker.mjs && node --check e2e.mjs && node record.mjs typecheck",
+    "build": "node --check worker.mjs && node record.mjs build",
+    "test:e2e": "node e2e.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "4.148.0"
+  }
+}

@@ -4,6 +4,12 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 
 ## Gate and evidence
 
+- **`gate-local-runs-ci-steps`**: the local gate runs setup, instructions, secrets, syntax, install, typecheck, build, repo checks and the same e2e command in order, and reports HEAD and each result. A failing repo check stops the tail.
+- **`gate-local-starts-and-stops-worker`**: the real fixture Worker starts with repo Wrangler and local bindings, readiness is bounded and it stops after success, failure or interruption; an existing server is refused.
+- **`gate-local-e2e-against-local-url`**: the fixture suite makes HTTP calls through the real Worker to local KV using both base URL variables. A failing e2e returns non-zero from the local gate.
+- **`gate-local-no-secrets`**: the full fixture gate passes with no Cloudflare credentials or vault access, ignoring inherited remote preview context; its ignored `.dev.vars` holds only dummy values. macOS and Linux use checksum-pinned platform builds of the same scanner.
+- **`gate-local-opt-out`**: `local: false` skips only server startup, preserving the same e2e suite, and survives apply. Invalid local shapes, non-loopback URLs and escaping readiness paths fail the offline check.
+
 - **`gate-fails-without-e2e`**: a repository with no end-to-end suite fails `gate` (the suite was once skipped silently while `gate` went green). The workflow has one job named `gate` (the required check), which aggregates the checks job and the parallel tail that carries every step.
 - **`setup-installs-repo-playwright`**: `setup.sh` installs the Chromium browser with the repository's own Playwright (`node_modules/.bin/playwright`), never through npx, and says so when the package is declared but not installed (npm 6's npx read `--no playwright` as an option value and installed nothing).
 - **`e2e-opt-out-honoured`**: `"e2e": false` in `standards.json` skips the e2e step with a warning (even where a suite exists), passes `--check`, and re-applying the pack keeps it.
