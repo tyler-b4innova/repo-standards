@@ -12,7 +12,7 @@
 - Answer every bot finding (fix it or reply why), then resolve the thread.
 - Never commit plans, notes, scratch, decision records, secrets, `.mcp.json`, `.env`, `.dev.vars`, `*.pem` or `.evidence/` on main.
 - Managed paths change only upstream (`setup.sh --check` names drift; `scripts/agent/gate.local.sh` is yours). Cloud setup calls `scripts/agent/setup.sh`; a missing path there breaks cloud tasks.
-- AGENTS.md ≤4 KB. Add a line only for a failure that happened.
+- Add a line only for a failure that happened.
 - Deploys run from the org's CI builds, never from a personal token.
 ## Review guidelines
 

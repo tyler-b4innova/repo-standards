@@ -116,6 +116,11 @@ if grep -q 'repo site: squash commit takes the PR title and description$' <<<"$o
   ok org-squash-commit-from-pr
 else fail org-squash-commit-from-pr "$out"; fi
 
+# launcher-body-budget-removed: org-apply loads an overlay that still sets launcher.bodyBudget, with one notice.
+node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8")); o.launcher={bodyBudget:8000}; require("fs").writeFileSync(f+".bb",JSON.stringify(o))' "$T/org.json"
+bb_err=$(node org/apply.mjs --overlay "$T/org.json.bb" --dry-run 2>&1 >/dev/null); bb_rc=$?
+[ "$bb_rc" = 0 ] && [ "$(grep -c 'launcher.bodyBudget was removed' <<<"$bb_err")" = 1 ] && ok launcher-body-budget-removed || fail launcher-body-budget-removed "org-apply rc=$bb_rc: $bb_err"
+
 # engine-org-apply-order: apply enables required repo settings, then creates and updates, and deletes last (the retired flow property after the rulesets),
 # so no branch loses its required check mid-apply.
 out=$(run)

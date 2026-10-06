@@ -1,10 +1,4 @@
 {
-  "limits": {
-    "agents": 4096,
-    "block": 1800,
-    "skill": 1536,
-    "pack": 40960
-  },
   "ui_paths": [
     "**/*.{astro,svelte,vue,jsx,tsx,html,css,scss,docx,pptx}",
     "src/{components,layouts,styles,lib/components}/**",

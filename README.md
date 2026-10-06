@@ -12,7 +12,7 @@ An org-neutral engine for repo-scoped agent standards. Each organization keeps a
   "review": { "provider": "codex", "model": "<model id>", "effort": "<effort>" },
   "unassigned": ["<lane>"],
   "dispatch": [{ "repo": "standards", "workflow": "sync.yml", "every": "1d", "ref": "<branch>", "when": "drift" }],
-  "sections": ["Goal", "Acceptance criteria"], "bodyBudget": 8000, "uiPaths": ["<glob>"],
+  "sections": ["Goal", "Acceptance criteria"], "uiPaths": ["<glob>"],
   "duplicates": { "apps": ["<app slug>"] },
   "revert": { "newIssueEvents": 5, "eventFactor": 5 },
   "retro": { "approvers": ["<login>"], "engineApprovers": ["<login>"], "provider": "claudeAgent", "model": "<model id>", "effort": "<effort>", "repo": "<repo>" }
