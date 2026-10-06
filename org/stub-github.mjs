@@ -35,8 +35,13 @@ createServer((req, res) => {
     if ((m = p.match(/^\/repos\/([^/]+)\/([^/]+)$/)) && m[1] === st.org) {
       const r = st.repos.find((x) => x.name === m[2]);
       if (!r) return send(404, { message: "Not Found" });
-      if (req.method === "PATCH") { Object.assign(r, body); save(); }
-      return send(200, { name: r.name, archived: !!r.archived, allow_squash_merge: r.allow_squash_merge ?? true, allow_merge_commit: r.allow_merge_commit ?? true, delete_branch_on_merge: r.delete_branch_on_merge ?? true });
+      if (req.method === "PATCH") {
+        // GitHub accepts the squash message setting only with a valid title setting in the same call.
+        const ok = { PR_BODY: ["PR_TITLE"], BLANK: ["PR_TITLE"], COMMIT_MESSAGES: ["PR_TITLE", "COMMIT_OR_PR_TITLE"] };
+        if ("squash_merge_commit_message" in body && !(ok[body.squash_merge_commit_message] ?? []).includes(body.squash_merge_commit_title)) return send(422, { message: "invalid squash merge commit title/message combination" });
+        Object.assign(r, body); save();
+      }
+      return send(200, { name: r.name, archived: !!r.archived, allow_squash_merge: r.allow_squash_merge ?? true, allow_merge_commit: r.allow_merge_commit ?? true, delete_branch_on_merge: r.delete_branch_on_merge ?? true, ...(r.no_merge_settings ? {} : { squash_merge_commit_title: r.squash_merge_commit_title ?? "COMMIT_OR_PR_TITLE", squash_merge_commit_message: r.squash_merge_commit_message ?? "COMMIT_MESSAGES" }) });
     }
     if (!(m = p.match(/^\/orgs\/([^/]+)\/(.+)$/)) || m[1] !== st.org) return send(404, { message: `stub: no route ${p}` });
     const rest = m[2];
