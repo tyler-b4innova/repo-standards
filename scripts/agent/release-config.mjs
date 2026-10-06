@@ -116,28 +116,14 @@ export function build(std, pkg, staging = false, { quiet = false, command = buil
     buildEnv.CLOUDFLARE_ENV = "staging";
   }
   if (!quiet) console.log(`release: build (${staging ? "CLOUDFLARE_ENV=staging" : "CLOUDFLARE_ENV unset"})`);
-  const r = spawnSync(command[0], command[1], { env: buildEnv, encoding: "utf8", maxBuffer: 16 << 20, stdio: quiet ? ["ignore", "pipe", "pipe"] : "inherit" });
+  const r = spawnSync(command[0], command[1], { env: buildEnv, stdio: quiet ? "ignore" : "inherit" });
   if (r.status !== 0) {
-    let detail = [r.error?.message, r.signal && `signal ${r.signal}`, r.stdout, r.stderr].filter(Boolean).join("\n");
-    const required = new Set(Array.isArray(std.secrets?.required) ? std.secrets.required : []);
-    // Wrangler-only declarations are secrets too, even when names such as DSN do not match a convention.
-    const root = rootFile(), files = root ? [root] : [];
-    try { if (root) files.push(...workerFiles(std, root)); } catch {}
-    for (const file of files) {
-      try {
-        const cfg = readConfig(file);
-        for (const target of [cfg, ...Object.values(cfg.env ?? {})]) {
-          const names = target?.secrets?.required;
-          if (Array.isArray(names)) for (const name of names) required.add(name);
-        }
-      } catch {} // A malformed config must not hide the original build failure.
-    }
-    // Match the engine's token scrubbing: replace known secret values with *** before showing output.
-    const values = Object.entries(buildEnv).filter(([key, value]) => value &&
-      (required.has(key) || /secret|token|password|credential|private.?key|api.?key|auth/i.test(key))).map(([, value]) => value);
-    for (const value of values.sort((a, b) => b.length - a.length)) detail = detail.replaceAll(value, "***");
-    detail = detail.trim().split(/\r?\n/).slice(-30).join("\n");
-    throw new Error(`${staging ? "staging" : "production"} build failed (exit ${r.status ?? "unavailable"}); ensure the build supports CLOUDFLARE_ENV staging selection${detail ? `\n${detail}` : ""}`);
+    const outcome = r.signal ? `signal ${r.signal}` : r.status !== null ? `exit ${r.status}` : `spawn ${r.error?.code ?? "failed"}`;
+    const quote = (arg) => /^[a-zA-Z0-9_./-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", "'\\''")}'`;
+    const localCommand = command.map((part) => Array.isArray(part) ? part.map(quote).join(" ") : quote(part)).join(" ");
+    const selection = staging ? "CLOUDFLARE_ENV=staging" : "env -u CLOUDFLARE_ENV";
+    const bootstrap = env.COREPACK_HOME ? "a Corepack-bootstrapped package manager" : "the configured package manager";
+    throw new Error(`${staging ? "staging" : "production"} build failed (${outcome}); reproduce locally with ${bootstrap}: ${selection} ${localCommand}`);
   }
 }
 

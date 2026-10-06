@@ -32,6 +32,8 @@ if (process.env.BOOTSTRAP_LOG) {
 }
 if (process.env.BUILD_FAILURE && process.env.CLOUDFLARE_ENV === 'staging') {
   for (let i=0; i<40; i++) console.error('diagnostic-line-'+i);
+  console.log('DATABASE_URL=postgres://u:secretpass@h/db');
+  console.error('DATABASE_URL=postgres://u:secretpass@h/db');
   console.error('real adapter error '+process.env.TEST_BUILD_TOKEN+' '+process.env.DSN+' '+process.env.STAGE_DSN);
   process.exit(42);
 }
@@ -74,7 +76,7 @@ if [ -z "$why" ]; then
   : > "$T/bootstrap.log"
   token="fixture-secret-value"
   if (cd "$R" && PATH="$CLEAN_PATH" CI=true GITHUB_ACTIONS=true BUILD_FAILURE=1 TEST_BUILD_TOKEN="$token" DSN="fixture-wrangler-secret" STAGE_DSN="fixture-staging-secret" BOOTSTRAP_LOG="$T/bootstrap.log" scripts/agent/setup.sh --check) > "$T/out" 2>&1; then why="failing adapter passed";
-  elif ! grep -q 'staging build failed (exit 42)' "$T/out" || ! grep -q 'real adapter error \*\*\* \*\*\* \*\*\*' "$T/out" || ! grep -q 'diagnostic-line-39' "$T/out" || grep -qE "$token|fixture-wrangler-secret|fixture-staging-secret|diagnostic-line-0$" "$T/out"; then why="missing/redaction/unbounded diagnostics: $(cat "$T/out")";
+  elif ! grep -q 'staging build failed (exit 42)' "$T/out" || ! grep -q "Corepack-bootstrapped package manager: CLOUDFLARE_ENV=staging sh -c 'pnpm run build'" "$T/out" || grep -qE "$token|fixture-wrangler-secret|fixture-staging-secret|secretpass|DATABASE_URL|real adapter error|diagnostic-line" "$T/out"; then why="missing reproduction command or leaked build output: $(cat "$T/out")";
   else
     node - "$T/bootstrap.log" "$R" <<'JS'
 const fs=require('node:fs'), assert=require('node:assert/strict');
