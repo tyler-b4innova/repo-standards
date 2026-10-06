@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { client } from "../lib/sync.mjs";
-import { launcherErrors } from "../lib/engine.mjs";
+import { launcherErrors, launcherNotices } from "../lib/engine.mjs";
 
 const DEF = JSON.parse(readFileSync(new URL("./rulesets.json", import.meta.url), "utf8"));
 const MANIFEST = JSON.parse(readFileSync(new URL("./app-manifest.json", import.meta.url), "utf8"));
@@ -235,6 +235,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     if (!o.overlay) throw new Error("--overlay <org.json> is required");
     const overlay = JSON.parse(readFileSync(o.overlay, "utf8"));
     const lbad = overlay.launcher === undefined ? [] : launcherErrors(overlay.launcher);
+    if (overlay.launcher !== undefined) launcherNotices(overlay.launcher).forEach((n) => console.error(`notice: ${n}`));
     if (lbad.length) throw new Error(`overlay ${o.overlay}:\n  ${lbad.join("\n  ")}`);
     if (!["create-app", "reconcile"].includes(cmd)) throw new Error(`unknown command ${cmd}`);
     await run({ overlay, dryRun: o["dry-run"], cmd });

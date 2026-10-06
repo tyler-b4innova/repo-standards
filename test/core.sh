@@ -147,6 +147,13 @@ for c in "l.retro={$R0,cadence:\"weekly\"}|launcher.retro.cadence is not a launc
 done
 if [ -z "$why" ]; then ok overlay-launcher-validated; else fail overlay-launcher-validated "$why"; fi
 
+# launcher-body-budget-removed: live overlays still set launcher.bodyBudget; it loads with a one-line notice, never a refusal
+node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.launcher.bodyBudget=8000;require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$T/bb.json"
+d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main
+err=$(OVERLAY="$T/bb.json" apply "$d" 2>&1 >/dev/null); st=$?
+if [ $st -eq 0 ] && [ "$(echo "$err" | grep -c 'launcher.bodyBudget was removed')" -eq 1 ] && [ -f "$d/AGENTS.md" ]; then ok launcher-body-budget-removed
+else fail launcher-body-budget-removed "exit=$st: $err"; fi
+
 # review-settings-removed: the conversation is not a required status any more; an overlay still naming it is refused
 # with the reason, before anything is written
 why=""
@@ -292,13 +299,15 @@ has "already current" "$again" || why="$why; re-apply not idempotent: $again"
 commit "$R"; out=$(check "$R") || why="$why; check after apply: $out"
 if [ -z "$why" ]; then ok session-hook-single; else fail session-hook-single "$why"; fi
 
-R=$(mkrepo); node -e 'console.log("- " + "x".repeat(3000))' >> "$R/AGENTS.md"
-expect_fail agents-md-max-4096 "$R" "(limit 4096)"
-# nothing invites bloat: a new AGENTS.md is the title and the block only, and the over-limit fix asks for less, not more
+# no byte-size limit: an AGENTS.md well over 4 KB passes --check
+R=$(mkrepo); node -e 'console.log("- " + "x".repeat(6000))' >> "$R/AGENTS.md"; commit "$R"; out=$(check "$R"); st=$?
+size=$(wc -c < "$R/AGENTS.md" | tr -d ' ')
+if [ $st -eq 0 ] && [ "$size" -gt 4096 ]; then ok agents-md-no-size-limit; else fail agents-md-no-size-limit "exit=$st size=$size: $out"; fi
+# nothing invites bloat: a new AGENTS.md is the title and the block only
 R=$(mkrepo); want=$(printf '# %s\n\n' "$(basename "$R")"; node bin/repo-standards.mjs block --overlay "$OV" --profile internal)
-node -e 'console.log("- " + "x".repeat(3000))' >> "$R/AGENTS.md"; out=$(check "$R")
-if [ "$(git -C "$R" show HEAD:AGENTS.md)" = "$want" ] && has "repeated failure modes only" "$out" && ! has "footguns" "$out"; then ok agents-md-invites-nothing
-else fail agents-md-invites-nothing "$(git -C "$R" show HEAD:AGENTS.md | tail -4) | $out"; fi
+got=$(git -C "$R" show HEAD:AGENTS.md)
+if [ "$got" = "$want" ] && ! has "footguns" "$got"; then ok agents-md-invites-nothing
+else fail agents-md-invites-nothing "$(echo "$got" | tail -4)"; fi
 
 all=1
 for f in docs/adr/0001-use-x.md decisions/2026-db.md api/decision-records/a.md notes/ADR-7.md; do
@@ -475,10 +484,12 @@ if [ -z "$why" ]; then ok flow-staged-retired; else fail flow-staged-retired "$w
 out=$(python3 -c 'import sys,yaml; [yaml.safe_load(open(f)) for f in sys.argv[1:]]' template/.github/workflows/*.yml 2>&1)
 if [ $? -eq 0 ]; then ok workflows-parse; else fail workflows-parse "$out"; fi
 
-BIG=$T/big.json; node -e 'const o=require(process.argv[1]);o.profiles.client.block_lines=["- "+"x".repeat(400)];require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$BIG"
-out=$(node bin/repo-standards.mjs block --overlay "$BIG" --profile client 2>&1); st=$?
-sizes=$(for p in internal client; do node bin/repo-standards.mjs block --overlay "$OV" --profile $p | wc -c; done | sort -n | tail -1 | tr -d ' ')
-if [ $st -ne 0 ] && has "rendered client block is" "$out" && [ "$sizes" -le 1800 ]; then ok agents-block-max-1800; else fail agents-block-max-1800 "st=$st max=$sizes $out"; fi
+# no byte-size limit on the managed block: an overlay whose block renders over 1800 bytes loads, applies and checks
+BIG=$T/big.json; node -e 'const o=require(process.argv[1]);o.profiles.client.block_lines=["- "+"x".repeat(2000)];require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$BIG"
+out=$(node bin/repo-standards.mjs block --overlay "$BIG" --profile client 2>&1); st=$?; size=$(printf '%s' "$out" | wc -c | tr -d ' ')
+R=$(OVERLAY=$BIG mkrepo client); cout=$(check "$R"); cst=$?
+if [ $st -eq 0 ] && [ "$size" -gt 1800 ] && [ -n "$R" ] && [ $cst -eq 0 ] && grep -q "xxxxxxxxxx" "$R/AGENTS.md"; then ok agents-block-no-size-limit
+else fail agents-block-no-size-limit "st=$st size=$size $cout"; fi
 
 # ---- gate job timeout: 30 minutes unless the overlay's gate.timeout_minutes (an integer from 5 to 120) says otherwise
 why=""
