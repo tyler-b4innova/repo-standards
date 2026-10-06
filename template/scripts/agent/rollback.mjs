@@ -234,6 +234,9 @@ function installBuildDependencies(pkg, context) {
 }
 function baseInventory(base, directory, buildContext) {
   execFileSync("git", ["clone", "--shared", "--no-checkout", "--quiet", process.cwd(), directory], { stdio: "pipe" });
+  // A shallow source can hold a fetched base outside the history copied by clone.
+  try { execFileSync("git", ["-C", directory, "cat-file", "-e", `${base}^{commit}`], { stdio: "pipe" }); }
+  catch { execFileSync("git", ["-C", directory, "fetch", "--no-tags", "--depth=1", "--", process.cwd(), base], { stdio: "pipe" }); }
   execFileSync("git", ["-C", directory, "checkout", "--detach", "--quiet", base], { stdio: "pipe" });
   const cwd = process.cwd();
   // Reuse installed dependencies only for the same dependency manifest and lockfiles.
@@ -251,10 +254,9 @@ function baseInventory(base, directory, buildContext) {
 export function rollbackFindings({ built = false } = {}) {
   const errors = [], notes = [];
   const event = JSON.parse(read(process.env.GITHUB_EVENT_PATH ?? "") ?? "{}");
-  const draft = process.env.ROLLBACK_DRAFT === "true" || (!process.env.ROLLBACK_DRAFT && event.pull_request?.draft === true);
+  let draft = process.env.ROLLBACK_DRAFT === "true" || (!process.env.ROLLBACK_DRAFT && event.pull_request?.draft === true);
   let base = process.env.ROLLBACK_BASE || event.pull_request?.base?.sha || event.merge_group?.base_sha;
   const files = git("ls-files", "--cached", "--others", "--exclude-standard", "-z").split("\0").filter(Boolean);
-  const relevant = files.some((f) => configFile.test(f));
   let baseDirectory;
   const buildContext = {};
   try {
@@ -265,10 +267,51 @@ export function rollbackFindings({ built = false } = {}) {
       }
     }
     if (!base) {
-      if (relevant) throw new Error("comparison base missing; fetch the PR base or set ROLLBACK_BASE to its commit");
-      return { errors, notes, draft };
+      const remotes = git("remote").trim().split("\n").filter(Boolean);
+      if (!remotes.length) {
+        notes.push("rollback: no comparison base (no remotes); skipped");
+        return { errors, notes, draft };
+      }
+      // Shallow push checkouts may have no default-branch refs or merge base.
+      // Fetch the remote default tip directly instead of exempting the checkout.
+      const tried = "merge-base origin/HEAD, origin/main, main (no event PR/merge-group base supplied)";
+      if (!remotes.includes("origin")) {
+        draft = false;
+        throw new Error(`no comparison base; tried ${tried}; origin remote is unavailable`);
+      }
+      try {
+        git("fetch", "--no-tags", "--depth=1", "origin", "HEAD");
+        base = git("rev-parse", "--verify", "FETCH_HEAD^{commit}").trim();
+        if (!base) throw new Error("empty fetched base");
+      } catch (e) {
+        draft = false;
+        throw new Error(`no comparison base; tried ${tried}, git fetch --no-tags --depth=1 origin HEAD: ${e.message}`);
+      }
     }
-    git("cat-file", "-e", `${base}^{commit}`);
+    try { base = git("rev-parse", "--verify", "--end-of-options", `${base}^{commit}`).trim(); }
+    catch {
+      const remotes = git("remote").trim().split("\n").filter(Boolean);
+      if (!remotes.length) {
+        notes.push("rollback: no comparison base (no remotes); skipped");
+        return { errors, notes, draft };
+      }
+      // Missing comparison data is a failure even when draft hazards only warn.
+      if (!remotes.includes("origin")) {
+        draft = false;
+        throw new Error(`comparison base ${base} missing locally and origin remote is unavailable`);
+      }
+      if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/i.test(base)) {
+        draft = false;
+        throw new Error(`cannot fetch comparison base ${base}: expected a full commit SHA`);
+      }
+      try {
+        git("fetch", "--no-tags", "--depth=1", "--", "origin", base);
+        git("cat-file", "-e", `${base}^{commit}`);
+      } catch (e) {
+        draft = false;
+        throw new Error(`cannot fetch comparison base ${base} from origin: ${e.message}`);
+      }
+    }
     const oldFiles = git("ls-tree", "-r", "--name-only", "-z", base).split("\0").filter(Boolean);
     const declared = (text) => JSON.parse(text ?? "{}").release_workers ?? [];
     const configs = [...new Set([...oldFiles, ...files].filter((f) => configFile.test(f)).concat(declared(before(base, "standards.json")), declared(read("standards.json"))))];

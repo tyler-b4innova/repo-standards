@@ -197,3 +197,5 @@ Retired in 0.6.0 with the staged flow: `promote-no-ui-auto`, `promote-ui-needs-h
 - **`rollback-schema-replace`**: plain inserts inheriting column or table ON CONFLICT REPLACE require a contract; explicit non-replacing INSERT policies pass setup.sh --check.
 - **`rollback-seed-do-nothing`**: targeted and bare ON CONFLICT DO NOTHING seeds pass setup.sh --check, including inherited REPLACE schemas; DO UPDATE remains a hazard.
 - **`rollback-build-bootstrap`**: with no pnpm on PATH, real dependency installation and both revision builds use the temporary Corepack environment through setup.sh --check, then clean it up.
+
+- **`rollback-push-base`**: a shallow feature-only push checkout with origin recovers the default branch and rejects destructive SQL through setup.sh --check; missing comparison data with any remote fails even for drafts, while only repositories without remotes may skip with a note.

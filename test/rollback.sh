@@ -3,7 +3,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 . test/lib.sh
 export CODEX_HOME=/nonexistent CLAUDE_CONFIG_DIR=/nonexistent CI=true
-unset GITHUB_EVENT_PATH ROLLBACK_BASE ROLLBACK_DRAFT
+unset GITHUB_EVENT_PATH GITHUB_EVENT_NAME ROLLBACK_BASE ROLLBACK_DRAFT
 ENGINE=$PWD T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 repo() {
@@ -25,6 +25,103 @@ casecheck() {
   out=$(check); rc=$?
   if [ "$rc" -eq "$expected" ] && [[ "$out" == *"$needle"* ]]; then ok "$id"; else fail "$id" "$out (exit=$rc)"; fi
 }
+# Missing comparison bases: exercise the real setup entry under rollback-hazards.
+repo scratch-base
+BASE=1111111111111111111111111111111111111111
+# A git-init repository has no upstream history for the stale explicit base.
+casecheck rollback-hazards 0 'NOTE: rollback: no comparison base (no remotes); skipped'
+# No explicit or inferred base in a scratch checkout with NO remote.
+git -C "$R" checkout -q --detach; git -C "$R" branch -D main >/dev/null
+BASE=
+casecheck rollback-hazards 0 'NOTE: rollback: no comparison base (no remotes); skipped'
+# The same empty-base shape with any remote must fail, even in draft mode.
+git -C "$R" remote add upstream "file://$T/absent.git"
+export ROLLBACK_DRAFT=true
+casecheck rollback-push-base 1 'origin remote is unavailable'
+git -C "$R" remote rename upstream origin
+casecheck rollback-push-base 1 'git fetch --no-tags --depth=1 origin HEAD:'
+unset ROLLBACK_DRAFT
+
+repo shallow-source
+SOURCE=$R
+# Give the selected base a parent, so a depth-one fetch cannot bring full history.
+echo 'base fixture' > "$R/base.txt"
+git -C "$R" add -A; git -C "$R" commit -qm comparison-base
+BASE=$(git -C "$R" rev-parse HEAD)
+git -C "$R" tag base-tag "$BASE"
+# The comparison base must be absent from the depth-one clone.
+echo 'ALTER TABLE users ADD COLUMN extra TEXT;' > "$R/db/0002.sql"
+git -C "$R" add -A; git -C "$R" commit -qm expand
+R=$T/shallow-base
+git clone -q --no-local --depth=1 "file://$SOURCE" "$R"
+if git -C "$R" cat-file -e "$BASE^{commit}" 2>/dev/null; then fail rollback-hazards 'shallow fixture already has base'; fi
+out=$(check); rc=$?
+if [ "$rc" -eq 0 ] && [[ "$out" == *'rollback-safe ok'* ]] && [[ "$out" != *'no comparison base'* ]]; then
+  ok rollback-hazards
+else fail rollback-hazards "safe shallow comparison: $out (exit=$rc)"; fi
+grep -qx "$BASE" "$R/.git/shallow" || fail rollback-hazards 'fetch did not keep base at depth one'
+if git -C "$R" rev-parse --verify refs/tags/base-tag >/dev/null 2>&1; then fail rollback-hazards 'fetch brought a tag'; fi
+git -C "$R" cat-file -e "$BASE^{commit}" 2>/dev/null || fail rollback-hazards 'missing base was not fetched'
+# A second fresh clone must fetch and still reject a destructive migration.
+R=$T/shallow-hazard
+git clone -q --no-local --depth=1 "file://$SOURCE" "$R"
+echo 'DROP TABLE users;' > "$R/db/0002.sql"
+casecheck rollback-hazards 1 'DROP TABLE users'
+git -C "$R" cat-file -e "$BASE^{commit}" 2>/dev/null || fail rollback-hazards 'hazard base was not fetched'
+# A successfully recovered base keeps the existing draft hazard warning policy.
+R=$T/shallow-draft
+git clone -q --no-local --depth=1 "file://$SOURCE" "$R"
+echo 'DROP TABLE users;' > "$R/db/0002.sql"
+export ROLLBACK_DRAFT=true
+casecheck rollback-hazards 0 'WARN: rollback'
+unset ROLLBACK_DRAFT
+git -C "$R" cat-file -e "$BASE^{commit}" 2>/dev/null || fail rollback-hazards 'draft base was not fetched'
+
+# Push events carry no PR or merge-group base. Clone only the feature branch,
+# leaving no origin/HEAD, origin/main or main and no base commit locally.
+git -C "$SOURCE" checkout -qb feature
+# Commit the hazard on the feature branch; origin's default stays safe main.
+echo 'DROP TABLE users;' > "$SOURCE/db/0003.sql"
+git -C "$SOURCE" add -A; git -C "$SOURCE" commit -qm destructive
+# Restore the remote default branch without changing the feature commit.
+git -C "$SOURCE" checkout -q main
+R=$T/shallow-push
+git clone -q --no-local --depth=1 --single-branch --branch feature "file://$SOURCE" "$R"
+for ref in origin/HEAD origin/main main; do
+  git -C "$R" rev-parse --verify "$ref" >/dev/null 2>&1 && fail rollback-push-base "fixture has $ref"
+done
+PUSH_BASE=$(git -C "$SOURCE" rev-parse main)
+git -C "$R" cat-file -e "$PUSH_BASE^{commit}" 2>/dev/null && fail rollback-push-base 'fixture already has default base'
+echo '{"ref":"refs/heads/feature"}' > "$T/push.json"
+export GITHUB_EVENT_NAME=push GITHUB_EVENT_PATH="$T/push.json"
+BASE=
+out=$(check); rc=$?
+if [ "$rc" -eq 1 ] && [[ "$out" == *'DROP TABLE users'* ]] && [[ "$out" != *'no comparison base'* ]] && [[ "$out" != *'NOTE: rollback'* ]]; then
+  ok rollback-push-base
+else fail rollback-push-base "push hazard skipped: $out (exit=$rc)"; fi
+git -C "$R" cat-file -e "$PUSH_BASE^{commit}" 2>/dev/null || fail rollback-push-base 'default base was not fetched'
+unset GITHUB_EVENT_NAME GITHUB_EVENT_PATH
+
+repo unfetchable-base
+BASE=1111111111111111111111111111111111111111
+git -C "$R" remote add origin "file://$SOURCE"
+out=$(check); rc=$?
+if [ "$rc" -eq 1 ] && [[ "$out" == *"rollback: cannot fetch comparison base $BASE from origin:"* ]] && [[ "$out" == *'not our ref'* ]]; then
+  ok rollback-hazards
+else fail rollback-hazards "unfetchable base: $out (exit=$rc)"; fi
+# Draft hazard warnings must not turn a failed fetch into a pass.
+export ROLLBACK_DRAFT=true
+casecheck rollback-hazards 1 "cannot fetch comparison base $BASE from origin:"
+unset ROLLBACK_DRAFT
+# A remote other than origin must also fail closed.
+git -C "$R" remote rename origin upstream
+casecheck rollback-hazards 1 "comparison base $BASE missing locally and origin remote is unavailable"
+# Git must treat a malformed comparison base as data, never as a fetch option.
+git -C "$R" remote rename upstream origin
+BASE="--upload-pack=touch $T/upload-pack-ran"
+casecheck rollback-hazards 1 'cannot fetch comparison base'
+[ ! -e "$T/upload-pack-ran" ] || fail rollback-hazards 'base was executed as a fetch option'
+
 repo expand
 printf '%s\n' '-- DROP TABLE users; ignored' 'AlTeR /* comment */ TABLE "users" ADD COLUMN extra TEXT;' "INSERT INTO users (extra) VALUES ('semi; DROP COLUMN old');" 'UPDATE users SET extra = old;' > "$R/db/0002.sql"
 casecheck rollback-expand 0 'rollback-safe ok'
