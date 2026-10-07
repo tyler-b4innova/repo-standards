@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 # PR helper over the GitHub REST API (GraphQL only for review threads: status, resolve). Auth: GH_TOKEN, GITHUB_TOKEN, else `gh auth token`.
 # Repo: GH_REPO, else the origin remote. API: GITHUB_API_URL (default https://api.github.com).
-#   pr.sh open [--base B] [--dry-run] [--] "<title>" <body-file>  draft PR (reused if open for this head and base); push first
+#   pr.sh open [--base B] [--dry-run] [--] "<title>" <body-file>  draft PR (reused if open for this head and base); push first.
+#     The body gains `## Issue #N`: the linked issue's Goal and Acceptance criteria (gate's issue step checks it); --dry-run stays offline and shows a placeholder.
 #   pr.sh status <pr>                     checks on the head SHA and open review threads, then DONE or NOT DONE: <reasons>
 #   pr.sh evidence <pr> <file>...         post SHA-pinned evidence; .evidence/ never stays on the branch tip
 #   pr.sh feedback <pr>                   comments and reviews newer than the last push, with ids
 #   pr.sh reply <pr> <comment-id> "<text>"  reply on the review thread, else as a PR comment
 #   pr.sh resolve <pr> <comment-id>       resolve the review thread holding that comment (after fixing or answering it)
 set -euo pipefail
-usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; }
 die() { echo "pr.sh: $*" >&2; exit 1; }
 API=${GITHUB_API_URL:-https://api.github.com}
 REPO=${GH_REPO:-$(git remote get-url origin 2>/dev/null | sed -E 's#/+$##; s#\.git$##; s#.*[:/]([^/:]+/[^/:]+)$#\1#' || true)}
 [ -n "$REPO" ] || [ "${1:-}" = --help ] || [ "${1:-}" = -h ] || die "no origin remote; set GH_REPO=owner/name"
-TMP=$(mktemp); trap 'rm -f "$TMP"' EXIT
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+TMP=$(mktemp) BODY=$(mktemp); trap 'rm -f "$TMP" "$BODY"' EXIT
 TOKEN="" ST="" R=""
 api() { # api METHOD path [json]: sets ST (HTTP status) and R (body)
   if [ -z "$TOKEN" ]; then
@@ -31,11 +33,41 @@ req() { api "$@"; case $ST in 2??) ;; *) die "$1 $2 -> HTTP $ST: ${R:0:300}" ;; 
 js() { # js '<expr over d (JSON on stdin) and a (args)>' [args...]
   node -e "const d=JSON.parse(require('fs').readFileSync(0,'utf8')||'null');const a=process.argv.slice(1);const r=($1);if(r!==undefined&&r!=='')console.log(typeof r==='string'?r:JSON.stringify(r))" -- "${@:2}"
 }
-CLOSES='(closes|fixes|resolves) #[0-9]+'
+# quote_issue <body-file> <n> (issue JSON on stdin, empty for a placeholder): the body with its `## Issue #N` section
+# (a bare `## Issue #` placeholder too) replaced, else appended: the issue's title, then its Goal and Acceptance criteria
+# (the whole body when it has neither), headings demoted to ### or lower. gate.mjs issue reads the same sections.
+quote_issue() {
+  node --input-type=module -e '
+    import fs from "node:fs";
+    import { pathToFileURL } from "node:url";
+    const [file, n, mod] = process.argv.slice(1), raw = fs.readFileSync(0, "utf8").trim(), body = fs.readFileSync(file, "utf8");
+    const { goalSections, demote, sectionBounds, PR_BODY_MAX, SHORT_SECTIONS } = await import(pathToFileURL(mod).href);
+    let sec;
+    if (!raw) sec = `## Issue #${n}\n\n(filled from issue #${n}: its title, Goal and Acceptance criteria, when the pull request is opened)`;
+    else {
+      const d = JSON.parse(raw), p = goalSections(d.body || "");
+      sec = [`## Issue #${n}`, d.title, ...(p.length ? p.map((s) => `### ${s.name}\n\n${demote(s.lines)}`) : [demote((d.body || "").split(/\r?\n/))])].filter(Boolean).join("\n\n");
+    }
+    // headings inside code fences are text, not section boundaries
+    const lines = body.split("\n"), at = sectionBounds(lines, new RegExp(`^## Issue #(${n})?\\s*$`));
+    const out = !at ? body.replace(/\s*$/, "") + "\n\n" + sec : [...lines.slice(0, at[0]), sec, ...(at[1] < lines.length ? ["", ...lines.slice(at[1])] : [])].join("\n");
+    if (out.length > PR_BODY_MAX) { console.error(`pr.sh: the description with issue #${n} quoted is ${out.length} characters; GitHub accepts at most ${PR_BODY_MAX}. Nothing was sent: ${SHORT_SECTIONS}, then run open again.`); process.exit(3); }
+    console.log(out);
+  ' -- "$1" "$2" "$HERE/issue-md.mjs"
+}
+# closing_issue <file>: the issue number the body closes (Closes/Fixes/Resolves #N outside code, fences and comments), empty if none
+closing_issue() {
+  node --input-type=module -e '
+    import fs from "node:fs";
+    import { pathToFileURL } from "node:url";
+    const { closingIssue } = await import(pathToFileURL(process.argv[2]).href);
+    const n = closingIssue(fs.readFileSync(process.argv[1], "utf8")); if (n) console.log(n);
+  ' -- "$1" "$HERE/issue-md.mjs"
+}
 
 enc() { node -e 'console.log(encodeURIComponent(process.argv[1]).replace(/%2F/g,"/"))' "$1"; }
 open_pr() {
-  local title="" body="" base="" dry=0 branch n payload q
+  local title="" body="" base="" dry=0 branch n payload q issue
   while [ $# -gt 0 ]; do
     case "$1" in
       --base) [ $# -gt 1 ] || die "--base needs a branch"; base=$2; shift 2 ;;
@@ -47,18 +79,27 @@ open_pr() {
   done
   for a in "$@"; do if [ -z "$title" ]; then title=$a; elif [ -z "$body" ]; then body=$a; else die "unexpected argument: $a"; fi; done
   [ -n "$title" ] && [ -f "$body" ] || die 'usage: pr.sh open [--base B] [--dry-run] [--] "<title>" <body-file>'
-  grep -qiE "$CLOSES" "$body" || die "body must link its issue: Closes #N (or Fixes/Resolves #N)"
+  issue=$(closing_issue "$body")
+  [ -n "$issue" ] || die "body must link its issue: Closes #N (or Fixes/Resolves #N), in plain text (not in code, a fence or a comment)"
   branch=$(git branch --show-current)
   [ -n "$branch" ] || die "detached HEAD; check out a branch first"
   [ -n "$base" ] || base=$(git symbolic-ref --short -q refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##') || true
   [ -z "$base" ] || git check-ref-format --branch "$base" >/dev/null 2>&1 || die "invalid base branch: $base"
-  payload=$(node -e 'const [t,b,h,base]=process.argv.slice(1);console.log(JSON.stringify({title:t,body:require("fs").readFileSync(b,"utf8"),head:h,base:base||"<default-branch>",draft:true}))' -- "$title" "$body" "$branch" "$base")
-  if [ $dry = 1 ]; then echo "POST $API/repos/$REPO/pulls (or PATCH the open PR for $branch into ${base:-the default branch})"; echo "$payload"; return; fi
-  if [ -z "$base" ]; then req GET ""; base=$(js 'd.default_branch' <<<"$R"); payload=$(js '({...d,base:a[0]})' "$base" <<<"$payload"); fi
+  mkpayload() { payload=$(node -e 'const [t,b,h,base]=process.argv.slice(1);console.log(JSON.stringify({title:t,body:require("fs").readFileSync(b,"utf8").replace(/\n$/,""),head:h,base:base||"<default-branch>",draft:true}))' -- "$title" "$BODY" "$branch" "$base"); }
+  if [ $dry = 1 ]; then
+    quote_issue "$body" "$issue" </dev/null >"$BODY"; mkpayload
+    echo "POST $API/repos/$REPO/pulls (or PATCH the open PR for $branch into ${base:-the default branch})"; echo "$payload"; return
+  fi
+  if [ -z "$base" ]; then req GET ""; base=$(js 'd.default_branch' <<<"$R"); fi
   [ "$branch" != "$base" ] || die "on $base; create a branch first"
   api GET "branches/$(enc "$branch")"
   [ "$ST" = 200 ] || die "branch $branch is not on GitHub (HTTP $ST); run: git push -u origin HEAD"
   [ "$(js 'd.commit.sha' <<<"$R")" = "$(git rev-parse HEAD)" ] || die "local HEAD differs from $branch on GitHub; push first: git push origin HEAD"
+  api GET "issues/$issue"
+  [ "$ST" = 200 ] || die "issue #$issue is not in $REPO (HTTP $ST); link the issue this pull request closes"
+  [ "$(js 'String(!!d.pull_request)' <<<"$R")" = false ] || die "#$issue is a pull request, not an issue; link the issue this pull request closes"
+  quote_issue "$body" "$issue" <<<"$R" >"$BODY" || die "could not quote issue #$issue"
+  mkpayload
   q=$(node -e 'console.log(new URLSearchParams({state:"open",head:process.argv[1],base:process.argv[2]}).toString())' -- "${REPO%%/*}:$branch" "$base")
   req GET "pulls?$q"
   # reuse only a PR whose head and base both match (the filter is advisory; check it here)
@@ -79,7 +120,7 @@ status() {
   req POST /graphql "$q"; threads=$R
   node -e '
     const [p, { check_runs: runs = [] }, t] = process.argv.slice(1, 4).map(JSON.parse), why = [];
-    const closes = new RegExp(process.argv[4], "i").test(p.body || ""), gate = runs.filter((c) => c.name === "gate");
+    const closes = process.argv[4] === "true", gate = runs.filter((c) => c.name === "gate");
     console.log(`${p.html_url}\nstate=${p.merged ? "merged" : p.state} head=${p.head.sha.slice(0, 7)} closes=${closes}`);
     for (const c of runs) console.log(`  ${c.name}: ${c.conclusion || c.status}`);
     if (!(p.merged || p.state === "open")) why.push("PR closed without merge");
@@ -98,7 +139,7 @@ status() {
     if (red.length) console.log(`also failing (not required for DONE; fix or explain): ${red.map((c) => c.name).join(", ")}`);
     console.log(why.length ? "NOT DONE: " + why.join("; ") : "DONE");
     process.exitCode = why.length ? 1 : 0;
-  ' "$p" "$runs" "$threads" "$CLOSES"
+  ' "$p" "$runs" "$threads" "$([ -n "$(js 'd.body||""' <<<"$p" >"$TMP"; closing_issue "$TMP")" ] && echo true || echo false)"
 }
 
 evidence() {

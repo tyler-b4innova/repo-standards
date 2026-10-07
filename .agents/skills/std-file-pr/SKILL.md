@@ -9,7 +9,7 @@ Iterate with `node scripts/agent/gate.mjs local` and include its head SHA and st
 
 Before opening it, run `std-autoreview` (the one independent review; `codex review --base <base>` for Claude-written work).
 
-Title: Conventional Commit in plain language. Body (file outside the repo), per `.github/PULL_REQUEST_TEMPLATE.md`: What, Why with `Closes #N`, Evidence (the `std-evidence` comment, or the command you ran and its result). Last line: the model and harness that did the work if the profile requests attribution; client profiles omit model names, costs and agent narration.
+Title: Conventional Commit in plain language. Body (file outside the repo), per `.github/PULL_REQUEST_TEMPLATE.md`: What, Why with `Closes #N`, Evidence (the `std-evidence` comment, or the command you ran and its result). `pr.sh open` copies the linked issue's Goal and Acceptance criteria into the body under `## Issue #N`; gate requires them. Last line: the model and harness that did the work if the profile requests attribution; client profiles omit model names, costs and agent narration.
 
 ## With a token (Claude cloud, laptop)
 

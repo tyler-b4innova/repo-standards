@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Steps of the `gate` job (std-gate.yml), also runnable locally:
-//   local [--base <ref>] | plan | classify [base] | install | run <script>... | preview | release | e2e | secrets | syntax | instructions | verdict
+//   local [--base <ref>] | plan | classify [base] | install | run <script>... | preview | release | e2e | secrets | syntax | instructions | issue | verdict
 // UI paths: pack.json defaults; standards.json "ui_paths" as a list replaces the include globs,
 // as {include, ignore} replaces include and adds ignore. e2e: none fails unless "e2e": false.
 import { execFileSync as ex, spawn, spawnSync } from "node:child_process";
@@ -10,11 +10,12 @@ import { tmpdir } from "node:os";
 import { createConnection } from "node:net";
 import { localConfig, localWorkerConfig } from "./local.mjs";
 import { scan } from "./jsscan.mjs";
+import { closingIssue, goalSections, sectionBounds, PR_BODY_MAX, SHORT_SECTIONS } from "./issue-md.mjs";
 import { rollbackFindings } from "./rollback.mjs";
 import { verifyGeneratedBuild } from "./release-config.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
-const SUBS = ["local", "verdict", "plan", "classify", "install", "run", "preview", "release", "e2e", "secrets", "syntax", "instructions"], ok = SUBS.includes(cmd);
+const SUBS = ["local", "verdict", "plan", "classify", "install", "run", "preview", "release", "e2e", "secrets", "syntax", "instructions", "issue"], ok = SUBS.includes(cmd);
 if (!ok || args.includes("--help")) {
   console.log(rd(new URL(import.meta.url), "utf8").split("\n").slice(1, 6).map((l) => l.slice(3)).join("\n"));
   process.exit(ok || cmd === "--help" ? 0 : 2);
@@ -295,6 +296,38 @@ if (cmd === "local") {
   if (bad.size) fail(`instruction files changed by ${author || "this pull request"} (${ref}):\n  ${[...bad].join("\n  ")}`,
     "agents never change instruction files; only the org App's standards-sync (standards/v*) and approved retro (retro/*) pull requests may. Revert these files; a rule change goes through the weekly retro.");
   console.log("instructions: no instruction file or managed CODEOWNERS block changed");
+} else if (cmd === "issue") {
+  // The squash commit takes the pull request's description, so the description quotes its linked issue's Goal and
+  // Acceptance criteria (the whole issue body when it has neither) under `## Issue #N`, and the issue's substance lands
+  // on the default branch. pr.sh open writes that section; the same sections are read here. Exempt like instructions,
+  // and dependency bots (dependabot[bot], renovate[bot]) exactly.
+  if (!prNumber) { console.log("::notice::issue: not a pull request (the merge queue holds only pull requests that passed it)"); process.exit(0); }
+  const get = ghApi(), pr = await get(`/pulls/${prNumber}`), body = pr.body ?? ""; // fresh: the body may be edited after the event
+  const author = pr.user?.login ?? "", ref = pr.head?.ref ?? "";
+  if (pack.sync_app_login && author === pack.sync_app_login && /^(retro\/.+|standards\/v\d.*)$/.test(ref)) {
+    console.log(`issue: exempt, ${author}'s ${ref} pull request (standards sync or approved retro)`);
+    process.exit(0);
+  }
+  if (["dependabot[bot]", "renovate[bot]"].includes(author)) { console.log(`issue: exempt, ${author}'s dependency update`); process.exit(0); }
+  const redo = "run scripts/agent/pr.sh open again (it refreshes the section), or paste the issue's Goal and Acceptance criteria under";
+  const n = closingIssue(body);
+  if (!n) fail("issue: the description links no issue", "add `Closes #N` (or Fixes/Resolves #N) to the description, then " + redo.replace(" under", " under `## Issue #N`"));
+  const issue = await get(`/issues/${n}`, { need: false });
+  if (!issue || issue.pull_request) fail(`issue: #${n} is not a readable issue in ${env.GITHUB_REPOSITORY} (missing, a pull request, or the job lacks issues read)`, "link the issue this pull request closes; std-gate.yml grants issues read");
+  // the level-2 Goal and Acceptance criteria sections, outside code fences; else the whole body
+  const parts = goalSections(issue.body ?? "");
+  if (!parts.length) parts.push({ name: "body", lines: (issue.body ?? "").split(/\r?\n/) });
+  // compared without heading markers, checkbox state or whitespace differences
+  const norm = (lines) => lines.map((l) => l.replace(/^\s*#{1,6}\s+/, "").replace(/^(\s*[-*+]\s+)\[[ xX]\]/, "$1[ ]")).join(" ").replace(/\s+/g, " ").trim();
+  // headings inside code fences are text, not section boundaries
+  const lines = body.split(/\r?\n/), at = sectionBounds(lines, new RegExp(`^##\\s+Issue #${n}\\s*$`));
+  // an issue with no short Goal and Acceptance criteria is quoted whole, which may not fit in the description
+  const fix = () => `${parts[0].name === "body" || body.length + norm(parts.flatMap((p) => p.lines)).length > PR_BODY_MAX ? `the issue has no short Goal and Acceptance criteria to quote: ${SHORT_SECTIONS}, then ` : ""}${redo} \`## Issue #${n}\``;
+  if (!at) fail(`issue: the description has no \`## Issue #${n}\` section quoting issue #${n}`, fix());
+  const quoted = norm(lines.slice(at[0] + 1, at[1]));
+  const missing = parts.filter((p) => !quoted.includes(norm(p.lines))).map((p) => p.name === "body" ? "the issue body" : `its current ${p.name}`);
+  if (missing.length) fail(`issue: the \`## Issue #${n}\` section lacks ${missing.join(" and ")} (issue #${n} may have changed since the section was written)`, fix());
+  console.log(`issue: the description quotes issue #${n}'s ${parts[0].name === "body" ? "body" : parts.map((p) => p.name).join(" and ")}`);
 } else if (cmd === "verdict") {
   // The required `gate` job: the checks job and the tail (NEEDS, the workflow's needs as JSON) each succeeded, or the
   // tail was skipped because the checks planned a draft's cheap gate. Anything else (a failure, a cancellation, a
