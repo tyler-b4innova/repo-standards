@@ -106,35 +106,22 @@ out=$(check "$R") && why="$why; a non-list allow_paths passed"
 has "standards.json allow_paths is" "$out" || why="$why; non-list message: $out"
 if [ -z "$why" ]; then ok repo-allow-paths; else fail repo-allow-paths "$why"; fi
 
-# overlay-launcher-validated: the example's launcher settings load; typos, unknown vendors or lanes, bad schedules and
+# overlay-launcher-validated: the example's launcher settings load; typos, bad schedules and
 # credential-looking values are refused before anything is written
 why=""
 R=$(mkrepo) || why="example overlay with launcher refused"
 lbad() { node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));(new Function("l",process.argv[3]))(o.launcher);require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$T/lov.json" "$1"
   local d; d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; OVERLAY="$T/lov.json" apply "$d" 2>&1 && echo "ACCEPTED"; [ -z "$(ls -A "$d" | grep -v '^.git$')" ] || echo "WROTE"; }
-for c in 'l.lane=[]|launcher.lane is not a launcher setting' 'l.lanes[0].vendor="gpt"|vendor must be claude or codex' 'l.unassigned=["ghost"]|names ghost, which is not a lane' \
-  'l.dispatch[0].every="hourly"|every must look like' 'l.lanes[1].accounts=["gh"+"p_"+"a".repeat(36)]|looks like a credential' 'l.lanes[1].accounts=[" gh"+"p_"+"b".repeat(36)]|looks like a credential' 'l.lanes.push({name:"claude",vendor:"codex"})|duplicate lane claude' \
+for c in 'l.lane=[]|launcher.lane is not a launcher setting' 'l.dispatch[0].every="hourly"|every must look like' \
+  'l.sections=["gh"+"p_"+"a".repeat(36)]|looks like a credential' 'l.sections=[" gh"+"p_"+"b".repeat(36)]|looks like a credential' \
   'l.revert={newIssueEvents:0}|revert.newIssueEvents must be a positive number' 'l.revert={eventFactor:5,window:30}|launcher.revert.window is not a launcher setting' \
-  'l.lanes[0].runner="cloud"|runner must be t3, claude-cloud, codex-cloud' 'l.lanes[0].runner="codex-cloud"|runner codex-cloud needs vendor codex, not claude' 'l.lanes[0].model="m"|model is for a t3 lane' \
-  'l.dispatch[0].ref=""|dispatch[0].ref must be a non-empty string' 'l.lanes[0].runner="claude-cloud";l.lanes[0].vendor="gpt"|vendor must be claude or codex' \
-  'l.lanes[0]={name:"t",runner:"t3",provider:"gpt",model:"m"};l.review={provider:"codex",model:"m"}|provider must be claudeAgent or codex on a t3 lane' \
-  'l.lanes[0]={name:"t",runner:"t3",provider:"codex"};l.review={provider:"claudeAgent",model:"m"}|model must be a non-empty string on a t3 lane' \
-  'l.lanes[0]={name:"t",runner:"t3",provider:"codex",model:"m",vendor:"codex"};l.review={provider:"claudeAgent",model:"m"}|vendor must be omitted on a t3 lane' \
-  'l.lanes[0]={name:"t",runner:"t3",provider:"codex",model:"m",effort:" "};l.review={provider:"claudeAgent",model:"m"}|effort must be a non-empty string' \
-  'l.lanes[0]={name:"t",runner:"t3",provider:"codex",model:"m"}|launcher.review is required when a lane runs on t3' \
-  'l.lanes[0]={name:"t",runner:"t3",provider:"codex",model:"m"};l.review={provider:"codex",model:"m"}|review must be a different provider from every t3 lane' \
-  'l.lanes[0]={name:"t",runner:"t3",provider:"codex",model:"m"};l.review={provider:"claudeAgent"}|review.model must be a non-empty string' \
-  'l.lanes[0]={name:"t",runner:"t3",provider:"codex",model:"m"};l.review={provider:"claudeAgent",model:"m",effort:""}|review.effort must be a non-empty string' \
-  'l.review={provider:"codex",model:"m",tier:"x"}|launcher.review.tier is not a launcher setting'; do
+  'l.dispatch[0].ref=""|dispatch[0].ref must be a non-empty string'; do
   out=$(lbad "${c%%|*}"); has "${c#*|}" "$out" && ! has ACCEPTED "$out" && ! has WROTE "$out" || why="$why; [${c%%|*}] $out"
 done
 # dispatch when: only "drift"
 node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.launcher.dispatch[0].when="drift";o.launcher.revert={newIssueEvents:5,eventFactor:2.5};require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$T/drift.json"
 d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; out=$(OVERLAY="$T/drift.json" apply "$d" 2>&1) || why="$why; when=drift or revert refused: $out"
 out=$(lbad 'l.dispatch[0].when="always"'); has 'when must be "drift"' "$out" && ! has ACCEPTED "$out" || why="$why; [when=always] $out"
-# t3 lanes: provider and model, any effort string, a review from another provider; cloud lanes with a matching runner; both kinds together
-node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.launcher.lanes=[{name:"t3-main",runner:"t3",provider:"claudeAgent",model:"model-x",effort:"any-effort-string",slots:2},{name:"cloud",runner:"codex-cloud",vendor:"codex"},{name:"implied",runner:"claude-cloud"},{name:"legacy",vendor:"claude"}];o.launcher.dispatch[0].ref="main";o.launcher.review={provider:"codex",model:"model-y"};o.launcher.unassigned=["cloud"];require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$T/t3.json"
-d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; out=$(OVERLAY="$T/t3.json" apply "$d" 2>&1) || why="$why; a t3 lane with its review, or cloud lanes, refused: $out"
 # retro: who approves its rule changes, and the drafting model (Claude only; the launcher refuses codex as drafter)
 node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.launcher.retro={approvers:["octocat","hubot"],engineApprovers:["octocat"],provider:"claudeAgent",model:"model-x",effort:"high",repo:"standards"};require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$T/retro.json"
 d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; out=$(OVERLAY="$T/retro.json" apply "$d" 2>&1) || why="$why; a well-formed retro refused: $out"
@@ -146,6 +133,17 @@ for c in "l.retro={$R0,cadence:\"weekly\"}|launcher.retro.cadence is not a launc
   out=$(lbad "${c%%|*}"); has "${c#*|}" "$out" && ! has ACCEPTED "$out" && ! has WROTE "$out" || why="$why; [${c%%|*}] $out"
 done
 if [ -z "$why" ]; then ok overlay-launcher-validated; else fail overlay-launcher-validated "$why"; fi
+
+# launcher-lanes-dashboard-owned: lanes, models, effort, the reviewer and the unassigned lanes are set on the launcher dashboard,
+# never in standards: an overlay carrying launcher.lanes, launcher.review or launcher.unassigned is refused with one plain message
+# (nothing written); an overlay without them, with no t3 lane and no review, passes (the example has none)
+why=""
+for c in 'l.lanes=[{name:"claude",vendor:"claude"}]|launcher.lanes' 'l.lanes=[]|launcher.lanes' 'l.review={provider:"codex",model:"m"}|launcher.review' 'l.unassigned=["codex"]|launcher.unassigned' \
+  'l.lanes=[{name:"t",runner:"t3",provider:"codex",model:"m"}];l.review={provider:"claudeAgent",model:"m"}|launcher.lanes'; do
+  out=$(lbad "${c%%|*}"); has "${c#*|}" "$out" && has "set on the launcher dashboard, not in standards" "$out" && ! has ACCEPTED "$out" && ! has WROTE "$out" || why="$why; [${c%%|*}] $out"
+done
+out=$(lbad 'delete l.lane'); has ACCEPTED "$out" && ! has "launcher dashboard" "$out" || why="$why; no lanes, review or unassigned refused: $out"
+if [ -z "$why" ]; then ok launcher-lanes-dashboard-owned; else fail launcher-lanes-dashboard-owned "$why"; fi
 
 # launcher-body-budget-removed: live overlays still set launcher.bodyBudget; it loads with a one-line notice, never a refusal
 node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.launcher.bodyBudget=8000;require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$T/bb.json"

@@ -71,22 +71,6 @@
   "design_signoff": true,
   "launcher": {
     "repos": "*",
-    "lanes": [
-      {
-        "name": "claude",
-        "vendor": "claude",
-        "slots": 2,
-        "timeoutMin": 60
-      },
-      {
-        "name": "codex",
-        "vendor": "codex",
-        "slots": 2
-      }
-    ],
-    "unassigned": [
-      "codex"
-    ],
     "dispatch": [
       {
         "repo": "standards",
