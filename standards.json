@@ -1,7 +1,8 @@
 {
   "pack": "example",
-  "version": "0.7.6",
+  "version": "0.8.0",
   "profile": "internal",
   "dispatch": "manual",
-  "sensitive": false
+  "sensitive": false,
+  "local": false
 }

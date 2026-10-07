@@ -1,18 +1,20 @@
 #!/usr/bin/env node
 // Steps of the `gate` job (std-gate.yml), also runnable locally:
-//   plan | classify [base] | install | run <script>... | preview | release | e2e | secrets | syntax | instructions | issue | verdict
+//   local [--base <ref>] | plan | classify [base] | install | run <script>... | preview | release | e2e | secrets | syntax | instructions | issue | verdict
 // UI paths: pack.json defaults; standards.json "ui_paths" as a list replaces the include globs,
 // as {include, ignore} replaces include and adds ignore. e2e: none fails unless "e2e": false.
-import { execFileSync as ex, spawnSync } from "node:child_process";
+import { execFileSync as ex, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync as has, mkdtempSync, readdirSync as ls, readFileSync as rd, writeFileSync } from "node:fs";
+import { existsSync as has, mkdtempSync, readdirSync as ls, readFileSync as rd, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createConnection } from "node:net";
+import { localConfig, localWorkerConfig } from "./local.mjs";
 import { scan } from "./jsscan.mjs";
 import { rollbackFindings } from "./rollback.mjs";
 import { verifyGeneratedBuild } from "./release-config.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
-const SUBS = ["verdict", "plan", "classify", "install", "run", "preview", "release", "e2e", "secrets", "syntax", "instructions", "issue"], ok = SUBS.includes(cmd);
+const SUBS = ["local", "verdict", "plan", "classify", "install", "run", "preview", "release", "e2e", "secrets", "syntax", "instructions", "issue"], ok = SUBS.includes(cmd);
 if (!ok || args.includes("--help")) {
   console.log(rd(new URL(import.meta.url), "utf8").split("\n").slice(1, 6).map((l) => l.slice(3)).join("\n"));
   process.exit(ok || cmd === "--help" ? 0 : 2);
@@ -22,7 +24,7 @@ try { process.chdir(git("rev-parse", "--show-toplevel").trim()); } catch {}
 const json = (f) => { try { return JSON.parse(rd(f, "utf8")); } catch { return null; } };
 const pkg = json("package.json"), std = json("standards.json") ?? {};
 const fail0 = (msg, fix) => { console.log(`::error::${msg}\nfix: ${fix}`); process.exit(1); };
-if (has("package.json") && !pkg && ["install", "run", "e2e"].includes(cmd)) fail0("package.json is not valid JSON", "fix package.json");
+if (has("package.json") && !pkg && ["local", "install", "run", "e2e"].includes(cmd)) fail0("package.json is not valid JSON", "fix package.json");
 const pm = has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : "npm";
 const fail = (msg, fix) => { console.log(`::error::${msg}\nfix: ${fix}`); process.exit(1); };
 const sh = (c, a) => spawnSync(c, a, { stdio: "inherit" }).status ?? 1;
@@ -156,7 +158,123 @@ function ownersBlock(rev) {
   return { path: null, block: null };
 }
 
-if (cmd === "instructions") {
+if (cmd === "local") {
+  const steps = ["setup --check", "instructions", "secrets", "syntax", "install", "typecheck", "build", "gate.local.sh", "worker", "e2e"], results = new Map(steps.map((s) => [s, "not run"]));
+  const head = git("rev-parse", "HEAD").trim();
+  let base, baseRef, worker, active, address, interrupted = 0;
+  if (args.length && (args.length !== 2 || args[0] !== "--base" || !args[1] || args[1].startsWith("-")))
+    fail("local: expected local [--base <ref>]", "supply a comparison branch or commit with --base");
+  for (const ref of args.length ? [args[1]] : ["origin/HEAD", "origin/main", "origin/master", "main", "master"]) {
+    try { base = git("merge-base", ref, "HEAD").trim(); baseRef = ref; break; } catch {}
+  }
+  if (!base) {
+    fail(`local: cannot resolve a comparison base${args.length ? ` from ${args[1]}` : " (origin/HEAD, origin/main, origin/master, main, master)"}`,
+      "fetch the default branch or run local --base <ref>; HEAD is never used as a fallback");
+  }
+  if (base === head) fail(`nothing to compare: HEAD has no commits beyond ${baseRef}; run from a feature branch or pass --base`, "choose a base with commits beyond it on HEAD");
+  // Wrangler 4.148's dotenv-expand overwrites empty env values; --env-file bypasses .dev.vars.
+  // Refuse credential sources before every child, including files produced by earlier build steps.
+  const noDotenvCredentials = (dir = ".") => {
+    for (const entry of ls(dir, { withFileTypes: true })) {
+      const path = `${dir}/${entry.name}`;
+      if (entry.isDirectory() && ![".git", "node_modules", ".wrangler"].includes(entry.name)) noDotenvCredentials(path);
+      else if (/^\.env(?:\.|$)/.test(entry.name) && /^\s*(?:export\s+)?(?:CLOUDFLARE_|CF_)(?:API_TOKEN|API_KEY|EMAIL|ACCOUNT_ID)\s*(?:=|:\s)/im.test(rd(path, "utf8")))
+        throw new Error(`local: credential-bearing ${path} refused; remove Cloudflare credentials before running the local gate`);
+    }
+  };
+  const dir = mkdtempSync(`${tmpdir()}/gate-local-`), eventFile = `${dir}/event.json`;
+  writeFileSync(eventFile, JSON.stringify({ pull_request: { number: 1, base: { sha: base }, head: { sha: head, ref: git("branch", "--show-current").trim() }, user: { login: "local" } } }));
+  const localEnv = { ...env, CI: "true", GITHUB_EVENT_NAME: "pull_request", GITHUB_EVENT_PATH: eventFile, GITHUB_SHA: head,
+    PATH: `${process.cwd()}/node_modules/.bin:${env.PATH}`, GATE_BROWSERS: "chromium", WRANGLER_SEND_METRICS: "false", WRANGLER_CHECK_FOR_UPDATES: "false", WRANGLER_HOME: `${dir}/wrangler`, HOME: dir, USERPROFILE: dir, XDG_CONFIG_HOME: `${dir}/xdg` };
+  for (const k of ["GH_TOKEN", "GITHUB_TOKEN", "GITHUB_OUTPUT", "GATE_PREVIEW_URL", "BASE_URL", "PLAYWRIGHT_BASE_URL", "CLOUDFLARE_ENV", "RANGE", "ROLLBACK_BASE", "ROLLBACK_DRAFT"])
+    delete localEnv[k];
+  for (const k of Object.keys(localEnv)) if (/^(CLOUDFLARE_|CF_)/.test(k)) delete localEnv[k];
+  for (const k of ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_API_KEY", "CLOUDFLARE_EMAIL", "CLOUDFLARE_ACCOUNT_ID"]) localEnv[k] = "";
+  const signalGroup = (child, signal) => { if (child?.pid) try { process.kill(-child.pid, signal); } catch {} };
+  const stop = async (child) => {
+    if (!child) return;
+    signalGroup(child, "SIGTERM");
+    if (child.exitCode === null && child.signalCode === null) await new Promise((r) => setTimeout(r, 300));
+    signalGroup(child, "SIGKILL");
+  };
+  const occupied = async () => address && new Promise((resolve) => {
+    const socket = createConnection({ host: address.hostname.replace(/^\[|\]$/g, ""), port: Number(address.port || (address.protocol === "https:" ? 443 : 80)) });
+    const done = (used) => { socket.destroy(); resolve(used); };
+    socket.once("connect", () => done(true)); socket.once("error", () => done(false)); socket.setTimeout(500, () => done(true));
+  });
+  let abort;
+  const cancelled = new Promise((_, reject) => { abort = reject; });
+  const onSignal = (signal) => {
+    interrupted ||= { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }[signal];
+    signalGroup(active, "SIGTERM"); signalGroup(worker, "SIGTERM");
+    abort(new Error(`interrupted by ${signal}`));
+  };
+  const onException = (error) => { interrupted ||= 1; abort(error); };
+  const handlers = { SIGINT: () => onSignal("SIGINT"), SIGTERM: () => onSignal("SIGTERM"), SIGHUP: () => onSignal("SIGHUP"), uncaughtException: onException };
+  for (const [signal, handler] of Object.entries(handlers)) process.on(signal, handler);
+  const run = async (name, command, argv) => {
+    if (interrupted) throw new Error("interrupted");
+    noDotenvCredentials();
+    console.log(`local: ${name} starting`);
+    results.set(name, "FAIL");
+    const child = active = spawn(command, argv, { stdio: "inherit", env: localEnv, detached: true });
+    const code = await new Promise((resolve) => { child.once("error", () => resolve(1)); child.once("exit", (c) => resolve(c ?? 1)); });
+    await stop(child); active = null;
+    if (code || interrupted) throw new Error(`${name} failed (exit ${code})`);
+    results.set(name, "PASS"); console.log(`local: ${name} PASS`);
+  };
+  const execute = async () => {
+    await run("setup --check", "scripts/agent/setup.sh", ["--check"]);
+    const config = localConfig(std.local);
+    for (const step of ["instructions", "secrets", "syntax", "install"]) await run(step, process.execPath, ["scripts/agent/gate.mjs", step, ...(step === "instructions" ? ["--local"] : [])]);
+    for (const step of ["typecheck", "build"]) await run(step, process.execPath, ["scripts/agent/gate.mjs", "run", step]);
+    if (has("scripts/agent/gate.local.sh")) await run("gate.local.sh", "bash", ["scripts/agent/gate.local.sh"]);
+    else { results.set("gate.local.sh", "SKIP (absent)"); console.log("local: gate.local.sh SKIP (absent)"); }
+    if (config === false) { results.set("worker", "SKIP (local: false)"); console.log("local: worker SKIP (local: false)"); }
+    else {
+      results.set("worker", "FAIL");
+      const wait = Number(env.GATE_LOCAL_WAIT_S ?? 60);
+      if (!(wait > 0 && Number.isFinite(wait))) throw new Error("GATE_LOCAL_WAIT_S must be finite seconds above 0");
+      const ready = new URL(config.ready, config.url).href;
+      const probe = async () => { try { const r = await fetch(ready, { redirect: "manual", signal: AbortSignal.timeout(500) }); await r.body?.cancel(); return r.status; } catch { return 0; } };
+      const argv = localWorkerConfig(config);
+      address = new URL(config.url);
+      if (await occupied()) throw new Error(`local Worker address already in use: ${config.url}; stop that server first`);
+      if (interrupted) throw new Error("interrupted");
+      noDotenvCredentials();
+      console.log(`local: worker starting: node_modules/.bin/wrangler ${argv.join(" ")}`);
+      worker = spawn("node_modules/.bin/wrangler", argv, { stdio: "inherit", env: localEnv, detached: true });
+      let error; worker.once("error", (e) => { error = e; });
+      const deadline = Date.now() + wait * 1000;
+      let status = 0;
+      while (Date.now() < deadline && !interrupted && !error && worker.exitCode === null && worker.signalCode === null) {
+        status = await probe();
+        if (status >= 200 && status < 300) break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      if (interrupted || error || worker.exitCode !== null || worker.signalCode !== null || status < 200 || status >= 300)
+        throw new Error(`local Worker did not become ready at ${ready} within ${wait}s${error ? `: ${error.message}` : ""}`);
+      localEnv.PLAYWRIGHT_BASE_URL = localEnv.BASE_URL = config.url;
+      results.set("worker", "PASS"); console.log(`local: worker PASS (${config.url})`);
+    }
+    await run("e2e", process.execPath, ["scripts/agent/gate.mjs", "e2e", "--local"]);
+    if (worker && (worker.exitCode !== null || worker.signalCode !== null)) { results.set("worker", "FAIL"); throw new Error("local Worker exited during e2e"); }
+  };
+  try { await Promise.race([execute(), cancelled]); } catch (e) { console.error(`local: ${e.message}`); process.exitCode = interrupted || 1; }
+  finally {
+    await stop(active); await stop(worker);
+    if (worker) {
+      const deadline = Date.now() + 2000;
+      while (await occupied() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+      if (await occupied()) { console.error(`local: Worker port was not freed: ${address.href}`); process.exitCode = 1; }
+      else console.log("local: worker stopped; port freed");
+    }
+    rmSync(dir, { recursive: true, force: true });
+    for (const [signal, handler] of Object.entries(handlers)) process.off(signal, handler);
+    if (interrupted) process.exitCode = interrupted;
+    console.log(`local gate ${head}: ${steps.map((s) => `${s}=${results.get(s)}`).join("; ")}`);
+  }
+} else if (cmd === "instructions") {
   // Agents never change instruction files. Only the org App's standards-sync (standards/v*) and approved retro
   // (retro/*) pull requests may; every other author is held to it, the repository owner's own login included.
   if (!prNumber) { console.log("::notice::instructions: not a pull request (the merge queue holds only pull requests that passed it)"); process.exit(0); }
@@ -167,6 +285,7 @@ if (cmd === "instructions") {
     process.exit(0);
   }
   const files = prFiles();
+  if (files && args.includes("--local")) files.push(...git("diff", "--name-only", "--no-renames", "HEAD").trim().split("\n").filter(Boolean), ...git("ls-files", "--others", "--exclude-standard").trim().split("\n").filter(Boolean));
   if (!files) fail("instructions: the pull request's base commit is not in this checkout", "check out with fetch-depth: 0 (std-gate.yml does)");
   const bad = new Set(files.filter((f) => INSTRUCTION.some((r) => r.test(f))));
   if (files.some((f) => CODEOWNERS.includes(f))) {
@@ -377,7 +496,7 @@ if (cmd === "instructions") {
 } else if (cmd === "e2e") {
   // "e2e": false skips this step and the preview step (docs and static repos, and repos whose Workers Builds run on every PR without an e2e suite).
   if (std.e2e === false) { console.log('::warning::e2e skipped; standards.json sets "e2e": false'); process.exit(0); }
-  const docs = docOnly();
+  const docs = args.includes("--local") ? null : docOnly();
   if (docs) { docSkip("e2e", docs); process.exit(0); }
   // standards.json "e2e": "<command>" names the suite; else a script, a tests/e2e or e2e dir, or a root Playwright config.
   const script = ["test:e2e", "e2e"].find((s) => pkg?.scripts?.[s]), dir = ["tests/e2e", "e2e"].find(has);
@@ -404,7 +523,7 @@ if (cmd === "instructions") {
   // _headers rules do not cover Worker-rendered responses) both say noindex, in a robots meta or X-Robots-Tag. The
   // fetches and their body reads stop at the e2e budget, and the suite gets only the time left.
   const started = Date.now();
-  if (url && pack.profile === "client") {
+  if (url && pack.profile === "client" && !args.includes("--local")) {
     const directives = (v) => v.toLowerCase().split(",").map((d) => d.replace(/^[^:]*:/, "").trim());
     const attrs = (tag) => Object.fromEntries([...tag.matchAll(/([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g)].map((a) => [a[1].toLowerCase(), a[2] ?? a[3] ?? a[4]]));
     const signal = AbortSignal.timeout(ms);
@@ -432,19 +551,23 @@ if (cmd === "instructions") {
   else fail("no e2e suite (test:e2e or e2e script; tests/e2e/ or e2e/ with playwright.config.* or *.test.*js)",
     'add an end-to-end suite through the real entry point; docs/static repos (or Builds-only repos) only: "e2e": false in standards.json');
 } else if (cmd === "secrets") {
-  const V = "8.30.1", SUM = "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb", local = env.GATE_GITLEAKS_ARCHIVE;
-  const linux = process.platform === "linux" && process.arch === "x64";
-  const notLinux = () => fail(`secret scan needs linux x64, not ${process.platform}-${process.arch}`, "let the gate job run it");
-  if (!linux && !local) notLinux();
+  const V = "8.30.1", local = env.GATE_GITLEAKS_ARCHIVE;
+  const platform = `${process.platform}_${process.arch}`;
+  const sums = {
+    linux_x64: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb",
+    linux_arm64: "e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080",
+    darwin_x64: "dfe101a4db2255fc85120ac7f3d25e4342c3c20cf749f2c20a18081af1952709",
+    darwin_arm64: "b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5",
+  }, SUM = sums[platform];
+  if (!SUM) fail(`secret scan unsupported on ${platform}`, "run on macOS or Linux, x64 or arm64");
   const dir = mkdtempSync(`${tmpdir()}/gitleaks-`), tgz = local || `${dir}/gl.tgz`;
   if (!local) {
-    const res = await fetch(`https://github.com/gitleaks/gitleaks/releases/download/v${V}/gitleaks_${V}_linux_x64.tar.gz`);
+    const res = await fetch(`https://github.com/gitleaks/gitleaks/releases/download/v${V}/gitleaks_${V}_${platform}.tar.gz`);
     if (!res.ok) fail(`gitleaks download: ${res.status}`, "re-run the job");
     writeFileSync(tgz, Buffer.from(await res.arrayBuffer()));
   }
   const got = createHash("sha256").update(rd(tgz)).digest("hex");
   if (got !== SUM) fail(`gitleaks archive checksum mismatch: got ${got}, want ${SUM}`, "do not run it; re-run, or pin a new version and checksum in the engine");
-  if (!linux) notLinux();
   must("tar", ["-xzf", tgz, "-C", dir, "gitleaks"]);
   // Always scan commits: PR base..head, merge group base..head, a dispatch re-gate's merge ref (base tip..PR head),
   // push before..sha (a new branch scans what the default branch lacks); RANGE overrides.

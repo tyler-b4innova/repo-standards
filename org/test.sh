@@ -27,7 +27,7 @@ JSON
 # property from the staged flow.
 cat >"$T/state.json" <<'JSON'
 { "org": "acme",
-  "repos": [{"name":"app","allow_merge_commit":false},{"name":"site","allow_merge_commit":false,"delete_branch_on_merge":false},{"name":"gone","archived":true}],
+  "repos": [{"name":"app","allow_merge_commit":false,"squash_merge_commit_title":"PR_TITLE","squash_merge_commit_message":"PR_BODY"},{"name":"site","allow_merge_commit":false,"delete_branch_on_merge":false},{"name":"half","squash_merge_commit_title":"PR_TITLE"},{"name":"blind","no_merge_settings":true},{"name":"gone","archived":true}],
   "property": {"property_name":"flow","value_type":"single_select","allowed_values":["direct","staged"],"required":true,"default_value":"direct"}, "values": {"app":"direct","site":"staged"},
   "rulesets": [
     { "name": "hand-made main", "target": "branch", "enforcement": "active",
@@ -108,6 +108,19 @@ if ! grep -q unattributed <<<"$out" && grep -q 'rules.pull_request.require_extra
   ok engine-org-dry-run-diff
 else fail engine-org-dry-run-diff "$out :: $ua"; fi
 
+# org-squash-commit-from-pr: a repo whose squash commit still takes GitHub's defaults (commit-or-PR title, the branch's
+# commit messages) is set to the PR title and description in one call, the pair GitHub accepts; a repo already set is left alone.
+if grep -q 'repo site: squash commit takes the PR title and description$' <<<"$out" && grep -q 'squash_merge_commit_message: COMMIT_MESSAGES -> PR_BODY' <<<"$out" \
+  && grep -q 'squash_merge_commit_title: COMMIT_OR_PR_TITLE -> PR_TITLE' <<<"$out" && ! grep -q 'repo app:' <<<"$out" \
+  && grep -q 'repo half: squash commit takes the PR title and description$' <<<"$out" && grep -q 'warning: repo blind: squash commit settings not readable' <<<"$out" && ! grep -q 'would: repo blind' <<<"$out"; then
+  ok org-squash-commit-from-pr
+else fail org-squash-commit-from-pr "$out"; fi
+
+# launcher-body-budget-removed: org-apply loads an overlay that still sets launcher.bodyBudget, with one notice.
+node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8")); o.launcher={bodyBudget:8000}; require("fs").writeFileSync(f+".bb",JSON.stringify(o))' "$T/org.json"
+bb_err=$(node org/apply.mjs --overlay "$T/org.json.bb" --dry-run 2>&1 >/dev/null); bb_rc=$?
+[ "$bb_rc" = 0 ] && [ "$(grep -c 'launcher.bodyBudget was removed' <<<"$bb_err")" = 1 ] && ok launcher-body-budget-removed || fail launcher-body-budget-removed "org-apply rc=$bb_rc: $bb_err"
+
 # engine-org-apply-order: apply enables required repo settings, then creates and updates, and deletes last (the retired flow property after the rulesets),
 # so no branch loses its required check mid-apply.
 out=$(run)
@@ -119,6 +132,8 @@ order=$(grep -v '"method":"GET"' "$T/log" | node -e 'for (const l of require("fs
 : >"$T/log"
 out=$(run --dry-run; run)
 if grep -q 'no changes' <<<"$out" && [ "$(writes)" = 0 ] && [ "$(grep -c 'no changes' <<<"$out")" = 2 ]; then ok org-apply-idempotent; else fail org-apply-idempotent "$out"; fi
+got=$(node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); console.log(s.repos.filter(r=>!r.archived).map(r=>r.name+"="+r.squash_merge_commit_title+"/"+r.squash_merge_commit_message).join(" "))' "$T/state.json")
+[ "$got" = "app=PR_TITLE/PR_BODY site=PR_TITLE/PR_BODY half=PR_TITLE/PR_BODY blind=undefined/undefined" ] && ok org-squash-commit-from-pr || fail org-squash-commit-from-pr "after apply: $got"
 
 # org-one-flow: no ruleset or property knows a staged flow any more: the retired `flow` property is deleted (after the
 # rulesets that read it), and the overlay's staged settings are refused (render cases above).

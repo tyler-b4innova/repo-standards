@@ -22,6 +22,6 @@ Produce one self-contained issue an agent can finish in one PR with nobody to as
    - `## Files`: the files the change will touch, as full repo-relative paths in backticks, each checked to exist (`ls`); a file to be created goes on a line saying "new". The launcher rejects any backticked path-like text that is not a file at HEAD, so backtick nothing else. Cannot read the repo: omit this section rather than guess.
    - `## Evidence`: what to show (before/after screenshots, command output).
    - `## Out of scope`: what must not change.
-   Under 8000 bytes, plain words. Say what and why; never a model, subagent, lane, effort or how-to-run instruction.
+   Plain words. Say what and why; never a model, subagent, lane, effort or how-to-run instruction.
 4. Size check: one PR, one concern, reviewable in one sitting. If it is multi-day, has a slice needing separate approval, or has 3+ independent slices, do not write one giant issue. Propose a parent issue (its Goal and Acceptance criteria are the whole outcome; plus the plan and shared constraints) and sub-issues, every one written in the shape above, and a linked branch `feat/<n>-<slug>` they merge into. Wait for the person to confirm.
 5. Show the issue, apply corrections, and only when the person says so file it (`gh issue create --body-file`, or paste into GitHub's Agent task form). Add `agent-ready` to a single issue, or to sub-issues as they become unblocked, never to a parent. Reply with the link.

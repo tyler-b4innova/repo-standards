@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The one setup line every cloud environment calls: `scripts/agent/setup.sh`.
 #   (no args)  install tools and repo dependencies (a failed install never fails it), then run the check: its status
-#   --check    offline standards self-check (session start and `gate`), then, after a clean pass and outside CI, the local clean-up of merged work
+#   --check    offline standards self-check (session start and `gate`); outside CI, fresh-base warnings and (after a clean pass) the clean-up of merged work
 set -uo pipefail
 start=$PWD
 cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)" || exit 1
@@ -9,6 +9,8 @@ cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)" || exit 1
 case "${1:-}" in
   --check)
     node scripts/agent/check.mjs; st=$?
+    # Never in CI; fresh.mjs only warns (a stale default branch, work in the primary checkout) and never fails the session.
+    [ -n "${CI:-}" ] || node scripts/agent/fresh.mjs || true
     # Only after a clean check, never in CI (gate runs --check too); cleanup.mjs is best-effort and never fails the session.
     [ $st -ne 0 ] || [ -n "${CI:-}" ] || node scripts/agent/cleanup.mjs "$start" || true
     exit $st ;;

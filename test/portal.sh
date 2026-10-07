@@ -19,8 +19,12 @@ const pair = async (kid) => {
   return { kid, priv: k.privateKey, jwk: { ...(await crypto.subtle.exportKey("jwk", k.publicKey)), kid, use: "sig", alg: "EdDSA" } };
 };
 const k1 = await pair("k1"), k2 = await pair("k2"), stray = await pair("k1");
-let served = [k1.jwk], hits = 0;
-const srv = createServer((req, res) => { hits++; res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify({ keys: served })); });
+let served = [k1.jwk], hits = 0, status = 200, malformed = false, hold = false, arrived, release;
+const srv = createServer((req, res) => {
+  hits++;
+  const respond = () => { res.writeHead(status, { "content-type": "application/json" }); res.end(malformed ? "{" : JSON.stringify({ keys: served })); };
+  if (hold) { release = respond; arrived(); } else respond();
+});
 await new Promise((r) => srv.listen(0, "127.0.0.1", r));
 const local = `http://127.0.0.1:${srv.address().port}/jwks`;
 // The Worker fetches its configured https JWKS URL; the stand-in fetch carries it to the local server.
@@ -64,6 +68,62 @@ const e2 = env(); await call(e2, { headers: { authorization: `Bearer ${pass}` } 
 await Promise.all([1, 2, 3, 4, 5].map(async (i) => call(e2, { headers: { authorization: `Bearer ${await sign({ ...k2, kid: `x${i}` }, good)}` } })));
 if (hits !== h1 + 1) why("v", `concurrent unknown kids fetched ${hits - h1} times`);
 
+// Cold requests, including forged unknown kids, share the first JWKS load without a second fetch.
+const forged = Array.from({ length: 12 }, (_, i) => `${b64(JSON.stringify({ alg: "EdDSA", kid: `forged-${i}` }))}.${b64(JSON.stringify(good))}.AA`);
+const cold = env(), coldHits = hits;
+const coldResponses = await Promise.all([pass, ...forged].map((token) => call(cold, { headers: { authorization: `Bearer ${token}` } })));
+if (coldResponses[0] !== null) why("s", "cold valid pass refused");
+for (const r of coldResponses.slice(1)) await is401(r, "s", "cold forged pass");
+if (hits !== coldHits + 1) why("s", `cold concurrent requests fetched ${hits - coldHits} times`);
+
+// Cache HTTP and JSON load failures, deny bursts and sequential requests, then recover after one minute.
+const realNow = Date.now;
+let clockOffset = 0;
+Date.now = () => realNow() + clockOffset;
+try {
+  for (const failure of ["http", "json"]) {
+    status = failure === "http" ? 503 : 200;
+    malformed = failure === "json";
+    const outage = env(), outageHits = hits;
+    for (const r of await Promise.all(forged.map((token) => call(outage, { headers: { authorization: `Bearer ${token}` } }))))
+      await is401(r, "f", `${failure} outage concurrent pass`);
+    for (const token of forged) await is401(await call(outage, { headers: { authorization: `Bearer ${token}` } }), "f", `${failure} outage forged pass`);
+    status = 200; malformed = false;
+    clockOffset += 59_000;
+    await is401(await call(outage, { headers: { authorization: `Bearer ${pass}` } }), "f", "failure cache before expiry");
+    if (hits !== outageHits + 1) why("f", `${failure} outage fetched ${hits - outageHits} times`);
+    clockOffset += 1_001;
+    if ((await call(outage, { headers: { authorization: `Bearer ${pass}` } })) !== null) why("f", `${failure} recovery refused`);
+    if (hits !== outageHits + 2) why("f", `${failure} recovery fetched ${hits - outageHits} times`);
+    clockOffset = 0;
+  }
+} finally {
+  Date.now = realNow;
+  status = 200; malformed = false;
+}
+
+// A forged refetch cannot stall valid cached passes or evict their still-fresh keys on failure.
+const warm = env(); await call(warm, { headers: { authorization: `Bearer ${pass}` } });
+const warmHits = hits;
+status = 503; hold = true;
+const received = new Promise((resolve) => { arrived = resolve; });
+const refetch = call(warm, { headers: { authorization: `Bearer ${forged[0]}` } });
+await received;
+let timer;
+const stalled = Symbol("stalled");
+const valid = await Promise.race([
+  call(warm, { headers: { authorization: `Bearer ${pass}` } }),
+  new Promise((resolve) => { timer = setTimeout(() => resolve(stalled), 1000); }),
+]);
+clearTimeout(timer);
+if (valid !== null) why("f", "warm valid pass waited behind a forged refetch");
+hold = false; release();
+await is401(await refetch, "f", "warm failed refetch");
+if ((await call(warm, { headers: { authorization: `Bearer ${pass}` } })) !== null) why("f", "failed refetch evicted a fresh key");
+for (const token of forged) await is401(await call(warm, { headers: { authorization: `Bearer ${token}` } }), "f", "warm outage forged pass");
+if (hits !== warmHits + 1) why("f", `warm outage fetched ${hits - warmHits} times`);
+status = 200;
+
 // fails closed: every bad pass, and a staging Worker missing its portal settings, is an empty 401
 const bad = [
   ["none", {}],
@@ -92,7 +152,7 @@ const h0 = hits; await call({ ENVIRONMENT: "production", PORTAL_AUD: "x", PORTAL
 if (hits !== h0) why("p", "production fetched the JWKS");
 if ((await call({ ENVIRONMENT: "Production", PORTAL_AUD: "x", PORTAL_ISSUER: ISS, PORTAL_JWKS_URL: "https://portal.example.com/q" }))?.status !== 401) why("p", "a near-miss ENVIRONMENT opened the gate");
 srv.close();
-for (const [k, id] of [["v", "portal-pass-verifies"], ["c", "portal-pass-fail-closed"], ["p", "portal-pass-production-open"]])
+for (const [k, id] of [["v", "portal-pass-verifies"], ["c", "portal-pass-fail-closed"], ["p", "portal-pass-production-open"], ["s", "portal-pass-shared-load"], ["f", "portal-pass-load-failure-cache"]])
   console.log(out[k] ? `FAIL ${id}\n  ${out[k].join("; ")}` : `ok ${id}`);
 JS
 o=$(node "$T/drive.mjs" "$R/scripts/agent/portal-pass.mjs" 2>&1); echo "$o"

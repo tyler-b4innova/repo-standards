@@ -1,11 +1,11 @@
 // Compare production source, build output and migrations with the PR base; never access Cloudflare.
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, realpathSync, readFileSync, mkdtempSync, rmSync, symlinkSync, readdirSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, realpathSync, readFileSync, mkdtempSync, rmSync, symlinkSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, posix, join, relative } from "node:path";
 import { parse } from "./staging.mjs";
 import { scan } from "./jsscan.mjs";
-import { build, effectiveConfig, rootFile, workerFiles, buildCommand, readConfig } from "./release-config.mjs";
+import { build, effectiveConfig, rootFile, workerFiles, buildCommand, readConfig, installBuildDependencies } from "./release-config.mjs";
 const git = (...args) => execFileSync("git", args, { encoding: "utf8", stdio: "pipe", maxBuffer: 1 << 26 });
 const read = (f) => existsSync(f) ? readFileSync(f, "utf8") : null;
 const before = (base, f) => { try { return git("show", `${base}:${f}`); } catch { return null; } };
@@ -211,26 +211,6 @@ function productionInventory({ built = false, buildContext } = {}) {
     if (resolved.cfg.name !== readConfig(file).name) throw new Error(`${file}: production build targets a different Worker`);
     return [relative(process.cwd(), file), { file: relative(process.cwd(), resolved.file).split("\\").join("/"), cfg: resolved.cfg }];
   }));
-}
-function installBuildDependencies(pkg, context) {
-  const pm = existsSync("pnpm-lock.yaml") ? "pnpm" : existsSync("yarn.lock") ? "yarn" : "npm";
-  let env = process.env;
-  if (pm !== "npm") {
-    if (!context.home) {
-      context.home = mkdtempSync(join(tmpdir(), "rollback-corepack-"));
-      const bin = join(context.home, "bin");
-      mkdirSync(bin);
-      for (const manager of ["pnpm", "yarn"])
-        writeFileSync(join(bin, manager), `#!/bin/sh\nexec npx --yes --package corepack@0.34.6 corepack ${manager} "$@"\n`, { mode: 0o755 });
-    }
-    env = { ...process.env, PATH: `${join(context.home, "bin")}:${process.env.PATH ?? ""}`, COREPACK_HOME: context.home, COREPACK_ENABLE_AUTO_PIN: "0" };
-  }
-  if (Object.keys({ ...pkg.dependencies, ...pkg.devDependencies, ...pkg.optionalDependencies }).length && !existsSync("node_modules")) {
-    const args = pm === "pnpm" ? ["install", "--frozen-lockfile"] : pm === "yarn" ? ["install", existsSync(".yarnrc.yml") ? "--immutable" : "--frozen-lockfile"] : existsSync("package-lock.json") ? ["ci"] : ["install", "--no-package-lock"];
-    const result = spawnSync(pm, args, { stdio: "ignore", env });
-    if (result.status !== 0) throw new Error("cannot install production build dependencies; resolved production rollback comparison is required");
-  }
-  return { env };
 }
 function baseInventory(base, directory, buildContext) {
   execFileSync("git", ["clone", "--shared", "--no-checkout", "--quiet", process.cwd(), directory], { stdio: "pipe" });

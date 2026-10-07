@@ -12,7 +12,7 @@
 // Plain WebCrypto, no dependencies: runs in workerd and Node 22+.
 
 const COOKIE = "__Host-portal_pass", QUERY = "portal_pass", SKEW = 60, MAX_LIFE = 900, JWKS_TTL = 600_000, REFETCH_GAP = 60_000;
-const jwksCache = new Map(); // url -> { keys, at, refetchedAt }
+const jwksCache = new Map(); // url -> { keys, at, refetchedAt, failedUntil, pending }
 
 const unb64 = (s) => {
   if (typeof s !== "string" || !/^[A-Za-z0-9_-]*$/.test(s)) throw new Error("not base64url");
@@ -45,7 +45,7 @@ export async function verifyPass(token, { aud, issuer, jwks, now = Math.floor(Da
 }
 
 // The JWK for `kid` from the JWKS at `url`: cached for 10 minutes; an unknown kid refetches once (at most once a minute,
-// so a stream of made-up kids cannot hammer the portal).
+// so a stream of made-up kids cannot hammer the portal). Loads are shared; failures deny uncached keys for one minute.
 function keyring(url, fetcher) {
   const load = async () => {
     const r = await fetcher(url, { headers: { accept: "application/json" } });
@@ -53,16 +53,38 @@ function keyring(url, fetcher) {
     const body = await r.json();
     return Array.isArray(body?.keys) ? body.keys : [];
   };
+  const refresh = (c) => {
+    // Reserve every load before awaiting it, including the first load and TTL refreshes.
+    c.pending ??= load().then((keys) => {
+      c.keys = keys;
+      c.at = Date.now();
+      c.failedUntil = 0;
+      return keys;
+    }).catch(() => {
+      c.failedUntil = Date.now() + REFETCH_GAP;
+      return [];
+    }).finally(() => { c.pending = null; });
+    return c.pending;
+  };
   return async (kid) => {
     let c = jwksCache.get(url);
     const t = Date.now();
-    if (!c || t - c.at > JWKS_TTL) { c = { keys: await load(), at: t, refetchedAt: c?.refetchedAt ?? 0 }; jwksCache.set(url, c); }
-    let k = c.keys.find((x) => x.kid === kid);
-    if (!k && (c.pending || t - c.refetchedAt > REFETCH_GAP)) {
-      // the refetch is reserved before it is awaited and shared, so concurrent unknown kids cost one portal fetch
+    if (!c) {
+      c = { keys: [], at: 0, refetchedAt: 0, failedUntil: 0, pending: null };
+      jwksCache.set(url, c);
+    }
+    const fresh = c.at && t - c.at <= JWKS_TTL;
+    let k = fresh && c.keys.find((x) => x.kid === kid);
+    if (k) return k; // A usable cached key never waits behind an unknown-kid refetch.
+    if (t < c.failedUntil) return null;
+    if (c.pending || !fresh || c.failedUntil) {
+      const keys = await refresh(c);
+      // This load already checked the current JWKS; an unknown kid needs no second fetch.
+      return keys.find((x) => x.kid === kid) ?? null;
+    }
+    if (t - c.refetchedAt > REFETCH_GAP) {
       c.refetchedAt = t;
-      c.pending ??= load().then((keys) => { jwksCache.set(url, { keys, at: Date.now(), refetchedAt: t }); return keys; }).finally(() => { c.pending = null; });
-      k = (await c.pending).find((x) => x.kid === kid);
+      k = (await refresh(c)).find((x) => x.kid === kid);
     }
     return k ?? null;
   };

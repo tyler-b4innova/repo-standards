@@ -1,7 +1,8 @@
 // Resolve and check the configuration used by a release, including adapter-generated redirects.
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { existsSync, readFileSync, realpathSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { dirname, isAbsolute, relative, resolve, sep, join } from "node:path";
+import { tmpdir } from "node:os";
 import { parse, resourceFindings } from "./staging.mjs";
 
 export const redirectFile = ".wrangler/deploy/config.json";
@@ -81,6 +82,27 @@ export function buildCommand(std, pkg) {
   const pm = existsSync("pnpm-lock.yaml") ? "pnpm" : existsSync("yarn.lock") ? "yarn" : "npm";
   return [pm, ["run", "build"]];
 }
+// A private package-manager bootstrap shared by rollback and generated-config probes.
+export function installBuildDependencies(pkg, context) {
+  const pm = existsSync("pnpm-lock.yaml") ? "pnpm" : existsSync("yarn.lock") ? "yarn" : "npm";
+  let env = process.env;
+  if (pm !== "npm") {
+    if (!context.home) {
+      context.home = mkdtempSync(join(tmpdir(), "rollback-corepack-"));
+      const bin = join(context.home, "bin");
+      mkdirSync(bin);
+      for (const manager of ["pnpm", "yarn"])
+        writeFileSync(join(bin, manager), `#!/bin/sh\nexec npx --yes --package corepack@0.34.6 corepack ${manager} "$@"\n`, { mode: 0o755 });
+    }
+    env = { ...process.env, PATH: `${join(context.home, "bin")}:${process.env.PATH ?? ""}`, COREPACK_HOME: context.home, COREPACK_ENABLE_AUTO_PIN: "0" };
+  }
+  if (Object.keys({ ...pkg.dependencies, ...pkg.devDependencies, ...pkg.optionalDependencies }).length && !existsSync("node_modules")) {
+    const args = pm === "pnpm" ? ["install", "--frozen-lockfile"] : pm === "yarn" ? ["install", existsSync(".yarnrc.yml") ? "--immutable" : "--frozen-lockfile"] : existsSync("package-lock.json") ? ["ci"] : ["install", "--no-package-lock"];
+    const result = spawnSync(pm, args, { stdio: "ignore", env });
+    if (result.status !== 0) throw new Error("cannot install production build dependencies; resolved production rollback comparison is required");
+  }
+  return { env };
+}
 export function build(std, pkg, staging = false, { quiet = false, command = buildCommand(std, pkg), env = process.env } = {}) {
   if (!command) {
     if (existsSync(redirectFile)) throw new Error("generated Wrangler config requires a build command supporting CLOUDFLARE_ENV=staging; set standards.json build or package.json scripts.build");
@@ -94,14 +116,21 @@ export function build(std, pkg, staging = false, { quiet = false, command = buil
     buildEnv.CLOUDFLARE_ENV = "staging";
   }
   if (!quiet) console.log(`release: build (${staging ? "CLOUDFLARE_ENV=staging" : "CLOUDFLARE_ENV unset"})`);
-  const r = spawnSync(command[0], command[1], { env: buildEnv, stdio: quiet ? "pipe" : "inherit" });
-  if (r.status !== 0) throw new Error(`${staging ? "staging" : "production"} build failed; ensure the build supports CLOUDFLARE_ENV staging selection`);
+  const r = spawnSync(command[0], command[1], { env: buildEnv, stdio: quiet ? "ignore" : "inherit" });
+  if (r.status !== 0) {
+    const outcome = r.signal ? `signal ${r.signal}` : r.status !== null ? `exit ${r.status}` : `spawn ${r.error?.code ?? "failed"}`;
+    const quote = (arg) => /^[a-zA-Z0-9_./-]+$/.test(arg) ? arg : `'${arg.replaceAll("'", "'\\''")}'`;
+    const localCommand = command.map((part) => Array.isArray(part) ? part.map(quote).join(" ") : quote(part)).join(" ");
+    const selection = staging ? "CLOUDFLARE_ENV=staging" : "env -u CLOUDFLARE_ENV";
+    const bootstrap = env.COREPACK_HOME ? "a Corepack-bootstrapped package manager" : "the configured package manager";
+    throw new Error(`${staging ? "staging" : "production"} build failed (${outcome}); reproduce locally with ${bootstrap}: ${selection} ${localCommand}`);
+  }
 }
 
 // Resolve production after a build before staging can mutate any remote resource.
 // Parsing creates independent in-memory snapshots that the staging build cannot overwrite.
-export function buildProductionConfigs(std, pkg, workers, { quiet = false } = {}) {
-  build(std, pkg, false, { quiet });
+export function buildProductionConfigs(std, pkg, workers, { quiet = false, ...options } = {}) {
+  build(std, pkg, false, { quiet, ...options });
   const configs = workers.map((worker) => {
     const resolved = effectiveConfig(worker.file, false, { redirect: Boolean(worker.primary) });
     if (resolved.cfg.name !== worker.cfg.name) throw new Error(`production build does not target ${worker.cfg.name}`);
@@ -119,14 +148,20 @@ export function verifyGeneratedBuild(std, pkg, root = rootFile()) {
   if (!production.env?.staging) return; // legacy Preview releases do not select env.staging
   const extras = workerFiles(std, root).map((file) => ({ file, cfg: readConfig(file) }));
   const workers = [{ file: root, cfg: production, primary: true }, ...extras];
-  const productionConfigs = [...workers.map((worker) => worker.cfg), ...buildProductionConfigs(std, pkg, workers, { quiet: true })];
-  let stagingError;
-  try { build(std, pkg, true, { quiet: true }); assertStaging(production, effectiveConfig(root, true), productionConfigs); }
-  catch (e) { stagingError = e; }
-  try { build(std, pkg, false, { quiet: true }); }
-  catch (e) { throw new Error(stagingError ? `${stagingError.message}; production restore also failed: ${e.message}` : e.message); }
-  if (stagingError) throw stagingError;
-  if (effectiveConfig(root).cfg.name !== production.name) throw new Error("build without CLOUDFLARE_ENV did not restore production");
+  const context = {};
+  try {
+    const options = buildCommand(std, pkg) ? installBuildDependencies(pkg ?? {}, context) : {};
+    const productionConfigs = [...workers.map((worker) => worker.cfg), ...buildProductionConfigs(std, pkg, workers, { quiet: true, ...options })];
+    let stagingError;
+    try { build(std, pkg, true, { quiet: true, ...options }); assertStaging(production, effectiveConfig(root, true), productionConfigs); }
+    catch (e) { stagingError = e; }
+    try { build(std, pkg, false, { quiet: true, ...options }); }
+    catch (e) { throw new Error(stagingError ? `${stagingError.message}; production restore also failed: ${e.message}` : e.message); }
+    if (stagingError) throw stagingError;
+    if (effectiveConfig(root).cfg.name !== production.name) throw new Error("build without CLOUDFLARE_ENV did not restore production");
+  } finally {
+    if (context.home) rmSync(context.home, { recursive: true, force: true });
+  }
 }
 
 // Additional Workers are explicit repo-owned config paths, never shell commands or external files.
