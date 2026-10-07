@@ -5,12 +5,6 @@ An org-neutral engine for repo-scoped agent standards. Each organization keeps a
 ```json
 "launcher": {
   "repos": "*",
-  "lanes": [
-    { "name": "claude", "runner": "claude-cloud", "vendor": "claude", "slots": 2, "accounts": ["<account id>"], "base": "<branch>", "timeoutMin": 60, "github": "<login>" },
-    { "name": "t3", "runner": "t3", "provider": "claudeAgent", "model": "<model id>", "effort": "<effort>", "slots": 2 }
-  ],
-  "review": { "provider": "codex", "model": "<model id>", "effort": "<effort>" },
-  "unassigned": ["<lane>"],
   "dispatch": [{ "repo": "standards", "workflow": "sync.yml", "every": "1d", "ref": "<branch>", "when": "drift" }],
   "sections": ["Goal", "Acceptance criteria"], "uiPaths": ["<glob>"],
   "duplicates": { "apps": ["<app slug>"] },
@@ -19,7 +13,7 @@ An org-neutral engine for repo-scoped agent standards. Each organization keeps a
 }
 ```
 
-Every key is optional except a lane's `name` and, per lane kind, the keys below. A lane's `runner` is `t3`, `claude-cloud` or `codex-cloud`. A cloud lane (or one with no `runner`, which is one) names its `vendor` (`claude` or `codex`; a cloud `runner` implies it when omitted and must match it otherwise) and takes no `provider`, `model` or `effort`. A `t3` lane needs `provider` (`claudeAgent` or `codex`) and a non-empty `model`, takes an optional non-empty `effort` (any string), and omits `vendor`. `review` (`provider`, `model`, optional `effort`) is required when any lane runs on `t3`, and its provider must differ from every `t3` lane's provider. `revert` holds the launcher's thresholds for reverting a production deploy (positive numbers; the launcher owns the defaults). `retro` configures the launcher's weekly retro. `approvers` approve repo- and pack-level rule changes, and `engineApprovers` approve engine-level ones; both are non-empty lists of GitHub logins. `provider` is `claudeAgent` only (the launcher refuses codex as drafter), with a non-empty `model` and optional string `effort` and `repo`. A dispatch entry's `when: "drift"` fires it only when some repository's `standards.lock` is missing or behind the entry repository's latest release. Unknown keys, lanes named in `unassigned` that do not exist, schedules other than `<n>m|h|d`, and credential-looking values are refused. Other top-level keys the engine does not read pass through untouched.
+Every key is optional. Lanes, models, effort, the reviewer and the unassigned lanes are not standards: each org's launcher owns them and they are set on its dashboard, so an overlay with `launcher.lanes`, `launcher.review` or `launcher.unassigned` is refused. **Upgrade order (a prerequisite):** an overlay that still has any of the three keys fails to load under this engine, which stops sync, expiry and org-apply. So: (1) the launcher reads its lanes, reviewer and unassigned from its own dashboard config, migrated and verified; (2) each org releases an `org.json` without the three keys while still pinned to the old engine; (3) only then bump the engine pin, prove sync on one repository, then roll out to the fleet. `revert` holds the launcher's thresholds for reverting a production deploy (positive numbers; the launcher owns the defaults). `retro` configures the launcher's weekly retro. `approvers` approve repo- and pack-level rule changes, and `engineApprovers` approve engine-level ones; both are non-empty lists of GitHub logins. `provider` is `claudeAgent` only (the launcher refuses codex as drafter), with a non-empty `model` and optional string `effort` and `repo`. A dispatch entry's `when: "drift"` fires it only when some repository's `standards.lock` is missing or behind the entry repository's latest release. Unknown keys, schedules other than `<n>m|h|d`, and credential-looking values are refused. Other top-level keys the engine does not read pass through untouched.
 
 ## Consumer repositories
 
