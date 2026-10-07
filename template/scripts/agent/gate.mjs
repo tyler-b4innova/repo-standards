@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // Steps of the `gate` job (std-gate.yml), also runnable locally:
-//   local [--base <ref>] | plan | classify [base] | install | run <script>... | preview | release | e2e | secrets | syntax | instructions | verdict
+//   local [--base <ref>] | plan | classify [base] | install [--no-browsers|--browsers-only] | playwright | run <script>... | preview | release | e2e | secrets | syntax | instructions | verdict
 // UI paths: pack.json defaults; standards.json "ui_paths" as a list replaces the include globs,
 // as {include, ignore} replaces include and adds ignore. e2e: none fails unless "e2e": false.
 import { execFileSync as ex, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync as has, mkdtempSync, readdirSync as ls, readFileSync as rd, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync as has, mkdtempSync, readdirSync as ls, readFileSync as rd, rmSync, statSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { createConnection } from "node:net";
 import { localConfig, localWorkerConfig } from "./local.mjs";
 import { scan } from "./jsscan.mjs";
@@ -14,7 +14,7 @@ import { rollbackFindings } from "./rollback.mjs";
 import { verifyGeneratedBuild } from "./release-config.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
-const SUBS = ["local", "verdict", "plan", "classify", "install", "run", "preview", "release", "e2e", "secrets", "syntax", "instructions"], ok = SUBS.includes(cmd);
+const SUBS = ["local", "verdict", "plan", "classify", "install", "playwright", "run", "preview", "release", "e2e", "secrets", "syntax", "instructions"], ok = SUBS.includes(cmd);
 if (!ok || args.includes("--help")) {
   console.log(rd(new URL(import.meta.url), "utf8").split("\n").slice(1, 6).map((l) => l.slice(3)).join("\n"));
   process.exit(ok || cmd === "--help" ? 0 : 2);
@@ -50,6 +50,32 @@ const ghApi = () => {
     return null;
   };
 };
+const playwrightBin = () => has("node_modules/.bin/playwright") ? ["node_modules/.bin/playwright", []] : ["npx", ["--no-install", "playwright"]];
+// True when the system packages for this run's browsers must be installed (Linux only; elsewhere Playwright has none).
+// Playwright's own host validation is bundled and not callable, so Chromium gets an equivalent check: `ldd` over every
+// executable and shared library in the browser's `chrome-linux` directory, with that directory on LD_LIBRARY_PATH, as
+// Playwright does. Firefox and WebKit load libraries it also checks through a library path and dlopen (libxul.so,
+// libGLESv2.so.2, libx264.so) that this scan cannot reproduce, so they always install their packages.
+function browserDepsMissing() {
+  if ((env.GATE_PLATFORM || process.platform) !== "linux") return false;
+  const other = browsers().filter((b) => b !== "chromium");
+  if (other.length) { console.log(`install: ${other.join(", ")} always installs system packages`); return true; }
+  const root = env.PLAYWRIGHT_BROWSERS_PATH && env.PLAYWRIGHT_BROWSERS_PATH !== "0" ? env.PLAYWRIGHT_BROWSERS_PATH : `${homedir()}/.cache/ms-playwright`;
+  const dirs = (has(root) ? ls(root) : []).filter((x) => /^chromium(_headless_shell)?-/.test(x));
+  if (!dirs.some((x) => /^chromium-/.test(x))) { console.log(`install: chromium not found under ${root}; installing system packages`); return true; }
+  for (const x of dirs) {
+    const dir = `${root}/${x}/chrome-linux`;
+    if (!has(dir)) { console.log(`install: ${dir} missing; installing system packages`); return true; }
+    for (const e of ls(dir, { withFileTypes: true })) {
+      const f = `${dir}/${e.name}`;
+      if (!e.isFile() || !(/\.so(\.|$)/i.test(e.name) || (statSync(f).mode & 0o111))) continue;
+      const r = spawnSync("ldd", [f], { encoding: "utf8", cwd: dir, env: { ...env, LD_LIBRARY_PATH: [env.LD_LIBRARY_PATH, dir].filter(Boolean).join(":") } });
+      if (r.error || /=>.*not found/.test(`${r.stdout}`)) { console.log(`install: ${f} misses shared libraries; installing system packages`); return true; }
+    }
+  }
+  console.log("install: browser system packages present");
+  return false;
+}
 function ui(files) {
   const p = json("scripts/agent/pack.json") ?? {}, o = std.ui_paths;
   const inc = (Array.isArray(o) ? o : o?.include ?? p.ui_paths ?? []).map(glob), ign = [...(p.ui_ignore ?? []), ...(o?.ignore ?? [])].map(glob);
@@ -317,6 +343,15 @@ if (cmd === "local") {
   // The engine must exercise its own fixtures for code changes, including on draft PRs.
   const engineCode = pkg?.name === "repo-standards" && has("bin/repo-standards.mjs") && !docOnly();
   if (pr?.draft && !engineCode) { mode = "cheap"; why = "draft: the full gate runs from ready_for_review"; }
+  // A description or title edit re-checks the description and nothing else: no build, no e2e. The cheap path must not
+  // turn a head's red or unfinished full gate green, so an edit passes only on a head whose last gate run succeeded.
+  if (event.action === "edited" && env.GITHUB_EVENT_NAME === "pull_request") {
+    mode = "cheap"; why = "edit: only the checks run";
+    const stamp = (c) => String(c.started_at ?? c.created_at ?? "");
+    const last = ((await get(`/commits/${pr.head.sha}/check-runs?per_page=100`))?.check_runs ?? []).filter((c) => c.name === "gate").sort((a, b) => stamp(b).localeCompare(stamp(a)))[0];
+    if (last && !(last.status === "completed" && last.conclusion === "success"))
+      fail(`edit: this head's gate is ${last.status === "completed" ? last.conclusion : last.status}; a description edit cannot pass it`, "wait for that gate, fix it if red, and re-run this run afterwards");
+  }
   // Pull requests run Chromium only; a repository's extra browsers run on main, against staging, before a release.
   console.log(`plan: ${mode} (${why})`);
   output("mode", mode);
@@ -425,16 +460,30 @@ if (cmd === "local") {
   if (!base) fail(`base ${args[0]} not found`, "git fetch origin, or pass a base ref");
   const files = git("diff", "--name-only", "-z", base).split("\0").concat(git("ls-files", "-oz", "--exclude-standard").split("\0"));
   console.log(ui([...new Set(files.filter(Boolean))]).join("\n") || "no UI paths changed");
+} else if (cmd === "playwright") {
+  // The browser cache name for this run: the repo's exact Playwright version and this run's browsers. Empty when the
+  // repo does not use Playwright (the workflow then skips the cache and the browser install).
+  const d = { ...pkg?.dependencies, ...pkg?.devDependencies }, bin = playwrightBin();
+  const v = (d.playwright || d["@playwright/test"]) ? spawnSync(bin[0], [...bin[1], "--version"], { encoding: "utf8" }) : null;
+  const version = v?.status === 0 ? (v.stdout.match(/\d+\.\d+\.\d+\S*/) ?? [""])[0] : "";
+  output("key", version ? `playwright-${process.platform}-${process.arch}-${version}-${[...browsers()].sort().join("+")}` : "");
 } else if (cmd === "install") {
   if (!pkg) console.log("notice: no package.json; nothing to install");
   else {
-    if (pm !== "npm") must("corepack", ["enable"]);
-    must(pm, pm === "pnpm" ? ["install", "--frozen-lockfile"] : pm === "yarn" ? ["install", has(".yarnrc.yml") ? "--immutable" : "--frozen-lockfile"]
-      : has("package-lock.json") || has("npm-shrinkwrap.json") ? ["ci"] : ["install", "--no-package-lock"]);
+    if (!args.includes("--browsers-only")) {
+      if (pm !== "npm") must("corepack", ["enable"]);
+      must(pm, pm === "pnpm" ? ["install", "--frozen-lockfile"] : pm === "yarn" ? ["install", has(".yarnrc.yml") ? "--immutable" : "--frozen-lockfile"]
+        : has("package-lock.json") || has("npm-shrinkwrap.json") ? ["ci"] : ["install", "--no-package-lock"]);
+    }
     const d = { ...pkg.dependencies, ...pkg.devDependencies };
-    // The repo's own Playwright (so the browser matches the lockfile); only this run's browsers. Browsers are not cached.
-    const bin = has("node_modules/.bin/playwright") ? ["node_modules/.bin/playwright", []] : ["npx", ["--no-install", "playwright"]];
-    if ((d.playwright || d["@playwright/test"]) && !args.includes("--no-browsers")) must(bin[0], [...bin[1], "install", "--with-deps", ...browsers()]);
+    // The repo's own Playwright (so the browser matches the lockfile); only this run's browsers. The workflow caches
+    // the browsers directory (named by `playwright`), so `install` downloads only on a miss; system packages are
+    // installed only when the browsers' shared libraries are missing (apt update and install were most of the cost).
+    if ((d.playwright || d["@playwright/test"]) && !args.includes("--no-browsers")) {
+      const bin = playwrightBin();
+      must(bin[0], [...bin[1], "install", ...browsers()]);
+      if (browserDepsMissing()) must(bin[0], [...bin[1], "install-deps", ...browsers()]);
+    }
   }
 } else if (cmd === "run") {
   const s = args.find((x) => pkg?.scripts?.[x]);

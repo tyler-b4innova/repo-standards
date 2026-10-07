@@ -1,5 +1,5 @@
 # Managed by the standards pack. Pull requests can read the default branch's dependency cache but not each other's,
-# so a lockfile change on the default branch refreshes it here. Not a required check; browsers are never cached.
+# so a lockfile change on the default branch refreshes it here. Not a required check; it also warms the gate's Playwright browser cache. The only workflow that writes caches: it runs main's code only, never a pull request's.
 name: std-cache-warm
 on:
   push:
@@ -19,11 +19,30 @@ jobs:
         id: pm
         # the lockfile's package manager caches (pnpm and yarn run through corepack; no cache if that fails)
         run: |
-          if [ -f pnpm-lock.yaml ]; then if corepack enable && pnpm --version >/dev/null; then echo cache=pnpm >>"$GITHUB_OUTPUT"; fi
-          elif [ -f yarn.lock ]; then if corepack enable && yarn --version >/dev/null; then echo cache=yarn >>"$GITHUB_OUTPUT"; fi
-          elif [ -f package-lock.json ]; then echo cache=npm >>"$GITHUB_OUTPUT"; fi
+          if [ -f pnpm-lock.yaml ]; then if corepack enable && pnpm --version >/dev/null; then echo cache=pnpm >>"$GITHUB_OUTPUT"; echo "path=$(pnpm store path --silent)" >>"$GITHUB_OUTPUT"; fi
+          elif [ -f yarn.lock ]; then if corepack enable && yarn --version >/dev/null; then echo cache=yarn >>"$GITHUB_OUTPUT"; echo "path=$(yarn cache dir 2>/dev/null || yarn config get cacheFolder)" >>"$GITHUB_OUTPUT"; fi
+          elif [ -f package-lock.json ]; then echo cache=npm >>"$GITHUB_OUTPUT"; echo "path=$(npm config get cache)" >>"$GITHUB_OUTPUT"; fi
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
-          cache: ${{ steps.pm.outputs.cache }}
+          package-manager-cache: false
+      - name: dependency cache
+        if: steps.pm.outputs.cache != ''
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.pm.outputs.path }}
+          key: deps-${{ runner.os }}-${{ runner.arch }}-${{ steps.pm.outputs.cache }}-${{ hashFiles('package-lock.json', 'pnpm-lock.yaml', 'yarn.lock') }}
       - run: node scripts/agent/gate.mjs install --no-browsers
+      # the gate's browser cache: pull requests read the default branch's caches but not each other's
+      - name: playwright
+        id: pw
+        run: node scripts/agent/gate.mjs playwright
+      - name: browser cache
+        if: steps.pw.outputs.key != ''
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.pw.outputs.key }}
+      - name: browsers
+        if: steps.pw.outputs.key != ''
+        run: node scripts/agent/gate.mjs install --browsers-only

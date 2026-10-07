@@ -78,12 +78,46 @@ echo 'export default { projects: [{ name: "chromium" }, { name: "firefox" }] };'
 jset "$R/package.json" 'o.scripts={"test:e2e":"playwright test"}'; e6=$(pwrun GATE_X=1); jset "$R/package.json" 'delete o.scripts'
 echo 'export default { use: {} };' > "$R/playwright.config.js"; e4=$(pwrun GATE_X=1)
 IB=$T/install-bin; mkpath "$IB"; shim "$IB" npm 'exit 0'
-: > "$T/pw.log"; (cd "$R" && PATH="$IB" GATE_BROWSERS=chromium node scripts/agent/gate.mjs install) >/dev/null 2>&1; i1=$(cat "$T/pw.log")
+: > "$T/pw.log"; (cd "$R" && PATH="$IB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH="$T/no-browsers" GATE_BROWSERS=chromium node scripts/agent/gate.mjs install) >/dev/null 2>&1; i1=$(cat "$T/pw.log")
 # CI observed 299999ms: choosing the suite consumes part of the five-minute budget.
 b1=${e1##*budget=}
 if has "playwright test --project=chromium base=none budget=" "$e1" && [[ "$b1" =~ ^[0-9]+$ ]] && [ "$b1" -gt 299000 ] && [ "$b1" -le 300000 ] && has "test --project=chromium --project=firefox" "$e2" && has "base=https://feat.preview.example.test" "$e3" \
-  && has "playwright test base=none" "$e4" && ! has "project" "$e4" && [ $x5 -eq 1 ] && has "defines projects but none named chromium" "$e5" && has "playwright test --project=chromium" "$e6" && ! has firefox "$e6" && has "install --with-deps chromium" "$i1" && ! has "firefox" "$i1"
+  && has "playwright test base=none" "$e4" && ! has "project" "$e4" && [ $x5 -eq 1 ] && has "defines projects but none named chromium" "$e5" && has "playwright test --project=chromium" "$e6" && ! has firefox "$e6" && has "install chromium" "$i1" && has "install-deps chromium" "$i1" && ! has "firefox" "$i1"
 then ok e2e-chromium-default; else fail e2e-chromium-default "default=$e1 | two=$e2 | preview=$e3 | no-projects=$e4 | script=$e6 | install=$i1"; fi
+
+# ---- browser cache: the workflow caches the browsers by the exact Playwright version and this run's browsers; system
+# packages are installed only when the cached browsers' shared libraries are missing
+BR=$T/browsers; mkdir -p "$BR/chromium-1/chrome-linux"; : > "$BR/chromium-1/chrome-linux/chrome"; chmod +x "$BR/chromium-1/chrome-linux/chrome"
+: > "$BR/chromium-1/chrome-linux/libfoo.so.1"  # a bundled shared library: Playwright's own validation scans these too, not just the executable
+LB=$T/ldd-bin; mkpath "$LB"; shim "$LB" npm 'exit 0'
+shim "$LB" ldd 'case "$1" in *"${LDD_BAD:-NONE}"*) echo "libgbm.so.1 => not found" ;; *) echo "libc.so.6 => /lib/libc.so.6" ;; esac'
+binst() { : > "$T/pw.log"; (cd "$R" && PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH="$1" LDD_BAD="$2" GATE_BROWSERS="${3:-chromium}" node scripts/agent/gate.mjs install --browsers-only) >/dev/null 2>&1; cat "$T/pw.log"; }
+bhit=$(binst "$BR" NONE); bmiss=$(binst "$BR" chrome-linux/chrome); bso=$(binst "$BR" libfoo.so); bnone=$(binst "$T/empty-browsers" NONE); bff=$(binst "$BR" NONE chromium,firefox)
+# the cache key: the repo's exact Playwright version and the sorted browsers; none without Playwright
+cp "$R/node_modules/.bin/playwright" "$T/pw.orig"; printf '#!/bin/sh\necho "Version 1.63.0"\n' > "$R/node_modules/.bin/playwright"
+bkey=$(cd "$R" && GATE_BROWSERS=firefox,chromium node scripts/agent/gate.mjs playwright); bkey1=$(cd "$R" && GATE_BROWSERS=chromium node scripts/agent/gate.mjs playwright)
+cp "$T/pw.orig" "$R/node_modules/.bin/playwright"; echo '{"name":"app","private":true}' > "$R/package.json"; bnokey=$(cd "$R" && node scripts/agent/gate.mjs playwright)
+echo '{"name":"app","private":true,"devDependencies":{"@playwright/test":"1.63.0"}}' > "$R/package.json"
+bwf=$(node -e '
+const y=require("fs").readFileSync(process.argv[1],"utf8"),out=[],body=(j)=>{const i=y.indexOf("\n  "+j+":\n");const r=y.slice(i+1).split("\n").slice(1);const e=r.findIndex(l=>/^  \S/.test(l));return (e<0?r:r.slice(0,e)).join("\n")};
+for(const j of ["e2e","repo"]){const b=body(j);
+ if(!/actions\/cache\/restore@[0-9a-f]{40} # v/.test(b)||!b.includes("path: ~/.cache/ms-playwright")||!/steps\.pw\.outputs\.key/.test(b))out.push(j+" caches no browsers");
+ if(!/gate\.mjs install --no-browsers/.test(b)||!/gate\.mjs install --browsers-only/.test(b)||/gate\.mjs install$/m.test(b))out.push(j+" installs browsers uncached")}
+console.log(out.join("; ")||"ok")' "$R/$WF")
+if has "install chromium" "$bhit" && ! has "install-deps" "$bhit" && has "install-deps chromium" "$bmiss" && has "install-deps chromium" "$bso" && has "install-deps chromium" "$bnone" && has "install-deps chromium firefox" "$bff" \
+  && has "key=playwright-" "$bkey" && has "-1.63.0-chromium+firefox" "$bkey" && has "-1.63.0-chromium" "$bkey1" && ! has "firefox" "$bkey1" && [ "$bnokey" = "key=" ] && [ "$bwf" = ok ]
+then ok gate-browser-cache; else fail gate-browser-cache "hit=$bhit | miss=$bmiss | so=$bso | firefox=$bff | none=$bnone | key=$bkey | $bkey1 | nokey=$bnokey | workflow=$bwf"; fi
+
+# ---- the gate never writes a cache: a re-gate on the default branch (workflow_dispatch) runs a pull request's tree, so
+# a cache saved there would be seeded by that tree. Only std-cache-warm (pushes to the default branch, no PR code) saves.
+cw=$R/.github/workflows/std-cache-warm.yml
+cwhy=""
+grep -Eq 'uses: actions/cache@|^\s+cache:' "$R/$WF" && cwhy="$cwhy; gate saves a cache"
+grep -Eq 'uses: actions/cache/restore@[0-9a-f]{40}' "$R/$WF" || cwhy="$cwhy; gate restores nothing"
+grep -Eq 'uses: actions/cache@[0-9a-f]{40}' "$cw" || cwhy="$cwhy; warm saves nothing"
+grep -Eq 'pull_request|workflow_dispatch|^\s+ref:' "$cw" && cwhy="$cwhy; warm can run or check out pull request code"
+grep -Eq '^    branches: \[main\]' "$cw" || cwhy="$cwhy; warm not main-only"
+if [ -z "$cwhy" ]; then ok gate-never-writes-cache; else fail gate-never-writes-cache "$cwhy"; fi
 jset "$R/standards.json" 'o.e2e={command:"sleep 5",budget:0.02}'
 t0=$(date +%s); bo=$(cd "$R" && node scripts/agent/gate.mjs e2e 2>&1); bx=$?; t1=$(date +%s)
 jset "$R/standards.json" 'o.e2e={command:"true",budget:0.02}'; (cd "$R" && node scripts/agent/gate.mjs e2e) >/dev/null 2>&1; bq=$?
@@ -125,12 +159,12 @@ if [ "$shape" = ok ]; then ok gate-fails-without-e2e; else fail gate-fails-witho
 # run the same step, and the warm-up fires on any of the three lockfiles
 why=""; CW=$ENGINE/template/.github/workflows
 for wf in std-gate.yml std-cache-warm.yml; do [ "$(step_run "$CW/$wf" "package manager")" = "$(step_run "$CW/std-gate.yml" "package manager")" ] || why="$why; $wf step differs"; done
-grep -q 'cache: ${{ steps.pm.outputs.cache }}' "$CW/std-cache-warm.yml" && grep -q 'paths: \[package-lock.json, pnpm-lock.yaml, yarn.lock\]' "$CW/std-cache-warm.yml" || why="$why; warm-up trigger or cache"
+grep -q 'uses: actions/cache@' "$CW/std-cache-warm.yml" && grep -q 'path: ${{ steps.pm.outputs.path }}' "$CW/std-cache-warm.yml" && grep -q 'paths: \[package-lock.json, pnpm-lock.yaml, yarn.lock\]' "$CW/std-cache-warm.yml" || why="$why; warm-up trigger or cache"
 pmrun() { # pmrun <lockfile> <corepack exit>: the step in a scratch dir with stub corepack/pnpm/yarn; prints its output
   local d; d=$(mktemp -d "$T/pm.XXXXXX"); mkdir "$d/bin"; : > "$d/$1"
   shim "$d/bin" corepack "exit $2"; shim "$d/bin" pnpm "echo 10.0.0"; shim "$d/bin" yarn "echo 1.22.0"
   (cd "$d" && GITHUB_OUTPUT="$d/out" PATH="$d/bin:$PATH" bash -e -c "$(step_run "$CW/std-gate.yml" "package manager")") >/dev/null 2>&1 || echo "step-failed"
-  cat "$d/out" 2>/dev/null; }
+  grep "^cache=" "$d/out" 2>/dev/null; }
 got="$(pmrun package-lock.json 0)|$(pmrun pnpm-lock.yaml 0)|$(pmrun yarn.lock 0)|$(pmrun pnpm-lock.yaml 1)|$(pmrun none.txt 0)"
 [ "$got" = "cache=npm|cache=pnpm|cache=yarn||" ] || why="$why; outputs: $got"
 if [ -z "$why" ]; then ok dependency-cache-by-lockfile; else fail dependency-cache-by-lockfile "$why"; fi

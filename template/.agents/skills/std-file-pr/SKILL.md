@@ -21,6 +21,8 @@ Title: Conventional Commit in plain language. Body (file outside the repo), per 
 1. Commit locally. Write the title on the first line of `.evidence/pr.md`, then the body; leave it uncommitted for the launcher.
 2. End with "diff ready", the branch name and the commit SHA. Never say a PR was opened.
 
+Open PRs as drafts and keep them drafts while iterating: a draft runs the cheap gate (checks, secret scan, syntax) on every push. The full gate (build, e2e, repo checks) runs on each push to a ready PR and on `ready_for_review`, so a person marks the PR ready once, when the local gate passes and the work is done. Every push after that spends a full gate.
+
 If you close a PR without merging, delete its branch.
 
 Never mark ready, merge or enable auto-merge yourself.
