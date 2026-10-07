@@ -5,7 +5,7 @@
 // as {include, ignore} replaces include and adds ignore. e2e: none fails unless "e2e": false.
 import { execFileSync as ex, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync as has, mkdtempSync, readdirSync as ls, readFileSync as rd, rmSync, writeFileSync } from "node:fs";
+import { existsSync as has, mkdtempSync, readdirSync as ls, readFileSync as rd, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { createConnection } from "node:net";
 import { localConfig, localWorkerConfig } from "./local.mjs";
@@ -51,21 +51,26 @@ const ghApi = () => {
   };
 };
 const playwrightBin = () => has("node_modules/.bin/playwright") ? ["node_modules/.bin/playwright", []] : ["npx", ["--no-install", "playwright"]];
-// True when a requested browser is not installed or its executables miss shared libraries (Linux only; elsewhere
-// Playwright has no system packages to install). Conservative: anything unrecognised counts as missing.
+// True when the system packages for this run's browsers must be installed (Linux only; elsewhere Playwright has none).
+// Playwright's own host validation is bundled and not callable, so Chromium gets an equivalent check: `ldd` over every
+// executable and shared library in the browser's `chrome-linux` directory, with that directory on LD_LIBRARY_PATH, as
+// Playwright does. Firefox and WebKit load libraries it also checks through a library path and dlopen (libxul.so,
+// libGLESv2.so.2, libx264.so) that this scan cannot reproduce, so they always install their packages.
 function browserDepsMissing() {
   if ((env.GATE_PLATFORM || process.platform) !== "linux") return false;
+  const other = browsers().filter((b) => b !== "chromium");
+  if (other.length) { console.log(`install: ${other.join(", ")} always installs system packages`); return true; }
   const root = env.PLAYWRIGHT_BROWSERS_PATH && env.PLAYWRIGHT_BROWSERS_PATH !== "0" ? env.PLAYWRIGHT_BROWSERS_PATH : `${homedir()}/.cache/ms-playwright`;
-  const exes = new Set(["chrome", "headless_shell", "firefox", "MiniBrowser", "WebKitWebProcess"]);
-  const find = (dir, depth = 0) => (has(dir) ? ls(dir, { withFileTypes: true }) : []).flatMap((e) =>
-    e.isDirectory() ? (depth < 6 ? find(`${dir}/${e.name}`, depth + 1) : []) : exes.has(e.name) ? [`${dir}/${e.name}`] : []);
-  const dirs = has(root) ? ls(root) : [];
-  for (const b of browsers()) {
-    const files = dirs.filter((x) => x.startsWith(b)).flatMap((x) => find(`${root}/${x}`));
-    if (!files.length) { console.log(`install: ${b} not found under ${root}; installing system packages`); return true; }
-    for (const f of files) {
-      const r = spawnSync("ldd", [f], { encoding: "utf8" });
-      if (r.error || /not found/.test(`${r.stdout}${r.stderr}`)) { console.log(`install: ${f} misses shared libraries; installing system packages`); return true; }
+  const dirs = (has(root) ? ls(root) : []).filter((x) => /^chromium(_headless_shell)?-/.test(x));
+  if (!dirs.some((x) => /^chromium-/.test(x))) { console.log(`install: chromium not found under ${root}; installing system packages`); return true; }
+  for (const x of dirs) {
+    const dir = `${root}/${x}/chrome-linux`;
+    if (!has(dir)) { console.log(`install: ${dir} missing; installing system packages`); return true; }
+    for (const e of ls(dir, { withFileTypes: true })) {
+      const f = `${dir}/${e.name}`;
+      if (!e.isFile() || !(/\.so(\.|$)/i.test(e.name) || (statSync(f).mode & 0o111))) continue;
+      const r = spawnSync("ldd", [f], { encoding: "utf8", cwd: dir, env: { ...env, LD_LIBRARY_PATH: [env.LD_LIBRARY_PATH, dir].filter(Boolean).join(":") } });
+      if (r.error || /=>.*not found/.test(`${r.stdout}`)) { console.log(`install: ${f} misses shared libraries; installing system packages`); return true; }
     }
   }
   console.log("install: browser system packages present");

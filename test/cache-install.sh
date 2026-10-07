@@ -21,7 +21,11 @@ for (const workflow of ["std-gate", "std-cache-warm"]) {
     const install = /run: node scripts\/agent\/gate\.mjs install\b/.test(body);
     if (!body.includes("actions/setup-node@")) continue;
     if (install) {
-      assert.match(body, /^          cache: \$\{\{ steps.pm.outputs.cache \}\}$/m, `${workflow}/${name} must cache installs`);
+      // the gate only restores (a re-gate on the default branch runs a pull request's tree); the warm-up on main saves
+      assert.match(body, workflow === "std-gate" ? /uses: actions\/cache\/restore@[0-9a-f]{40} # v/ : /uses: actions\/cache@[0-9a-f]{40} # v/, `${workflow}/${name} must cache installs`);
+      assert.match(body, /path: \$\{\{ steps.pm.outputs.path \}\}/);
+      assert.match(body, /^          package-manager-cache: false\b/m, `${workflow}/${name} must not use setup-node's saving cache`);
+      assert.doesNotMatch(body, /^\s+cache:/m, `${workflow}/${name} setup-node cache saves`);
       assert.match(body, /echo cache=pnpm/);
       assert.match(body, /echo cache=npm/);
     } else {
@@ -30,6 +34,8 @@ for (const workflow of ["std-gate", "std-cache-warm"]) {
     }
   }
   if (workflow === "std-gate") {
+    assert.doesNotMatch(yaml, /uses: actions\/cache@/, "std-gate must never write a cache");
+    assert.doesNotMatch(yaml, /^\s+cache:/m, "std-gate must never write a cache (setup-node cache saves)");
     const checks = jobs[jobs.indexOf("checks") + 1];
     assert.ok(!checks.includes("gate.mjs install"));
     assert.ok(!checks.includes("id: pm"));
