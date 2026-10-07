@@ -78,12 +78,33 @@ echo 'export default { projects: [{ name: "chromium" }, { name: "firefox" }] };'
 jset "$R/package.json" 'o.scripts={"test:e2e":"playwright test"}'; e6=$(pwrun GATE_X=1); jset "$R/package.json" 'delete o.scripts'
 echo 'export default { use: {} };' > "$R/playwright.config.js"; e4=$(pwrun GATE_X=1)
 IB=$T/install-bin; mkpath "$IB"; shim "$IB" npm 'exit 0'
-: > "$T/pw.log"; (cd "$R" && PATH="$IB" GATE_BROWSERS=chromium node scripts/agent/gate.mjs install) >/dev/null 2>&1; i1=$(cat "$T/pw.log")
+: > "$T/pw.log"; (cd "$R" && PATH="$IB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH="$T/no-browsers" GATE_BROWSERS=chromium node scripts/agent/gate.mjs install) >/dev/null 2>&1; i1=$(cat "$T/pw.log")
 # CI observed 299999ms: choosing the suite consumes part of the five-minute budget.
 b1=${e1##*budget=}
 if has "playwright test --project=chromium base=none budget=" "$e1" && [[ "$b1" =~ ^[0-9]+$ ]] && [ "$b1" -gt 299000 ] && [ "$b1" -le 300000 ] && has "test --project=chromium --project=firefox" "$e2" && has "base=https://feat.preview.example.test" "$e3" \
-  && has "playwright test base=none" "$e4" && ! has "project" "$e4" && [ $x5 -eq 1 ] && has "defines projects but none named chromium" "$e5" && has "playwright test --project=chromium" "$e6" && ! has firefox "$e6" && has "install --with-deps chromium" "$i1" && ! has "firefox" "$i1"
+  && has "playwright test base=none" "$e4" && ! has "project" "$e4" && [ $x5 -eq 1 ] && has "defines projects but none named chromium" "$e5" && has "playwright test --project=chromium" "$e6" && ! has firefox "$e6" && has "install chromium" "$i1" && has "install-deps chromium" "$i1" && ! has "firefox" "$i1"
 then ok e2e-chromium-default; else fail e2e-chromium-default "default=$e1 | two=$e2 | preview=$e3 | no-projects=$e4 | script=$e6 | install=$i1"; fi
+
+# ---- browser cache: the workflow caches the browsers by the exact Playwright version and this run's browsers; system
+# packages are installed only when the cached browsers' shared libraries are missing
+BR=$T/browsers; mkdir -p "$BR/chromium-1/chrome-linux"; : > "$BR/chromium-1/chrome-linux/chrome"
+LB=$T/ldd-bin; mkpath "$LB"; shim "$LB" npm 'exit 0'; shim "$LB" ldd 'echo "$LDD_OUT"'
+binst() { : > "$T/pw.log"; (cd "$R" && PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH="$1" LDD_OUT="$2" GATE_BROWSERS=chromium node scripts/agent/gate.mjs install --browsers-only) >/dev/null 2>&1; cat "$T/pw.log"; }
+bhit=$(binst "$BR" "libc.so.6 => /lib/libc.so.6"); bmiss=$(binst "$BR" "libgbm.so.1 => not found"); bnone=$(binst "$T/empty-browsers" "libc.so.6 => /lib/libc.so.6")
+# the cache key: the repo's exact Playwright version and the sorted browsers; none without Playwright
+cp "$R/node_modules/.bin/playwright" "$T/pw.orig"; printf '#!/bin/sh\necho "Version 1.63.0"\n' > "$R/node_modules/.bin/playwright"
+bkey=$(cd "$R" && GATE_BROWSERS=firefox,chromium node scripts/agent/gate.mjs playwright); bkey1=$(cd "$R" && GATE_BROWSERS=chromium node scripts/agent/gate.mjs playwright)
+cp "$T/pw.orig" "$R/node_modules/.bin/playwright"; echo '{"name":"app","private":true}' > "$R/package.json"; bnokey=$(cd "$R" && node scripts/agent/gate.mjs playwright)
+echo '{"name":"app","private":true,"devDependencies":{"@playwright/test":"1.63.0"}}' > "$R/package.json"
+bwf=$(node -e '
+const y=require("fs").readFileSync(process.argv[1],"utf8"),out=[],body=(j)=>{const i=y.indexOf("\n  "+j+":\n");const r=y.slice(i+1).split("\n").slice(1);const e=r.findIndex(l=>/^  \S/.test(l));return (e<0?r:r.slice(0,e)).join("\n")};
+for(const j of ["e2e","repo"]){const b=body(j);
+ if(!/actions\/cache@[0-9a-f]{40} # v/.test(b)||!b.includes("path: ~/.cache/ms-playwright")||!/steps\.pw\.outputs\.key/.test(b))out.push(j+" caches no browsers");
+ if(!/gate\.mjs install --no-browsers/.test(b)||!/gate\.mjs install --browsers-only/.test(b)||/gate\.mjs install$/m.test(b))out.push(j+" installs browsers uncached")}
+console.log(out.join("; ")||"ok")' "$R/$WF")
+if has "install chromium" "$bhit" && ! has "install-deps" "$bhit" && has "install-deps chromium" "$bmiss" && has "install-deps chromium" "$bnone" \
+  && has "key=playwright-" "$bkey" && has "-1.63.0-chromium+firefox" "$bkey" && has "-1.63.0-chromium" "$bkey1" && ! has "firefox" "$bkey1" && [ "$bnokey" = "key=" ] && [ "$bwf" = ok ]
+then ok gate-browser-cache; else fail gate-browser-cache "hit=$bhit | miss=$bmiss | none=$bnone | key=$bkey | $bkey1 | nokey=$bnokey | workflow=$bwf"; fi
 jset "$R/standards.json" 'o.e2e={command:"sleep 5",budget:0.02}'
 t0=$(date +%s); bo=$(cd "$R" && node scripts/agent/gate.mjs e2e 2>&1); bx=$?; t1=$(date +%s)
 jset "$R/standards.json" 'o.e2e={command:"true",budget:0.02}'; (cd "$R" && node scripts/agent/gate.mjs e2e) >/dev/null 2>&1; bq=$?

@@ -23,7 +23,8 @@ permissions:
   pull-requests: read
   issues: read
 concurrency:
-  group: std-gate-${{ github.event.pull_request.number || inputs.pr || github.ref }}
+  # a description edit has its own group, so it never cancels the full gate running for the same pull request
+  group: std-gate-${{ github.event.pull_request.number || inputs.pr || github.ref }}${{ github.event.action == 'edited' && '-edit' || '' }}
   cancel-in-progress: true
 jobs:
   checks:
@@ -127,9 +128,25 @@ jobs:
           node-version: 24
           cache: ${{ steps.pm.outputs.cache }}
       - name: install
+        run: node scripts/agent/gate.mjs install --no-browsers
+      # browsers are cached by the exact Playwright version and this run's browsers: a hit downloads nothing, and
+      # system packages are installed only when the browsers' shared libraries are missing
+      - name: playwright
+        id: pw
         env:
           GATE_BROWSERS: ${{ needs.checks.outputs.browsers }}
-        run: node scripts/agent/gate.mjs install
+        run: node scripts/agent/gate.mjs playwright
+      - name: browser cache
+        if: steps.pw.outputs.key != ''
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.pw.outputs.key }}
+      - name: browsers
+        if: steps.pw.outputs.key != ''
+        env:
+          GATE_BROWSERS: ${{ needs.checks.outputs.browsers }}
+        run: node scripts/agent/gate.mjs install --browsers-only
       - name: preview
         id: preview
         env:
@@ -171,9 +188,25 @@ jobs:
           cache: ${{ steps.pm.outputs.cache }}
       # with the run's browsers: repo checks may run Playwright
       - name: install
+        run: node scripts/agent/gate.mjs install --no-browsers
+      # browsers are cached by the exact Playwright version and this run's browsers: a hit downloads nothing, and
+      # system packages are installed only when the browsers' shared libraries are missing
+      - name: playwright
+        id: pw
         env:
           GATE_BROWSERS: ${{ needs.checks.outputs.browsers }}
-        run: node scripts/agent/gate.mjs install
+        run: node scripts/agent/gate.mjs playwright
+      - name: browser cache
+        if: steps.pw.outputs.key != ''
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.pw.outputs.key }}
+      - name: browsers
+        if: steps.pw.outputs.key != ''
+        env:
+          GATE_BROWSERS: ${{ needs.checks.outputs.browsers }}
+        run: node scripts/agent/gate.mjs install --browsers-only
       - name: repo checks
         run: |
           if [ -f scripts/agent/gate.local.sh ]; then bash scripts/agent/gate.local.sh; else echo "notice: no scripts/agent/gate.local.sh"; fi

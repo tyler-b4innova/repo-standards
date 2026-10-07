@@ -1,5 +1,5 @@
 # Managed by the standards pack. Pull requests can read the default branch's dependency cache but not each other's,
-# so a lockfile change on the default branch refreshes it here. Not a required check; browsers are never cached.
+# so a lockfile change on the default branch refreshes it here. Not a required check; it also warms the gate's Playwright browser cache.
 name: std-cache-warm
 on:
   push:
@@ -27,3 +27,16 @@ jobs:
           node-version: 24
           cache: ${{ steps.pm.outputs.cache }}
       - run: node scripts/agent/gate.mjs install --no-browsers
+      # the gate's browser cache: pull requests read the default branch's caches but not each other's
+      - name: playwright
+        id: pw
+        run: node scripts/agent/gate.mjs playwright
+      - name: browser cache
+        if: steps.pw.outputs.key != ''
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.pw.outputs.key }}
+      - name: browsers
+        if: steps.pw.outputs.key != ''
+        run: node scripts/agent/gate.mjs install --browsers-only

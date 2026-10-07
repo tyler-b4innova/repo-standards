@@ -80,6 +80,17 @@ PRE='{"pull_request":{"number":7}}'
 put "{pr:{number:7,draft:true,head:{sha:\"$HEAD1\",ref:\"feat\"},base:{ref:\"main\"}}}"; d1=$(pl pull_request "$PRE")
 put "{pr:{number:7,draft:false,head:{sha:\"$HEAD1\",ref:\"feat\"},base:{ref:\"main\"}}}"; d2=$(pl pull_request "$PRE")
 if [ "$d1 $d2" = "cheap full" ] && grep -q "if: steps.plan.outputs.mode == 'cheap'" "$GWF"; then ok draft-cheap-ready-full; else fail draft-cheap-ready-full "draft=$d1 ready=$d2"; fi
+# gate-edit-cheap: a description edit on a ready PR plans the cheap path (checks only), but never turns a head's red or
+# unfinished gate green, and it has its own concurrency group so it cannot cancel the full gate
+EDIT='{"action":"edited","pull_request":{"number":7}}'
+PR7="pr:{number:7,draft:false,head:{sha:\"$HEAD1\",ref:\"feat\"},base:{ref:\"main\"}}"
+put "{$PR7,checks:[]}"; ed0=$(pl pull_request "$EDIT")
+put "{$PR7,checks:[{name:\"gate\",status:\"completed\",conclusion:\"success\",started_at:\"2026-01-02T00:00:00Z\"},{name:\"gate\",status:\"completed\",conclusion:\"failure\",started_at:\"2026-01-01T00:00:00Z\"}]}"; ed1=$(pl pull_request "$EDIT")
+put "{$PR7,checks:[{name:\"gate\",status:\"completed\",conclusion:\"failure\"}]}"; ed2=$(pl pull_request "$EDIT")
+put "{$PR7,checks:[{name:\"gate\",status:\"in_progress\"}]}"; ed3=$(pl pull_request "$EDIT")
+put "{$PR7,checks:[{name:\"gate\",status:\"completed\",conclusion:\"success\"}]}"; ed4=$(pl pull_request "$PRE")
+if [ "$ed0 $ed1" = "cheap cheap" ] && [ -z "$ed2" ] && [ -z "$ed3" ] && [ "$ed4" = full ] && grep -q "github.event.action == 'edited' && '-edit'" "$GWF"; then ok gate-edit-cheap
+else fail gate-edit-cheap "no-gate=$ed0 green=$ed1 red=$ed2 running=$ed3 push-after-green=$ed4"; fi
 # Clone the real engine and apply the changed templates; compare real code and docs commits.
 ED=$T/engine-plan
 git clone -q --shared "$PWD" "$ED"
