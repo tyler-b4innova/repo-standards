@@ -14,6 +14,7 @@ die() { echo "pr.sh: $*" >&2; exit 1; }
 API=${GITHUB_API_URL:-https://api.github.com}
 REPO=${GH_REPO:-$(git remote get-url origin 2>/dev/null | sed -E 's#/+$##; s#\.git$##; s#.*[:/]([^/:]+/[^/:]+)$#\1#' || true)}
 [ -n "$REPO" ] || [ "${1:-}" = --help ] || [ "${1:-}" = -h ] || die "no origin remote; set GH_REPO=owner/name"
+HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
 TMP=$(mktemp) BODY=$(mktemp); trap 'rm -f "$TMP" "$BODY"' EXIT
 TOKEN="" ST="" R=""
 api() { # api METHOD path [json]: sets ST (HTTP status) and R (body)
@@ -32,40 +33,36 @@ req() { api "$@"; case $ST in 2??) ;; *) die "$1 $2 -> HTTP $ST: ${R:0:300}" ;; 
 js() { # js '<expr over d (JSON on stdin) and a (args)>' [args...]
   node -e "const d=JSON.parse(require('fs').readFileSync(0,'utf8')||'null');const a=process.argv.slice(1);const r=($1);if(r!==undefined&&r!=='')console.log(typeof r==='string'?r:JSON.stringify(r))" -- "${@:2}"
 }
-CLOSES='(closes|fixes|resolves) #[0-9]+'
 # quote_issue <body-file> <n> (issue JSON on stdin, empty for a placeholder): the body with its `## Issue #N` section
 # (a bare `## Issue #` placeholder too) replaced, else appended: the issue's title, then its Goal and Acceptance criteria
 # (the whole body when it has neither), headings demoted to ### or lower. gate.mjs issue reads the same sections.
 quote_issue() {
-  node -e '
-    const fs = require("fs"), [file, n] = process.argv.slice(1), raw = fs.readFileSync(0, "utf8").trim(), body = fs.readFileSync(file, "utf8");
-    const parts = (text) => { // [[title, lines]] of the level-2 sections named Goal or Acceptance criteria; [] when neither
-      const out = []; let cur = null, fence = false;
-      for (const l of text.split(/\r?\n/)) {
-        if (/^\s*(```|~~~)/.test(l)) fence = !fence;
-        const h = !fence && l.match(/^##\s+(.+?)\s*#*\s*$/);
-        if (h || (!fence && /^#\s/.test(l))) { cur = h && /^(goal|acceptance criteria)$/i.test(h[1]) ? [h[1], []] : null; if (cur) out.push(cur); continue; }
-        if (cur) cur[1].push(l);
-      }
-      return out;
-    };
-    const demote = (lines) => { let fence = false; return lines.map((l) => {
-      if (/^\s*(```|~~~)/.test(l)) fence = !fence;
-      const h = !fence && l.match(/^(#{1,6})(\s.*)$/);
-      return h ? "#".repeat(Math.min(6, Math.max(3, h[1].length + 1))) + h[2] : l;
-    }).join("\n").trim(); };
+  node --input-type=module -e '
+    import fs from "node:fs";
+    import { pathToFileURL } from "node:url";
+    const [file, n, mod] = process.argv.slice(1), raw = fs.readFileSync(0, "utf8").trim(), body = fs.readFileSync(file, "utf8");
+    const { goalSections, demote, sectionBounds, PR_BODY_MAX, SHORT_SECTIONS } = await import(pathToFileURL(mod).href);
     let sec;
     if (!raw) sec = `## Issue #${n}\n\n(filled from issue #${n}: its title, Goal and Acceptance criteria, when the pull request is opened)`;
     else {
-      const d = JSON.parse(raw), p = parts(d.body || "");
-      sec = [`## Issue #${n}`, d.title, ...(p.length ? p.map(([t, l]) => `### ${t}\n\n${demote(l)}`) : [demote((d.body || "").split(/\r?\n/))])].filter(Boolean).join("\n\n");
+      const d = JSON.parse(raw), p = goalSections(d.body || "");
+      sec = [`## Issue #${n}`, d.title, ...(p.length ? p.map((s) => `### ${s.name}\n\n${demote(s.lines)}`) : [demote((d.body || "").split(/\r?\n/))])].filter(Boolean).join("\n\n");
     }
-    // headings inside ``` or ~~~ fences are text, not section boundaries
-    const lines = body.split("\n"), fenced = ((f) => lines.map((l) => { const was = f; if (/^\s*(```|~~~)/.test(l)) f = !f; return was || f; }))(false);
-    const i = lines.findIndex((l, k) => !fenced[k] && new RegExp(`^## Issue #(${n})?\\s*$`).test(l));
-    let j = lines.findIndex((l, k) => i >= 0 && k > i && !fenced[k] && /^##\s/.test(l)); if (j < 0) j = lines.length;
-    console.log(i < 0 ? body.replace(/\s*$/, "") + "\n\n" + sec : [...lines.slice(0, i), sec, ...(j < lines.length ? ["", ...lines.slice(j)] : [])].join("\n"));
-  ' -- "$1" "$2"
+    // headings inside code fences are text, not section boundaries
+    const lines = body.split("\n"), at = sectionBounds(lines, new RegExp(`^## Issue #(${n})?\\s*$`));
+    const out = !at ? body.replace(/\s*$/, "") + "\n\n" + sec : [...lines.slice(0, at[0]), sec, ...(at[1] < lines.length ? ["", ...lines.slice(at[1])] : [])].join("\n");
+    if (out.length > PR_BODY_MAX) { console.error(`pr.sh: the description with issue #${n} quoted is ${out.length} characters; GitHub accepts at most ${PR_BODY_MAX}. Nothing was sent: ${SHORT_SECTIONS}, then run open again.`); process.exit(3); }
+    console.log(out);
+  ' -- "$1" "$2" "$HERE/issue-md.mjs"
+}
+# closing_issue <file>: the issue number the body closes (Closes/Fixes/Resolves #N outside code, fences and comments), empty if none
+closing_issue() {
+  node --input-type=module -e '
+    import fs from "node:fs";
+    import { pathToFileURL } from "node:url";
+    const { closingIssue } = await import(pathToFileURL(process.argv[2]).href);
+    const n = closingIssue(fs.readFileSync(process.argv[1], "utf8")); if (n) console.log(n);
+  ' -- "$1" "$HERE/issue-md.mjs"
 }
 
 enc() { node -e 'console.log(encodeURIComponent(process.argv[1]).replace(/%2F/g,"/"))' "$1"; }
@@ -82,8 +79,8 @@ open_pr() {
   done
   for a in "$@"; do if [ -z "$title" ]; then title=$a; elif [ -z "$body" ]; then body=$a; else die "unexpected argument: $a"; fi; done
   [ -n "$title" ] && [ -f "$body" ] || die 'usage: pr.sh open [--base B] [--dry-run] [--] "<title>" <body-file>'
-  grep -qiE "$CLOSES" "$body" || die "body must link its issue: Closes #N (or Fixes/Resolves #N)"
-  issue=$(grep -oiE "$CLOSES" "$body" | head -1 | grep -oE '[0-9]+$')
+  issue=$(closing_issue "$body")
+  [ -n "$issue" ] || die "body must link its issue: Closes #N (or Fixes/Resolves #N), in plain text (not in code, a fence or a comment)"
   branch=$(git branch --show-current)
   [ -n "$branch" ] || die "detached HEAD; check out a branch first"
   [ -n "$base" ] || base=$(git symbolic-ref --short -q refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##') || true
@@ -123,7 +120,7 @@ status() {
   req POST /graphql "$q"; threads=$R
   node -e '
     const [p, { check_runs: runs = [] }, t] = process.argv.slice(1, 4).map(JSON.parse), why = [];
-    const closes = new RegExp(process.argv[4], "i").test(p.body || ""), gate = runs.filter((c) => c.name === "gate");
+    const closes = process.argv[4] === "true", gate = runs.filter((c) => c.name === "gate");
     console.log(`${p.html_url}\nstate=${p.merged ? "merged" : p.state} head=${p.head.sha.slice(0, 7)} closes=${closes}`);
     for (const c of runs) console.log(`  ${c.name}: ${c.conclusion || c.status}`);
     if (!(p.merged || p.state === "open")) why.push("PR closed without merge");
@@ -142,7 +139,7 @@ status() {
     if (red.length) console.log(`also failing (not required for DONE; fix or explain): ${red.map((c) => c.name).join(", ")}`);
     console.log(why.length ? "NOT DONE: " + why.join("; ") : "DONE");
     process.exitCode = why.length ? 1 : 0;
-  ' "$p" "$runs" "$threads" "$CLOSES"
+  ' "$p" "$runs" "$threads" "$([ -n "$(js 'd.body||""' <<<"$p" >"$TMP"; closing_issue "$TMP")" ] && echo true || echo false)"
 }
 
 evidence() {

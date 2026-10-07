@@ -135,6 +135,53 @@ mut "S.issues[3].body='## Goal\n\nShip x.\n\n## Acceptance criteria\n\n- [ ] x.t
 "$PR" open "Add x" "$T/body.md" >/dev/null 2>&1
 if [ -z "$why" ]; then ok issue-section-fence-aware; else fail issue-section-fence-aware "$why"; fi
 
+# issue-fence-delimiters: a fence closes only on the same character and at least as many of them (CommonMark): a
+# four-backtick block holding a three-backtick example and `## Example`, and a ~~~ block holding a ``` line and
+# `## Not a heading`, are quoted whole by pr.sh, accepted by gate, and gate still sees a section cut short at them.
+why=""
+mut "S.issues[3].body='## Goal\n\nShip x:\n\n\u0060\u0060\u0060\u0060md\n\u0060\u0060\u0060js\nx()\n\u0060\u0060\u0060\n## Example\n\u0060\u0060\u0060\u0060\n\n~~~\n\u0060\u0060\u0060\n## Not a heading\n~~~\n\n## Acceptance criteria\n\n- [ ] x.txt exists\n'"
+"$PR" open "Add x" "$T/body.md" >/dev/null 2>&1 || why="nested open failed"
+b=$(state 'S.pulls[0].body')
+case "$b" in *$'x()\n```\n## Example\n````'*) ;; *) why="$why; four-backtick block cut short: $b" ;; esac
+case "$b" in *$'~~~\n```\n## Not a heading\n~~~'*) ;; *) why="$why; mixed-delimiter block cut short: $b" ;; esac
+case "$b" in *$'### Acceptance criteria\n\n- [ ] x.txt exists') ;; *) why="$why; Acceptance criteria dropped: $b" ;; esac
+export B="Closes #3"$'\n\n## Issue #3\n\nAdd x\n\n### Goal\n\nShip x:\n\n````md\n```js\nx()\n```\n## Example\n````\n\n~~~\n```\n## Not a heading\n~~~\n\n### Acceptance criteria\n\n- [ ] x.txt exists'
+mut "S.pulls[0].body=process.env.B"; gi "nested and mixed fences" 0 "quotes issue #3"
+export B="Closes #3"$'\n\n## Issue #3\n\nAdd x\n\n### Goal\n\nShip x:\n\n````md\n```js\nx()\n```\n## Example\n````\n\n### Acceptance criteria\n\n- [ ] x.txt exists'
+mut "S.pulls[0].body=process.env.B"; gi "section lacking the tilde block" 1 "lacks its current Goal"
+mut "S.issues[3].body='## Goal\n\nShip x.\n\n## Acceptance criteria\n\n- [ ] x.txt exists\n'"
+"$PR" open "Add x" "$T/body.md" >/dev/null 2>&1
+if [ -z "$why" ]; then ok issue-fence-delimiters; else fail issue-fence-delimiters "$why"; fi
+
+# issue-closing-link: the linked issue is the first Closes/Fixes/Resolves #N (any tense) in plain text: one in inline
+# code, a fence or an HTML comment is an example, and Discloses #N links nothing; pr.sh and gate read it alike.
+why=""
+printf 'Adds x.\n\nSee `Closes #99` and Discloses #98.\n\n```\nFixes #97\n```\n\n<!-- Resolves #96 -->\n\nFixed #3\n' >"$T/ex.md"
+out=$("$PR" open "Add x" "$T/ex.md" --dry-run 2>&1) || why="example link open failed: $out"
+case "$out" in *'## Issue #3'*) ;; *) why="$why; linked #3 not chosen: $out" ;; esac
+case "$out" in *'## Issue #9'*) why="$why; an example link was chosen: $out" ;; esac
+printf 'Adds x.\n\nDiscloses #3\n\nSee `Closes #3`.\n' >"$T/dis.md"
+out=$("$PR" open "Add x" "$T/dis.md" --dry-run 2>&1) && why="$why; Discloses/inline-code link accepted: $out"
+case "$out" in *"body must link its issue"*) ;; *) why="$why; no-link refusal: $out" ;; esac
+export B=$'See `Closes #99` and Discloses #98.\n\n```\nFixes #97\n```\n\nResolves #3\n\n'"$QUOTE"
+mut "S.pulls[0].body=process.env.B"; gi "example links around the real one" 0 "quotes issue #3"
+export B=$'Discloses #3\n\n'"$QUOTE"
+mut "S.pulls[0].body=process.env.B"; gi "Discloses only" 1 "links no issue"
+"$PR" open "Add x" "$T/body.md" >/dev/null 2>&1
+if [ -z "$why" ]; then ok issue-closing-link; else fail issue-closing-link "$why"; fi
+
+# pr-body-limit: an issue with no Goal or Acceptance criteria and a body too long for GitHub's 65,536-character
+# description is refused before anything is sent, with the fix; gate gives the same advice.
+why=""
+mut "S.issues[3].body='x'.repeat(70000)"
+n=$(grep -c '"method":"\(POST\|PATCH\)"' "$LOG"); out=$("$PR" open "Add x" "$T/body.md" 2>&1) && why="oversized open accepted"
+[ "$(grep -c '"method":"\(POST\|PATCH\)"' "$LOG")" = "$n" ] || why="$why; a create or update was sent after the limit check"
+case "$out" in *"65536"*"add concise \`## Goal\` and \`## Acceptance criteria\` sections to the issue"*) ;; *) why="$why; refusal lacks the advice: $out" ;; esac
+mut "S.pulls[0].body='Closes #3'"; gi "oversized issue, no section" 1 "add concise \`## Goal\` and \`## Acceptance criteria\` sections to the issue"
+mut "S.issues[3].body='## Goal\n\nShip x.\n\n## Acceptance criteria\n\n- [ ] x.txt exists\n'"
+"$PR" open "Add x" "$T/body.md" >/dev/null 2>&1 || why="$why; restoring open failed"
+if [ -z "$why" ]; then ok pr-body-limit; else fail pr-body-limit "$why"; fi
+
 # pr-status-done: DONE only when open or merged, the body closes an issue, gate is green on the head SHA, and no review
 # thread is open.
 HEAD_SHA=$(git rev-parse HEAD) MAIN_SHA=$(git rev-parse main)

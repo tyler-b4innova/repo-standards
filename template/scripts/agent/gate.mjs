@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { createConnection } from "node:net";
 import { localConfig, localWorkerConfig } from "./local.mjs";
 import { scan } from "./jsscan.mjs";
+import { closingIssue, goalSections, sectionBounds, PR_BODY_MAX, SHORT_SECTIONS } from "./issue-md.mjs";
 import { rollbackFindings } from "./rollback.mjs";
 import { verifyGeneratedBuild } from "./release-config.mjs";
 
@@ -309,30 +310,23 @@ if (cmd === "local") {
   }
   if (["dependabot[bot]", "renovate[bot]"].includes(author)) { console.log(`issue: exempt, ${author}'s dependency update`); process.exit(0); }
   const redo = "run scripts/agent/pr.sh open again (it refreshes the section), or paste the issue's Goal and Acceptance criteria under";
-  const n = body.match(/(closes|fixes|resolves) #(\d+)/i)?.[2];
+  const n = closingIssue(body);
   if (!n) fail("issue: the description links no issue", "add `Closes #N` (or Fixes/Resolves #N) to the description, then " + redo.replace(" under", " under `## Issue #N`"));
   const issue = await get(`/issues/${n}`, { need: false });
   if (!issue || issue.pull_request) fail(`issue: #${n} is not a readable issue in ${env.GITHUB_REPOSITORY} (missing, a pull request, or the job lacks issues read)`, "link the issue this pull request closes; std-gate.yml grants issues read");
   // the level-2 Goal and Acceptance criteria sections, outside code fences; else the whole body
-  const parts = [];
-  let cur = null, fence = false;
-  for (const l of (issue.body ?? "").split(/\r?\n/)) {
-    if (/^\s*(```|~~~)/.test(l)) fence = !fence;
-    const h = !fence && l.match(/^##\s+(.+?)\s*#*\s*$/);
-    if (h || (!fence && /^#\s/.test(l))) { cur = h && /^(goal|acceptance criteria)$/i.test(h[1]) ? { name: h[1], lines: [] } : null; if (cur) parts.push(cur); continue; }
-    if (cur) cur.lines.push(l);
-  }
+  const parts = goalSections(issue.body ?? "");
   if (!parts.length) parts.push({ name: "body", lines: (issue.body ?? "").split(/\r?\n/) });
   // compared without heading markers, checkbox state or whitespace differences
   const norm = (lines) => lines.map((l) => l.replace(/^\s*#{1,6}\s+/, "").replace(/^(\s*[-*+]\s+)\[[ xX]\]/, "$1[ ]")).join(" ").replace(/\s+/g, " ").trim();
-  // headings inside ``` or ~~~ fences are text, not section boundaries
-  const lines = body.split(/\r?\n/), fenced = ((f) => lines.map((l) => { const was = f; if (/^\s*(```|~~~)/.test(l)) f = !f; return was || f; }))(false);
-  const i = lines.findIndex((l, k) => !fenced[k] && new RegExp(`^##\\s+Issue #${n}\\s*$`).test(l));
-  if (i < 0) fail(`issue: the description has no \`## Issue #${n}\` section quoting issue #${n}`, `${redo} \`## Issue #${n}\``);
-  const j = lines.findIndex((l, k) => k > i && !fenced[k] && /^##\s/.test(l));
-  const quoted = norm(lines.slice(i + 1, j < 0 ? undefined : j));
+  // headings inside code fences are text, not section boundaries
+  const lines = body.split(/\r?\n/), at = sectionBounds(lines, new RegExp(`^##\\s+Issue #${n}\\s*$`));
+  // an issue with no short Goal and Acceptance criteria is quoted whole, which may not fit in the description
+  const fix = () => `${parts[0].name === "body" || body.length + norm(parts.flatMap((p) => p.lines)).length > PR_BODY_MAX ? `the issue has no short Goal and Acceptance criteria to quote: ${SHORT_SECTIONS}, then ` : ""}${redo} \`## Issue #${n}\``;
+  if (!at) fail(`issue: the description has no \`## Issue #${n}\` section quoting issue #${n}`, fix());
+  const quoted = norm(lines.slice(at[0] + 1, at[1]));
   const missing = parts.filter((p) => !quoted.includes(norm(p.lines))).map((p) => p.name === "body" ? "the issue body" : `its current ${p.name}`);
-  if (missing.length) fail(`issue: the \`## Issue #${n}\` section lacks ${missing.join(" and ")} (issue #${n} may have changed since the section was written)`, `${redo} \`## Issue #${n}\``);
+  if (missing.length) fail(`issue: the \`## Issue #${n}\` section lacks ${missing.join(" and ")} (issue #${n} may have changed since the section was written)`, fix());
   console.log(`issue: the description quotes issue #${n}'s ${parts[0].name === "body" ? "body" : parts.map((p) => p.name).join(" and ")}`);
 } else if (cmd === "verdict") {
   // The required `gate` job: the checks job and the tail (NEEDS, the workflow's needs as JSON) each succeeded, or the
