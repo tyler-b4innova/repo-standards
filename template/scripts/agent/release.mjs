@@ -221,8 +221,9 @@ async function deploy() {
     for (const worker of extras) if (effectiveConfig(worker.file, false, { redirect: false }).cfg.name !== worker.cfg.name)
       fail("secondary production build targets a different Worker", "restore each secondary config's production name before uploading");
     // Every production version carries its full commit SHA as its tag: the portal maps a version to its commit (and its
-    // release-check) through the tag. Workers Builds sets WORKERS_CI_COMMIT_SHA; elsewhere it is the checked-out commit.
-    const sha = env.WORKERS_CI_COMMIT_SHA || execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    // release-check) through the tag. Workers Builds sets WORKERS_CI_COMMIT_SHA (a CI run, GITHUB_SHA).
+    const sha = env.WORKERS_CI_COMMIT_SHA || env.GITHUB_SHA;
+    if (!sha) console.log("::warning::no WORKERS_CI_COMMIT_SHA: this production version is untagged, so the portal cannot tie it to its release-check");
     const tags = sha ? ["--tag", sha, "--message", `main ${sha}`, "--var", `SENTRY_RELEASE:${sha}`] : [];
     must(["versions", "upload", ...tags]);
     secretCheck("the production Worker", ["secret", "list", "--name", productionName, "--format", "json"]);

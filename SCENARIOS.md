@@ -76,7 +76,7 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 
 - **`release-check-notice`**: a repository with no release check (no Worker, or no `staging_url`) gets a `--check` notice naming the reason, not a failure.
 
-- **`release-version-tagged`**: every production `versions upload` carries the full commit SHA as `--tag` (release.mjs falls back to the checked-out commit outside Workers Builds), and `--check` warns where a repo's own scripts or workflows document `versions upload` without `--tag`. Stated rule: the portal ties a version to its `release-check` through the tag.
+- **`release-version-tagged`**: every production `versions upload` carries the full commit SHA as `--tag` (`WORKERS_CI_COMMIT_SHA`, else `GITHUB_SHA`; with neither it warns the version is untagged), and `--check` warns where a repo's own scripts or workflows document `versions upload` without `--tag`. Stated rule: the portal ties a version to its `release-check` through the tag.
 
 - **`release-check-skips-docs`**: a push to main that changes only non-deployable paths (`non_deploy_paths`) skips the release check's browser install and e2e steps with a notice naming the files, through a step output rather than a job-level `if`; one deployable path runs them. Stated rule: no CI run when nothing deployable changed.
 

@@ -66,6 +66,6 @@ R=$T/tagless; cp -R "$W" "$R"; jset "$R/package.json" 'o.scripts={deploy:"wrangl
 out=$(check "$R"); has "wrangler versions upload without --tag" "$out" || why="no tag warning: [$out]"
 echo '{"scripts":{"deploy":"wrangler versions upload --tag \"$WORKERS_CI_COMMIT_SHA\""}}' >"$R/package.json"; commit "$R" tagged
 out=$(check "$R"); ! has "without --tag" "$out" || why="$why; tagged upload warned"
-grep -q 'rev-parse", "HEAD"' template/scripts/agent/release.mjs && grep -q 'WORKERS_CI_COMMIT_SHA ||' template/scripts/agent/release.mjs || why="$why; release.mjs does not always tag"
+grep -q 'WORKERS_CI_COMMIT_SHA || env.GITHUB_SHA' template/scripts/agent/release.mjs && grep -q '"--tag", sha' template/scripts/agent/release.mjs || why="$why; release.mjs does not tag with the commit"
 if [ -z "$why" ]; then ok release-version-tagged; else fail release-version-tagged "$why"; fi
 done_cases
