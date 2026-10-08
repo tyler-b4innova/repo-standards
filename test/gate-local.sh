@@ -178,10 +178,10 @@ else fail gate-local-hup-cleanup "ready=$ready occupied=$busy interrupt=$interru
 # local:false skips the server, never the suite. Apply keeps the repo-owned opt-out.
 jset 'o.local=false'
 node bin/repo-standards.mjs apply --target "$R" --overlay examples/overlay.json --version 0.7.11 >/dev/null
-echo stray >"$R/untracked-source.txt"
+echo stray >"$R/untracked-source.txt"; git -C "$R" config status.showUntrackedFiles no
 NO_WORKER=1 run optout; o=$?
 [ ! -e "$gp" ] || fail review-round-drafts "a pass with a non-ignored untracked file left a pass record"
-rm -f "$R/untracked-source.txt"
+rm -f "$R/untracked-source.txt"; git -C "$R" config --unset status.showUntrackedFiles
 if [ "$o" -eq 0 ] && has 'worker=SKIP (local: false); e2e=PASS' optout && has 'same e2e suite: no Worker requested' optout; then ok gate-local-opt-out
 else fail gate-local-opt-out "optout=$o"; cat "$T/optout.log"; fi
 # The offline check validates shape and origin, including escaped readiness URLs.

@@ -200,13 +200,17 @@ out=$("$PR" ready 1 2>&1) || why="$why; ready exit $?: $out"
 m=$(count 'markPullRequestReadyForReview'); out=$("$PR" ready 1 2>&1) && [ "$(count 'markPullRequestReadyForReview')" = "$m" ] || why="$why; ready on a ready PR sent a mutation again"
 # an untracked, non-ignored file also blocks it
 mut "S.pulls[0].draft=true"; echo "$HEAD_SHA" >"$GATE"; echo junk >untracked.txt
-out=$("$PR" ready 1 2>&1) && why="$why; ready accepted an untracked file"; rm -f untracked.txt
+out=$("$PR" ready 1 2>&1) && why="$why; ready accepted an untracked file"
+git config status.showUntrackedFiles no
+out=$("$PR" ready 1 2>&1) && why="$why; ready accepted an untracked file with showUntrackedFiles=no"
+git config --unset status.showUntrackedFiles; rm -f untracked.txt
 [ "$(draft)" = true ] || why="$why; untracked-file refusal flipped the PR"
-# the Actions GITHUB_TOKEN would flip it without starting the full gate: refused, nothing sent
-n=$(lines); out=$(GITHUB_ACTIONS=true GITHUB_TOKEN=test-token "$PR" ready 1 2>&1) && why="$why; ready accepted the Actions GITHUB_TOKEN"
-case "$out" in *"Actions GITHUB_TOKEN"*) ;; *) why="$why; refusal does not name the token: $out" ;; esac
-[ "$(lines)" = "$n" ] && [ "$(draft)" = true ] || why="$why; the Actions-token refusal still sent requests or flipped the PR"
-out=$(GITHUB_ACTIONS=true GITHUB_TOKEN=other GH_TOKEN=test-token "$PR" ready 1 2>&1) || why="$why; ready refused an explicit non-Actions token: $out"
+# inside Actions the flip would not start the full gate, whichever token variable is set: refused, nothing sent
+for envs in "GITHUB_TOKEN=test-token" "GH_TOKEN=test-token" "GITHUB_TOKEN=other GH_TOKEN=test-token"; do
+  n=$(lines); out=$(env GITHUB_ACTIONS=true $envs "$PR" ready 1 2>&1) && why="$why; ready ran inside Actions ($envs)"
+  case "$out" in *"inside GitHub Actions"*) ;; *) why="$why; refusal does not name Actions ($envs): $out" ;; esac
+  [ "$(lines)" = "$n" ] && [ "$(draft)" = true ] || why="$why; the Actions refusal sent requests or flipped the PR ($envs)"
+done
 mut "S.pulls[0].draft=true"
 # a push lands during the toggle: the PR goes back to draft and ready fails
 mut "S.moveHead=true"; out=$("$PR" ready 1 2>&1) && why="$why; ready succeeded though the head moved"

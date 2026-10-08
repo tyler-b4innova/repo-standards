@@ -228,16 +228,15 @@ review_round() {
 ready() {
   [ $# -eq 1 ] || die 'usage: pr.sh ready <pr>'
   local head file
-  # A ready flip made with the Actions GITHUB_TOKEN does not fire ready_for_review, so the full gate would never run.
-  [ -n "$TOKEN" ] || { TOKEN=${GH_TOKEN:-${GITHUB_TOKEN:-}}; [ -n "$TOKEN" ] || TOKEN=$(gh auth token 2>/dev/null) || die "set GH_TOKEN or run gh auth login"; }
-  [ "${GITHUB_ACTIONS:-}" != true ] || [ "$TOKEN" != "${GITHUB_TOKEN:-}" ] || die "ready cannot use the Actions GITHUB_TOKEN: the flip would not start the full gate. Run it with a person's or an App's token (GH_TOKEN)"
+  # A ready flip made inside Actions (GITHUB_TOKEN, or GH_TOKEN set from github.token) does not fire ready_for_review, so the full gate would never run.
+  [ "${GITHUB_ACTIONS:-}" != true ] || die "ready cannot run inside GitHub Actions: a flip made there would not start the full gate. Run it from an agent or person session"
   req GET "pulls/$1"
   [ "$(js 'd.state' <<<"$R")" = open ] || die "PR #$1 is not open"
   [ "$(js 'String(!!d.draft)' <<<"$R")" = true ] || { echo "PR #$1 is already ready"; return; }
   [ "$(git branch --show-current)" = "$(js 'd.head.ref' <<<"$R")" ] || die "PR #$1 is not for the current branch $(git branch --show-current)"
   head=$(git rev-parse HEAD)
   [ "$(js 'd.head.sha' <<<"$R")" = "$head" ] || die "local HEAD ${head:0:7} is not the PR head $(js 'd.head.sha.slice(0,7)' <<<"$R"); push first"
-  [ -z "$(git status --porcelain)" ] || die "uncommitted or untracked files; the local gate must pass on exactly the pushed head"
+  [ -z "$(git status --porcelain --untracked-files=all)" ] || die "uncommitted or untracked files; the local gate must pass on exactly the pushed head"
   file=$(git rev-parse --git-path std-local-gate)
   [ -f "$file" ] && [ "$(cat "$file")" = "$head" ] || die "no passing local gate for ${head:0:7}; run: node scripts/agent/gate.mjs local"
   gql_draft "$1" markPullRequestReadyForReview false "$head"

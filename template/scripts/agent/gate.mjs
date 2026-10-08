@@ -190,7 +190,7 @@ if (cmd === "local") {
   // pr.sh ready reads this: written only when every step passed on a clean tree at this HEAD, cleared at the start of each run.
   const passFile = git("rev-parse", "--git-path", "std-local-gate").trim();
   rmSync(passFile, { force: true });
-  const dirty = () => git("status", "--porcelain").trim(); // tracked changes and non-ignored untracked files
+  const dirty = () => git("status", "--porcelain", "--untracked-files=all").trim(); // tracked changes and non-ignored untracked files
   const dirtyBefore = dirty();
   let base, baseRef, worker, active, address, interrupted = 0;
   if (args.length && (args.length !== 2 || args[0] !== "--base" || !args[1] || args[1].startsWith("-")))
