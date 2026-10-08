@@ -36,7 +36,7 @@ has "name: release-check" "$yml" && grep -qE '^  release-check:' "$W/$WF" || why
 has "branches: [main]" "$yml" && has "workflow_dispatch" "$yml" && ! has pull_request "$yml" && ! grep -qE '^\s*(schedule|- cron):' "$W/$WF" || why="$why; triggers"
 has 'group: std-release-check-${{ github.sha }}' "$yml" || why="$why; concurrency is not per commit"
 has "gate.mjs e2e" "$yml" && has "gate.local.sh" "$yml" || why="$why; not the full suite (e2e and repo checks)"
-has "GATE_FULL" "$yml" || why="$why; selection is not switched off"
+has "GATE_SELECT" "$yml" || why="$why; selection is not switched off"
 if [ -z "$why" ]; then ok release-check-every-worker; else fail release-check-every-worker "$why"; fi
 
 # check.mjs: the managed workflow passes; a repo-owned workflow that tests on push to main does not, whatever its name

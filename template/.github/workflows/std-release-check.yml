@@ -52,13 +52,13 @@ jobs:
         env:
           GATE_BROWSERS: ${{ steps.release.outputs.browsers }}
           GATE_PREVIEW_URL: ${{ steps.release.outputs.url }}
-          GATE_FULL: "1"
+          GATE_SELECT: "full"
         run: node scripts/agent/gate.mjs e2e
       - name: repo checks
         if: steps.release.outputs.skip != 'true'
         env:
           GATE_BROWSERS: ${{ steps.release.outputs.browsers }}
           GATE_PREVIEW_URL: ${{ steps.release.outputs.url }}
-          GATE_FULL: "1"
+          GATE_SELECT: "full"
         run: |
           if [ -f scripts/agent/gate.local.sh ]; then bash scripts/agent/gate.local.sh; else echo "notice: no scripts/agent/gate.local.sh"; fi
