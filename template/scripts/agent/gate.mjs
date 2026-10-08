@@ -372,18 +372,21 @@ if (cmd === "local") {
     "agents never change instruction files; only the org App's standards-sync (standards/v*) and approved retro (retro/*) pull requests may. Revert these files; a rule change goes through the weekly retro.");
   console.log("instructions: no instruction file or managed CODEOWNERS block changed");
 } else if (cmd === "verdict") {
-  // The required `gate` job: the checks job and the tail (NEEDS, the workflow's needs as JSON) each succeeded, or the
-  // tail was skipped because the checks planned a draft's cheap gate. Anything else (a failure, a cancellation, a
-  // skip the plan did not call for, a missing job) fails it.
+  // The required `gate` job: the checks job and the test job (NEEDS, the workflow's needs as JSON) each succeeded on a
+  // READY pull request. A draft head never passes: the plan was cheap, the live draft flag was set, or the checks were
+  // skipped for a push to a draft. A pull request flipped to ready by an Actions token fires no ready_for_review run,
+  // so it must not inherit a green gate from its draft heads. Anything else (a failure, a cancellation, a skip, a
+  // missing job) fails it.
   let needs;
   try { needs = JSON.parse(env.NEEDS ?? ""); } catch { fail("no job results (NEEDS)", "run the verdict from std-gate.yml's gate job"); }
-  const tail = ["build", "e2e", "repo"], mode = needs.checks?.outputs?.mode, bad = [];
-  for (const j of ["checks", ...tail]) {
+  const mode = needs.checks?.outputs?.mode, draft = mode === "cheap" || needs.checks?.outputs?.rollback_draft === "true" || needs.checks?.result === "skipped", bad = [];
+  if (draft) fail("gate: a draft head never passes the gate", "mark the pull request ready (pr.sh ready): the one full gate runs on ready_for_review; iterate with gate.mjs local");
+  for (const j of ["checks", "test"]) {
     const r = needs[j]?.result ?? "missing";
-    if (r !== "success" && !(r === "skipped" && tail.includes(j) && mode === "cheap" && needs.checks?.result === "success")) bad.push(`${j}: ${r}`);
+    if (r !== "success") bad.push(`${j}: ${r}`);
   }
   if (bad.length) fail(`gate: ${bad.join(", ")}`, "open the failed job's log; a skipped or cancelled job never passes gate");
-  console.log(`gate: ${mode === "cheap" ? "checks passed (draft: the tail runs from ready_for_review)" : "checks, build, e2e and repo checks passed"}`);
+  console.log("gate: checks and the test job passed");
 } else if (cmd === "plan") {
   // full: build and test this head. cheap: a consumer draft (checks, secrets and syntax);
   // consumer drafts run the full gate from ready_for_review.

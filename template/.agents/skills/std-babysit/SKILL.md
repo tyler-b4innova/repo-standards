@@ -7,7 +7,7 @@ description: Babysit an open PR until it is green - watch checks, fix failures, 
 
 Loop until `scripts/agent/pr.sh status <pr>` prints `DONE`.
 
-Fix rounds happen in draft. Before the first fix push to a ready PR, run `scripts/agent/pr.sh review-round <pr> "<why>"`: it converts the PR back to draft and records why, so every fix push runs only the cheap gate. Iterate with `node scripts/agent/gate.mjs local`. When it passes on the pushed head, run `scripts/agent/pr.sh ready <pr>` once: the full gate then runs once on the final head. Never push fixes to a ready PR.
+Fix rounds happen in draft. Before the first fix push to a ready PR, run `scripts/agent/pr.sh review-round <pr> "<why>"`: it converts the PR back to draft and records why, so no CI job runs on a fix push. Iterate with `node scripts/agent/gate.mjs local`. When it passes on the pushed head, run `scripts/agent/pr.sh ready <pr>` once: the full gate then runs once on the final head. Never push fixes to a ready PR.
 
 
 1. Failing check: read its log once, reproduce with the smallest command, fix, push (in draft).
