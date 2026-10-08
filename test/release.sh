@@ -23,7 +23,7 @@ node test/stubs/codex-github.mjs "$T/port" "$T/state.json" & STUB=$!
 for i in $(seq 50); do [ -s "$T/port" ] && break; sleep 0.1; done
 API="http://127.0.0.1:$(cat "$T/port")"
 put() { printf '%s' "$1" > "$T/state.json"; }
-rel() { (cd "$1" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_SHA=$SHA GATE_PREVIEW_WAIT_S=0 GITHUB_OUTPUT= node scripts/agent/gate.mjs release 2>&1); echo "exit=$?"; }
+rel() { jset "$T/state.json" "o.branchHeads={main:\"$SHA\"}"; (cd "$1" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_SHA=$SHA GATE_PREVIEW_WAIT_S=0 GITHUB_OUTPUT= node scripts/agent/gate.mjs release 2>&1); echo "exit=$?"; }
 why=""
 
 O=$T/ov.json; node -e 'const o=require(process.argv[1]);o.e2e={release_browsers:["webkit"]};require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$O"
@@ -63,7 +63,7 @@ o=$(rel "$R"); has "exit=0" "$o" && has "no \"Workers Builds\" check" "$o" || wh
 # the parent had a build, so this commit's check is waited for, even when it is created late; never "absent" early
 put "{\"checksBy\":{\"$P\":[{\"name\":\"Workers Builds: demo\",\"status\":\"completed\",\"conclusion\":\"success\"}]}}"
 o=$(rel "$R"); has "exit=1" "$o" && has "no \"Workers Builds\" check on ${SHA:0:7}" "$o" && has "though the repository has Workers Builds" "$o" || why="$why; missing build treated as absent: $o"
-( sleep 2; printf '%s' "{\"checksBy\":{\"$P\":[{\"name\":\"Workers Builds: demo\",\"status\":\"completed\",\"conclusion\":\"success\"}],\"$SHA\":[{\"name\":\"Workers Builds: demo\",\"status\":\"completed\",\"conclusion\":\"success\"}]}}" > "$T/state.json" ) & LATE=$!
+( sleep 2; printf '%s' "{\"checksBy\":{\"$P\":[{\"name\":\"Workers Builds: demo\",\"status\":\"completed\",\"conclusion\":\"success\"}],\"$SHA\":[{\"name\":\"Workers Builds: demo\",\"status\":\"completed\",\"conclusion\":\"success\"}]},\"branchHeads\":{\"main\":\"$SHA\"}}" > "$T/state.json" ) & LATE=$!
 o=$( (cd "$R" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_SHA=$SHA GATE_PREVIEW_WAIT_S=20 GATE_POLL_S=1 GITHUB_OUTPUT= node scripts/agent/gate.mjs release 2>&1); echo "exit=$?"); wait $LATE
 has "exit=0" "$o" && has "browsers=chromium,firefox,webkit" "$o" || why="$why; late check: $o"
 if [ -z "$why" ]; then ok release-browsers-on-main; else fail release-browsers-on-main "$why"; fi

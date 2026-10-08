@@ -78,6 +78,8 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 
 - **`release-version-tagged`**: every production `versions upload` carries the full commit SHA as `--tag` (`WORKERS_CI_COMMIT_SHA`, else `GITHUB_SHA`; with neither it warns the version is untagged), and `--check` warns where a repo's own scripts or workflows document `versions upload` without `--tag`. Stated rule: the portal ties a version to its `release-check` through the tag.
 
+- **`release-check-staging-superseded`**: a release check certifies a commit only if staging still serves its deployment: before and after the suite `gate.mjs` compares the default branch head; a newer commit that changes deployable paths cancels the run (neither a pass for the older commit nor a red failure; the newer commit's release check covers staging), a docs-only newer commit does not, and a failed cancel fails loudly; the repo-checks step gets `BASE_URL` and `PLAYWRIGHT_BASE_URL` as well as `GATE_PREVIEW_URL`.
+
 - **`release-check-skips-docs`**: a push to main that changes only non-deployable paths (`non_deploy_paths`) skips the release check's browser install and e2e steps with a notice naming the files, through a step output rather than a job-level `if`; one deployable path runs them. Stated rule: no CI run when nothing deployable changed.
 
 ## Staging environment and PR Previews (stated rule: staging is a Wrangler environment, a separate Worker with its own data, queues, Workflows, cron and keys; Previews point at staging; nothing outside production reaches production. Incident: Worker Previews share Workflows, service bindings, queue consumers and cron with production)

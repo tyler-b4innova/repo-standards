@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Steps of the `gate` job (std-gate.yml), also runnable locally:
-//   local [--base <ref>] | plan | classify [base] | install [--no-browsers|--browsers-only] | playwright | run <script>... | preview | release | e2e | secrets | syntax | instructions | verdict
+//   local [--base <ref>] | plan | release-verify | classify [base] | install [--no-browsers|--browsers-only] | playwright | run <script>... | preview | release | e2e | secrets | syntax | instructions | verdict
 // UI paths: pack.json defaults; standards.json "ui_paths" as a list replaces the include globs,
 // as {include, ignore} replaces include and adds ignore. e2e: none fails unless "e2e": false.
 import { execFileSync as ex, spawn, spawnSync } from "node:child_process";
@@ -14,7 +14,7 @@ import { rollbackFindings } from "./rollback.mjs";
 import { verifyGeneratedBuild } from "./release-config.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
-const SUBS = ["local", "verdict", "plan", "classify", "install", "playwright", "run", "preview", "release", "e2e", "secrets", "syntax", "instructions"], ok = SUBS.includes(cmd);
+const SUBS = ["local", "verdict", "plan", "classify", "install", "playwright", "run", "preview", "release", "release-verify", "e2e", "secrets", "syntax", "instructions"], ok = SUBS.includes(cmd);
 if (!ok || args.includes("--help")) {
   console.log(rd(new URL(import.meta.url), "utf8").split("\n").slice(1, 6).map((l) => l.slice(3)).join("\n"));
   process.exit(ok || cmd === "--help" ? 0 : 2);
@@ -50,6 +50,28 @@ const ghApi = () => {
     return null;
   };
 };
+// A newer deployable commit on the default branch replaces staging, so a release check for this commit would test (and
+// certify) that one. Staging serves whatever the latest main build deployed; the default branch's history is the proof
+// of which commit that is. Superseded: the run cancels itself (neither a pass for this commit nor a red failure); the
+// newer commit's own release check covers staging.
+async function supersededBy(get, sha, nonDeploy) {
+  const branch = event.repository?.default_branch || "main";
+  const head = (await get(`/branches/${encodeURIComponent(branch)}`))?.commit?.sha;
+  if (!head || head === sha) return null;
+  const files = ((await get(`/compare/${sha}...${head}`))?.files ?? []).map((f) => f.filename);
+  const deployable = files.filter((f) => !nonDeploy.some((r) => r.test(f)));
+  return deployable.length ? head : null;
+}
+async function supersede(head, sha) {
+  console.log(`::notice::release check superseded: ${head.slice(0, 7)} on the default branch changes staging after ${sha.slice(0, 7)}; its release check covers it`);
+  output("skip", "true"); output("browsers", ""); output("url", "");
+  const token = env.GH_TOKEN || env.GITHUB_TOKEN, run = env.GITHUB_RUN_ID || "0";
+  const r = await fetch(`${env.GITHUB_API_URL || "https://api.github.com"}/repos/${env.GITHUB_REPOSITORY}/actions/runs/${run}/cancel`, { method: "POST", headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" } });
+  if (!r.ok) fail(`could not cancel the superseded release check (${r.status})`, "grant the job actions: write; the newer commit's release check covers staging");
+  // the cancel ends this job (neither success nor failure); never fall through into certifying a different deployment
+  await new Promise((res) => setTimeout(res, Number(env.GATE_CANCEL_WAIT_S ?? 120) * 1000));
+  process.exit(0);
+}
 const playwrightBin = () => has("node_modules/.bin/playwright") ? ["node_modules/.bin/playwright", []] : ["npx", ["--no-install", "playwright"]];
 // True when the system packages for this run's browsers must be installed (Linux only; elsewhere Playwright has none).
 // Playwright's own host validation is bundled and not callable, so Chromium gets an equivalent check: `ldd` over every
@@ -446,10 +468,18 @@ if (cmd === "local") {
       fail(runs.length ? `the Cloudflare build for ${short} is still running after ${wait / 1000}s` : `no "${name}" check on ${short} after ${wait / 1000}s, though the repository has Workers Builds`, "re-run the release check once the build finishes");
     await new Promise((r) => setTimeout(r, poll));
   }
+  const sup = await supersededBy(get, sha, nd);
+  if (sup) await supersede(sup, sha);
   const extra = [...new Set(["chromium", ...(e2eCfg.browsers ?? []), ...(pack.e2e_release_browsers ?? [])])]; // the full suite runs every configured browser
   console.log(`release: ${extra.join(", ")} against ${std.staging_url} (${short})`);
   output("browsers", extra.join(","));
   output("url", std.staging_url ?? "");
+} else if (cmd === "release-verify") {
+  // After the suite: staging must still be this commit's deployment, or the run certifies nothing.
+  const get = ghApi(), sha = env.GITHUB_SHA ?? git("rev-parse", "HEAD").trim();
+  const sup = await supersededBy(get, sha, (pack.non_deploy_paths ?? []).map(glob));
+  if (sup) await supersede(sup, sha);
+  console.log(`release: staging still serves ${sha.slice(0, 7)}'s deployment`);
 } else if (cmd === "classify") {
   // Codex cloud has no origin: fall back to a local default branch, then to HEAD itself (uncommitted and untracked
   // files only). Never the branch's upstream: that is usually the pushed feature head, which would hide its changes.

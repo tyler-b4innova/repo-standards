@@ -25,6 +25,9 @@ const server = createServer((req, res) => {
     if ((m = p.match(/^\/branches\/(.+)$/))) return send(200, { commit: { sha: st.branchHeads?.[decodeURIComponent(m[1])] ?? decodeURIComponent(m[1]) } });
     if ((m = p.match(/^\/actions\/runs\/(\d+)\/attempts\/(\d+)\/jobs$/))) return send(200, { jobs: [{ name: "gate", steps: (st.attempts ?? {})[m[2]] ?? [] }] });
     if (p === "/actions/workflows/std-gate.yml/runs") return send(200, { workflow_runs: st.gateRuns ?? [] });
+    // compareFiles: the changed files between a commit and the branch head (a newer push)
+    if ((m = p.match(/^\/compare\/[0-9a-f]+\.\.\.[0-9a-f]+$/))) return send(200, { files: (st.compareFiles ?? []).map((filename) => ({ filename })) });
+    if ((m = p.match(/^\/actions\/runs\/(\d+)\/cancel$/)) && req.method === "POST") { st.cancelled = [...(st.cancelled ?? []), Number(m[1])]; save(); return send(st.cancelFail ? 403 : 202, {}); }
     if ((m = p.match(/^\/actions\/runs\/(\d+)\/rerun$/)) && req.method === "POST") { st.reruns = [...(st.reruns ?? []), Number(m[1])]; save(); return send(201, {}); }
     if ((m = p.match(/^\/actions\/runs\/(\d+)$/))) return send(200, (st.gateRuns ?? []).find((r) => r.id === Number(m[1])) ?? {});
     if ((m = p.match(/^\/statuses\/([0-9a-f]+)$/)) && req.method === "POST") {

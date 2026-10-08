@@ -11,6 +11,7 @@ on:
     branches: [main]
   workflow_dispatch:
 permissions:
+  actions: write # cancels the run when a newer commit replaces staging
   checks: read
   contents: read
 concurrency:
@@ -59,6 +60,14 @@ jobs:
         env:
           GATE_BROWSERS: ${{ steps.release.outputs.browsers }}
           GATE_PREVIEW_URL: ${{ steps.release.outputs.url }}
+          BASE_URL: ${{ steps.release.outputs.url }}
+          PLAYWRIGHT_BASE_URL: ${{ steps.release.outputs.url }}
           GATE_SELECT: "full"
         run: |
           if [ -f scripts/agent/gate.local.sh ]; then bash scripts/agent/gate.local.sh; else echo "notice: no scripts/agent/gate.local.sh"; fi
+      - name: still staging
+        # the suite certifies this commit only if staging still served its deployment
+        if: steps.release.outputs.skip != 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/agent/gate.mjs release-verify
