@@ -15,6 +15,7 @@ LOG="$T/requests.jsonl"
 node test/stubs/pr-github.mjs "$T/port" "$LOG" "$T/origin.git" &
 SP=$!
 for _ in $(seq 100); do [ -s "$T/port" ] && break; sleep 0.05; done
+unset GITHUB_ACTIONS GITHUB_TOKEN # CI sets them; the refusal cases set GITHUB_ACTIONS themselves
 export GITHUB_API_URL="http://127.0.0.1:$(cat "$T/port")" GH_REPO=acme/demo GH_TOKEN=test-token
 PR="$T/work/scripts/agent/pr.sh"
 cd "$T/work" || exit 1
