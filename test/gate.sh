@@ -29,16 +29,16 @@ WF=.github/workflows/std-gate.yml
 
 # ---- e2e and repo scripts
 R=$(mkrepo)
-out=$(G "$R" e2e); st=$?
+out=$(GATE_SELECT=full G "$R" e2e); st=$?
 mkdir -p "$R/tests/e2e" && echo "notes" > "$R/tests/e2e/README.txt"
-out2=$(G "$R" e2e); st2=$?
+out2=$(GATE_SELECT=full G "$R" e2e); st2=$?
 echo 'import test from "node:test"; test("home renders", () => {});' > "$R/tests/e2e/home.test.mjs"
-out3=$(G "$R" e2e); st3=$?
+out3=$(GATE_SELECT=full G "$R" e2e); st3=$?
 echo 'import test from "node:test"; import assert from "node:assert"; test("broken", () => assert.fail("x"));' > "$R/tests/e2e/broken.test.mjs"
-G "$R" e2e >/dev/null; st4=$?
+GATE_SELECT=full G "$R" e2e >/dev/null; st4=$?
 rm "$R/tests/e2e/broken.test.mjs"
 echo '{"name":"app","private":true,"scripts":{"test:e2e":"echo e2e-script-ran"}}' > "$R/package.json"
-out5=$(G "$R" e2e); st5=$?
+out5=$(GATE_SELECT=full G "$R" e2e); st5=$?
 if [ $st -eq 1 ] && has "add an end-to-end suite" "$out" && [ $st2 -eq 1 ] && [ $st3 -eq 0 ] && has 'e2e: node --test "tests/e2e/**/*.test.*js"' "$out3" &&
   has "pass 1" "$out3" && [ $st4 -ne 0 ] && [ $st5 -eq 0 ] && has "e2e: npm run test:e2e" "$out5" && has "e2e-script-ran" "$out5"; then ok gate-fails-without-e2e
 else fail gate-fails-without-e2e "none=$st dir-without-runner=$st2 node-test=$st3 failing-test=$st4 script=$st5: $out $out3 $out5"; fi
@@ -65,9 +65,9 @@ o2=$(su); l2=$(cat "$T/setup.log")
 if has "playwright is in package.json but not installed" "$o1" && ! has playwright "$l1" && has "npm ci" "$l2" && has "playwright install --with-deps chromium" "$l2" && ! has npx "$l2"
 then ok setup-installs-repo-playwright; else fail setup-installs-repo-playwright "missing: $o1 | $l1 || present: $o2 | $l2"; fi
 
-# ---- e2e runs Chromium only (unless this run's browsers say more), within its budget, against the preview when given
+# ---- e2e runs Chromium only (unless this run's browsers say more), against the preview when given
 R=$(mkrepo); mkdir -p "$R/node_modules/.bin"
-printf '#!/bin/sh\necho "playwright $* base=${PLAYWRIGHT_BASE_URL:-none} budget=$PW_GLOBAL_TIMEOUT" >> "%s/pw.log"\n' "$T" > "$R/node_modules/.bin/playwright"; chmod +x "$R/node_modules/.bin/playwright"
+printf '#!/bin/sh\necho "playwright $* base=${PLAYWRIGHT_BASE_URL:-none} ge=${GATE_AFFECTED:-none}" >> "%s/pw.log"\n' "$T" > "$R/node_modules/.bin/playwright"; chmod +x "$R/node_modules/.bin/playwright"
 echo '{"name":"app","private":true,"devDependencies":{"@playwright/test":"1.63.0"}}' > "$R/package.json"
 echo 'export default { projects: [{ name: "chromium" }, { name: "firefox" }, { name: "webkit" }] };' > "$R/playwright.config.js"
 pwrun() { : > "$T/pw.log"; (cd "$R" && env "$@" node scripts/agent/gate.mjs e2e) >/dev/null 2>&1; cat "$T/pw.log"; }
@@ -79,9 +79,7 @@ jset "$R/package.json" 'o.scripts={"test:e2e":"playwright test"}'; e6=$(pwrun GA
 echo 'export default { use: {} };' > "$R/playwright.config.js"; e4=$(pwrun GATE_X=1)
 IB=$T/install-bin; mkpath "$IB"; shim "$IB" npm 'exit 0'
 : > "$T/pw.log"; (cd "$R" && PATH="$IB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH="$T/no-browsers" GATE_BROWSERS=chromium node scripts/agent/gate.mjs install) >/dev/null 2>&1; i1=$(cat "$T/pw.log")
-# CI observed 299999ms: choosing the suite consumes part of the five-minute budget.
-b1=${e1##*budget=}
-if has "playwright test --project=chromium base=none budget=" "$e1" && [[ "$b1" =~ ^[0-9]+$ ]] && [ "$b1" -gt 299000 ] && [ "$b1" -le 300000 ] && has "test --project=chromium --project=firefox" "$e2" && has "base=https://feat.preview.example.test" "$e3" \
+if has "playwright test --project=chromium base=none" "$e1" && has "test --project=chromium --project=firefox" "$e2" && has "base=https://feat.preview.example.test" "$e3" \
   && has "playwright test base=none" "$e4" && ! has "project" "$e4" && [ $x5 -eq 1 ] && has "defines projects but none named chromium" "$e5" && has "playwright test --project=chromium" "$e6" && ! has firefox "$e6" && has "install chromium" "$i1" && has "install-deps chromium" "$i1" && ! has "firefox" "$i1"
 then ok e2e-chromium-default; else fail e2e-chromium-default "default=$e1 | two=$e2 | preview=$e3 | no-projects=$e4 | script=$e6 | install=$i1"; fi
 
@@ -118,12 +116,17 @@ grep -Eq 'uses: actions/cache@[0-9a-f]{40}' "$cw" || cwhy="$cwhy; warm saves not
 grep -Eq 'pull_request|workflow_dispatch|^\s+ref:' "$cw" && cwhy="$cwhy; warm can run or check out pull request code"
 grep -Eq '^    branches: \[main\]' "$cw" || cwhy="$cwhy; warm not main-only"
 if [ -z "$cwhy" ]; then ok gate-never-writes-cache; else fail gate-never-writes-cache "$cwhy"; fi
-jset "$R/standards.json" 'o.e2e={command:"sleep 5",budget:0.02}'
+# e2e-budget-removed: a slow suite passes, a leftover e2e.budget warns in --check and changes nothing, and an overlay still setting gate.budget loads with one notice
+R=$(mkrepo)
+jset "$R/standards.json" 'o.e2e={command:"sleep 2",budget:0.01}'
 t0=$(date +%s); bo=$(cd "$R" && node scripts/agent/gate.mjs e2e 2>&1); bx=$?; t1=$(date +%s)
-jset "$R/standards.json" 'o.e2e={command:"true",budget:0.02}'; (cd "$R" && node scripts/agent/gate.mjs e2e) >/dev/null 2>&1; bq=$?
-jset "$R/standards.json" 'o.e2e={command:"true",budget:0}'; bz=$(cd "$R" && node scripts/agent/gate.mjs e2e 2>&1); bzx=$?
-if [ $bx -eq 1 ] && has "e2e exceeded its 0.02-minute budget" "$bo" && [ $((t1 - t0)) -lt 5 ] && [ $bq -eq 0 ] && [ $bzx -eq 1 ] && has "e2e.budget is 0" "$bz"; then ok e2e-budget-enforced
-else fail e2e-budget-enforced "over=$bx in $((t1 - t0))s quick=$bq: $bo"; fi
+bc=$(cd "$R" && node scripts/agent/check.mjs 2>&1)
+node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.gate={...o.gate,budget:{e2e:5}};require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$ENGINE/examples/overlay.json" "$T/gb.json"
+GD=$(mktemp -d "$T/r.XXXXXX"); git -C "$GD" init -q -b main
+gerr=$(node "$ENGINE/bin/repo-standards.mjs" apply --target "$GD" --overlay "$T/gb.json" --version 0.1.0 2>&1 >/dev/null); gx=$?
+if [ $bx -eq 0 ] && ! has "budget" "$bo" && has "e2e.budget is ignored" "$bc" && ! has "FAIL: standards.json e2e" "$bc" && [ $gx -eq 0 ] && [ "$(grep -c 'gate.budget was removed' <<<"$gerr")" = 1 ] \
+  && ! grep -q "gate_budget\|PW_GLOBAL_TIMEOUT\|-minute budget" "$ENGINE/template/scripts/agent/gate.mjs" "$ENGINE/defaults.json" "$ENGINE/lib/engine.mjs"
+then ok e2e-budget-removed; else fail e2e-budget-removed "run=$bx in $((t1 - t0))s: $bo | check: $bc | overlay=$gx: $gerr"; fi
 
 # draft-cheap-ready-full (syntax): the cheap gate's syntax pass fails a broken script and, without PyYAML, skips workflows
 R=$(mkrepo); sy1=$(cd "$R" && node scripts/agent/gate.mjs syntax 2>&1); sx1=$?

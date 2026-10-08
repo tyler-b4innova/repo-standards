@@ -12,6 +12,7 @@ import { localConfig, localWorkerConfig } from "./local.mjs";
 import { scan } from "./jsscan.mjs";
 import { rollbackFindings } from "./rollback.mjs";
 import { verifyGeneratedBuild } from "./release-config.mjs";
+import { describe as describeSelection, listFor, plan as planSelection, summarize } from "./select.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
 const SUBS = ["local", "verdict", "plan", "classify", "install", "playwright", "run", "preview", "release", "e2e", "secrets", "syntax", "instructions"], ok = SUBS.includes(cmd);
@@ -521,32 +522,32 @@ if (cmd === "local") {
   // those projects; a config without projects runs as it is.
   const cfgFile = [...(rootPw ? ls(".") : []), ...(dir && !rootPw ? ls(dir).map((f) => `${dir}/${f}`) : [])].find((f) => /(^|\/)playwright\.config\.[cm]?[jt]s$/.test(f));
   const cfg = cfgFile ? rd(cfgFile, "utf8") : "", named = (b) => new RegExp(`name:\\s*['"\`]${b}['"\`]`).test(cfg);
-  const projects = /\bprojects\s*:/.test(cfg) ? browsers().filter(named).map((b) => `--project=${b}`) : [];
+  // Only GATE_SELECT=full (the release check) runs every Playwright project with no file filter; every gate run (pull request, merge queue, re-gate) is Chromium only.
+  const everything = env.GATE_SELECT === "full", projects = !everything && /\bprojects\s*:/.test(cfg) ? browsers().filter(named).map((b) => `--project=${b}`) : [];
   const pwBin = has("node_modules/.bin/playwright") ? ["node_modules/.bin/playwright", []] : ["npx", ["--no-install", "playwright"]];
-  // A package script that runs `playwright test` gets the same project selection (npm needs `--` before it).
-  const pwScript = script && /\bplaywright\s+test\b/.test(pkg.scripts[script]);
+  // Only a package script that is exactly a bare `playwright test` gets the project and file arguments (npm needs `--` before them); any other script (flags such as --grep, `&&` chains) runs unchanged.
+  const pwScript = script && /^\s*(?:(?:npx\s+(?:--no-install\s+)?|pnpm\s+(?:exec\s+)?|yarn\s+(?:exec\s+)?)?playwright\s+test)\s*$/.test(pkg.scripts[script]);
   // Without --project Playwright runs every project, so a config whose projects are named otherwise is refused.
-  if (!e2eCmd && (!script || pwScript) && cfg && /\bprojects\s*:/.test(cfg) && !projects.length)
+  if (!everything && !e2eCmd && (!script || pwScript) && cfg && /\bprojects\s*:/.test(cfg) && !projects.length)
     fail(`${cfgFile} defines projects but none named ${browsers().join(" or ")}, so gate cannot pick the Chromium run`, 'name the Chromium project "chromium" (gate runs only that), or set standards.json e2e.command');
-  const run = e2eCmd ? ["bash", ["-c", e2eCmd]] : script ? [pm, ["run", script, ...(pwScript && projects.length ? [...(pm === "npm" ? ["--"] : []), ...projects] : [])]] : dir && pw ? [pwBin[0], [...pwBin[1], "test", dir, ...projects]]
+  // kind: what the run is, so the selected files can be handed to it ("pw" Playwright, "node" node --test, null as written).
+  const nodeTests = dir && ls(dir, { recursive: true }).some((f) => /\.test\.[cm]?js$/.test(f));
+  const kind = e2eCmd ? null : script ? (pwScript ? "pw" : null) : dir && pw ? "pw" : rootPw ? "pw" : nodeTests ? "node" : null;
+  const run = e2eCmd ? ["bash", ["-c", e2eCmd]] : script ? [pm, ["run", script, ...(pwScript && projects.length ? [...(pm === "npm" ? ["--"] : []), ...projects] : [])]] : dir && pw ? [pwBin[0], [...pwBin[1], "test", ...(everything ? (rootPw ? [] : ["-c", cfgFile]) : [dir]), ...projects]]
     : rootPw ? [pwBin[0], [...pwBin[1], "test", ...projects]]
-    : dir && ls(dir, { recursive: true }).some((f) => /\.test\.[cm]?js$/.test(f)) ? ["node", ["--test", `${dir}/**/*.test.*js`]] : null;
-  // Budget: the whole suite within gate_budget.e2e minutes (standards.json e2e.budget may only tighten it).
-  if (e2eCfg.budget !== undefined && !(typeof e2eCfg.budget === "number" && e2eCfg.budget > 0)) fail(`standards.json e2e.budget is ${JSON.stringify(e2eCfg.budget)}`, "minutes above 0 (it may only tighten the org budget)");
-  const mins = Math.min(e2eCfg.budget ?? Infinity, pack.gate_budget?.e2e ?? 5), ms = Math.round(mins * 60000);
+    : nodeTests ? ["node", ["--test", `${dir}/**/*.test.*js`]] : null;
+  // No time limit of any kind here: a slow suite is a test-quality problem, not a gate failure. Only the workflow's
+  // timeout-minutes stops a runaway job.
   const url = env.GATE_PREVIEW_URL ?? "";
   // A client site's preview must not be indexed: its home page and a page only the Worker can answer (a 404; static
-  // _headers rules do not cover Worker-rendered responses) both say noindex, in a robots meta or X-Robots-Tag. The
-  // fetches and their body reads stop at the e2e budget, and the suite gets only the time left.
-  const started = Date.now();
+  // _headers rules do not cover Worker-rendered responses) both say noindex, in a robots meta or X-Robots-Tag.
   if (url && pack.profile === "client" && !args.includes("--local")) {
     const directives = (v) => v.toLowerCase().split(",").map((d) => d.replace(/^[^:]*:/, "").trim());
     const attrs = (tag) => Object.fromEntries([...tag.matchAll(/([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g)].map((a) => [a[1].toLowerCase(), a[2] ?? a[3] ?? a[4]]));
-    const signal = AbortSignal.timeout(ms);
     for (const page of [url, new URL("/__std-noindex-probe", url).href]) {
       let res = null, html = "";
-      try { res = await fetch(page, { redirect: "follow", signal }); html = await res.text(); }
-      catch (e) { fail(e.name === "TimeoutError" || e.name === "AbortError" ? `the preview at ${page} did not answer within the e2e budget (${mins} min)` : `the preview at ${page} did not answer: ${e.cause?.code ?? e.message}`, "re-run gate once the preview is up"); }
+      try { res = await fetch(page, { redirect: "follow" }); html = await res.text(); }
+      catch (e) { fail(`the preview at ${page} did not answer: ${e.cause?.code ?? e.message}`, "re-run gate once the preview is up"); }
       // Only active markup counts: not inside an HTML comment, <noscript> or <template>.
       const active = html.replace(/<!--[\s\S]*?-->/g, "").replace(/<(noscript|template)\b[\s\S]*?<\/\1\s*>/gi, "");
       const meta = [...active.matchAll(/<meta\b[^>]*>/gi)].map(([t]) => attrs(t)).some((a) => /^(robots|googlebot)$/i.test(a.name ?? "") && directives(a.content ?? "").some((d) => ["noindex", "none"].includes(d)));
@@ -555,14 +556,26 @@ if (cmd === "local") {
     }
     console.log(`preview noindex: ok (${url})`);
   }
-  const left = ms - (Date.now() - started);
-  if (left <= 0) fail(`e2e exceeded its ${mins}-minute budget`, "the preview answered too slowly for the suite to run; re-run gate");
   if (run) {
-    console.log(`e2e: ${run[0]} ${run[1].map((a) => (a.includes("*") ? `"${a}"` : a)).join(" ")}${url ? ` against ${url}` : ""} (budget ${mins} min)`);
-    const r = spawnSync(run[0], run[1], { stdio: "inherit", timeout: left, killSignal: "SIGKILL",
-      env: { ...env, PW_GLOBAL_TIMEOUT: String(left), ...(url && { PLAYWRIGHT_BASE_URL: url, BASE_URL: url }) } });
-    if (r.error?.code === "ETIMEDOUT" || r.signal) fail(`e2e exceeded its ${mins}-minute budget`, "make the slow tests faster (fewer navigations, the preview URL), then move the slow tail to the release check on main; do not shard");
+    // Affected tests: what the change can reach (select.mjs), unless standards.json sets "affected": false. Playwright and
+    // `node --test` runs take the selected files; a custom command or package script runs as written and reads GATE_AFFECTED*.
+    const sel = planSelection({ env });
+    console.log(summarize(describeSelection(sel), env));
+    // The whole suite unless the PR only adds or modifies e2e specs (select.mjs). null = unfiltered.
+    const e2eFiles = listFor(sel), esc = (f) => f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$";
+    const childEnv = { ...env, ...(url && { PLAYWRIGHT_BASE_URL: url, BASE_URL: url }), GATE_AFFECTED: e2eFiles ? "scoped" : "full", GATE_AFFECTED_E2E: (e2eFiles ?? []).join(" "),
+      ...(e2eFiles ? {} : { GATE_SELECT: "full" }) };
+    let argv = run[1];
+    // Only specs the runner can be pointed at are passed as filters; any other layout runs the whole suite.
+    const mine = e2eFiles?.filter((f) => script || rootPw || !dir || f.startsWith(`${dir}/`));
+    const narrow = e2eFiles && mine.length === e2eFiles.length;
+    if (narrow && kind === "pw") argv = [...run[1].filter((a) => script || a !== dir), ...(script && pm === "npm" && !run[1].includes("--") ? ["--"] : []), ...mine.map(esc)];
+    else if (narrow && kind === "node" && mine.every((f) => /\.test\.[cm]?js$/.test(f))) argv = ["--test", ...mine];
+    else if (e2eFiles) console.log(`e2e: ${e2eCmd ? "this command" : "this layout"} runs as written; it reads GATE_AFFECTED, GATE_AFFECTED_E2E and GATE_SELECT for the selection`);
+    console.log(`e2e: ${run[0]} ${argv.map((a) => (a.includes("*") ? `"${a}"` : a)).join(" ")}${url ? ` against ${url}` : ""}`);
+    const r = spawnSync(run[0], argv, { stdio: "inherit", env: childEnv });
     if (r.status) process.exit(r.status);
+    if (r.error || r.signal) fail(`e2e did not finish: ${r.error?.message ?? r.signal}`, "re-run gate");
   }
   else fail("no e2e suite (test:e2e or e2e script; tests/e2e/ or e2e/ with playwright.config.* or *.test.*js)",
     'add an end-to-end suite through the real entry point; docs/static repos (or Builds-only repos) only: "e2e": false in standards.json');
