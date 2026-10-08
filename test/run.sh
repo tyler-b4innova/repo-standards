@@ -3,6 +3,7 @@
 # Then checks coverage: every scenario id in SCENARIOS.md printed, and no unknown id (engine-* are engine-only).
 set -uo pipefail
 cd "$(dirname "$0")/.."
+unset GATE_SELECT GATE_AFFECTED GATE_AFFECTED_E2E # inherited when this suite is the gate e2e command; cases set their own
 status=0 log=$(mktemp)
 trap 'rm -f "$log"' EXIT
 for f in test/[a-z]*.sh $( [ -f org/test.sh ] && echo org/test.sh ); do

@@ -528,8 +528,8 @@ if (cmd === "local") {
   // Only GATE_SELECT=full (the release check) runs every Playwright project with no file filter; every gate run (pull request, merge queue, re-gate) is Chromium only.
   const everything = env.GATE_SELECT === "full", projects = !everything && /\bprojects\s*:/.test(cfg) ? browsers().filter(named).map((b) => `--project=${b}`) : [];
   const pwBin = has("node_modules/.bin/playwright") ? ["node_modules/.bin/playwright", []] : ["npx", ["--no-install", "playwright"]];
-  // A package script that runs `playwright test` gets the same project selection (npm needs `--` before it).
-  const pwScript = script && /\bplaywright\s+test\b/.test(pkg.scripts[script]);
+  // Only a package script that is exactly a bare `playwright test` gets the project and file arguments (npm needs `--` before them); any other script (flags such as --grep, `&&` chains) runs unchanged.
+  const pwScript = script && /^\s*(?:(?:npx\s+(?:--no-install\s+)?|pnpm\s+(?:exec\s+)?|yarn\s+(?:exec\s+)?)?playwright\s+test)\s*$/.test(pkg.scripts[script]);
   // Without --project Playwright runs every project, so a config whose projects are named otherwise is refused.
   if (!everything && !e2eCmd && (!script || pwScript) && cfg && /\bprojects\s*:/.test(cfg) && !projects.length)
     fail(`${cfgFile} defines projects but none named ${browsers().join(" or ")}, so gate cannot pick the Chromium run`, 'name the Chromium project "chromium" (gate runs only that), or set standards.json e2e.command');

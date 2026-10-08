@@ -3,7 +3,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 . test/lib.sh
-unset GITHUB_EVENT_PATH GITHUB_EVENT_NAME GITHUB_ACTIONS GATE_SELECT GATE_BASE GITHUB_STEP_SUMMARY
+unset GITHUB_EVENT_PATH GITHUB_ACTIONS GATE_SELECT GATE_BASE GITHUB_STEP_SUMMARY
+export GITHUB_EVENT_NAME=pull_request # every case is a pull request unless it says otherwise
 ENGINE=$PWD T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 has() { case "$2" in *"$1"*) return 0 ;; esac; return 1; }
@@ -47,7 +48,11 @@ reset "$R"; put "$R" src/lib/a.ts 'export const a = 2;'; chg "$R"; s9=$(L "$R")
 reset "$R"; put "$R" unit/a.test.mjs 'import test from "node:test";'; chg "$R"; s10=$(L "$R")
 EV=$T/ev.json; printf '{"pull_request":{"base":{"ref":"main","sha":"%s"}}}' "$(git -C "$R" rev-parse main)" > "$EV"
 reset "$R"; put "$R" tests/e2e/b.spec.ts "$SPEC"; chg "$R"; s11=$(L "$R" GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$EV")
-if [ "$s1" = "tests/e2e/b.spec.ts tests/e2e/new.spec.ts " ] && has "2 e2e spec(s)" "$o1" && ! has "the base is main" "$o1" && [ "$s11" = "tests/e2e/b.spec.ts " ]; then n=1; else n=0; fi
+put "$R" tests/e2e/b.spec.ts "$SPEC"; chg "$R"
+m1=$(L "$R" GITHUB_EVENT_NAME=); m2=$(cd "$R" && env -u GITHUB_EVENT_NAME node scripts/agent/select.mjs --list 2>&1 | tr '\n' ' '); m3=$(L "$R" GITHUB_EVENT_NAME=pull_request_target)
+if [ "$m1" = "ALL " ] && [ "$m2" = "ALL " ] && [ "$m3" = "ALL " ]; then mm=1; else mm=0; fi
+reset "$R"; put "$R" tests/e2e/b.spec.ts "$SPEC"; put "$R" tests/e2e/new.spec.ts "$SPEC"; chg "$R"
+if [ $mm = 1 ] && [ "$s1" = "tests/e2e/b.spec.ts tests/e2e/new.spec.ts " ] && has "2 e2e spec(s)" "$o1" && ! has "the base is main" "$o1" && [ "$s11" = "tests/e2e/b.spec.ts " ]; then n=1; else n=0; fi
 all=1; for v in "$s2" "$s3" "$s4" "$s5" "$s6" "$s7" "$s8" "$s9" "$s10"; do [ "$v" = "ALL " ] || all=0; done
 if [ $n = 1 ] && [ $all = 1 ]; then ok affected-e2e-narrows-only-on-specs
 else fail affected-e2e-narrows-only-on-specs "specs=$s1 pr=$s11 | helper=$s2 docs=$s3 del=$s4 rename=$s5 setup=$s6 fixture=$s7 config=$s8 src=$s9 unit=$s10"; fi
@@ -83,10 +88,17 @@ git -C "$R4" checkout -q main; jset "$R4/standards.json" 'o.e2e="echo CUSTOM $GA
 put "$R4" tests/e2e/y.test.mjs 'import test from "node:test";
 test("y", () => console.log("RAN-Y")); // edit'; chg "$R4"; c1=$(cd "$R4" && node scripts/agent/gate.mjs e2e 2>&1)
 put "$R4" src/x.mjs 'export const x = 3;'; chg "$R4"; c2=$(cd "$R4" && node scripts/agent/gate.mjs e2e 2>&1)
-if has 'test --project=chromium tests/e2e/b\.spec\.ts$ ge=scoped' "$pw1" && has "playwright test tests/e2e --project=chromium ge=full" "$pw2" \
+git -C "$R" checkout -q main; jset "$R/package.json" 'o.scripts={"test:e2e":"playwright test --grep @smoke"}'; chg "$R" grep; git -C "$R" checkout -q -b g1
+put "$R" tests/e2e/b.spec.ts "$SPEC"; chg "$R"; : > "$T/rel.log"; (cd "$R" && node scripts/agent/gate.mjs e2e >/dev/null 2>&1); g1=$(cat "$T/rel.log")
+git -C "$R" checkout -q main; jset "$R/package.json" 'o.scripts={"test:e2e":"playwright test"}'; chg "$R" bare; git -C "$R" checkout -q -b g2
+put "$R" tests/e2e/b.spec.ts "$SPEC"; chg "$R"; : > "$T/rel.log"; (cd "$R" && node scripts/agent/gate.mjs e2e >/dev/null 2>&1); g2=$(cat "$T/rel.log")
+git -C "$R" checkout -q main; jset "$R/package.json" 'o.scripts={"test:e2e":"playwright test && echo done"}'; chg "$R" chain; git -C "$R" checkout -q -b g3
+put "$R" tests/e2e/b.spec.ts "$SPEC"; chg "$R"; : > "$T/rel.log"; (cd "$R" && node scripts/agent/gate.mjs e2e >/dev/null 2>&1); g3=$(cat "$T/rel.log")
+if [ "$(echo $g1)" = "playwright test --grep @smoke ge=scoped" ] && has "--project=chromium" "$g2" && has 'b\.spec\.ts$' "$g2" && [ "$(echo $g3)" = "playwright test ge=scoped" ]; then gr=1; else gr=0; fi
+if [ $gr = 1 ] && has 'test --project=chromium tests/e2e/b\.spec\.ts$ ge=scoped' "$pw1" && has "playwright test tests/e2e --project=chromium ge=full" "$pw2" \
   && has "RAN-X" "$n1" && ! has "RAN-Y" "$n1" && has "RAN-X" "$n2" && has "RAN-Y" "$n2" \
   && has "CUSTOM scoped [tests/e2e/y.test.mjs]" "$c1" && has "runs as written" "$c1" && has "CUSTOM full full []" "$c2"
-then ok affected-runners; else fail affected-runners "pw1=$pw1 | pw2=$pw2 | n1=$n1 | n2=$n2 | c1=$c1 | c2=$c2"; fi
+then ok affected-runners; else fail affected-runners "grep=$g1 bare=$g2 chain=$g3 pw1=$pw1 | pw2=$pw2 | n1=$n1 | n2=$n2 | c1=$c1 | c2=$c2"; fi
 
 # affected-full-runs-every-project: with a real multi-project Playwright config, GATE_SELECT=full (the release check) runs every project with no --project and no
 # positional tests/e2e, so a failing spec outside tests/e2e fails the run; a pull request, the merge queue and a manual re-gate run the Chromium project only.
