@@ -195,6 +195,24 @@ rn=$(sed -n 's/^run-name: //p' "$ENGINE/template/.github/workflows/std-gate.yml"
 case "$rn" in '${{ github.event_name == '"'pull_request'"' && format('"'gate pr={0} base={1} head={2}'"', github.event.pull_request.number, github.base_ref, github.event.pull_request.head.sha) || '"''"' }}') ;; *) why="run-name: $rn" ;; esac
 if [ -z "$why" ]; then ok gate-run-name; else fail gate-run-name "$why"; fi
 
+# gate-concurrency-groups: a draft-payload run (every job skipped) can never cancel a ready run's full gate
+why=""
+node --input-type=module - "$ENGINE/template/.github/workflows/std-gate.yml" <<'JS' || why="$why; $?"
+import { readFileSync } from "node:fs";
+import assert from "node:assert/strict";
+const line = readFileSync(process.argv[2], "utf8").split("\n").find((l) => /^  group: /.test(l)).replace(/^  group: /, "");
+const group = (github, inputs = {}) => line.replace(/\$\{\{(.*?)\}\}/g, (_, e) => new Function("github", "inputs", `return (${e});`)(github, inputs));
+const pr = (number, action, draft) => ({ ref: "refs/pull/" + number + "/merge", event: { action, pull_request: { number, draft } } });
+assert.notEqual(group(pr(7, "synchronize", true)), group(pr(7, "ready_for_review", false)), "draft synchronize vs ready_for_review");
+assert.equal(group(pr(7, "synchronize", false)), group(pr(7, "synchronize", false)), "two ready synchronizes share a group");
+assert.equal(group(pr(7, "synchronize", false)), group(pr(7, "ready_for_review", false)), "a ready push cancels the older ready run");
+assert.notEqual(group(pr(7, "edited", false)), group(pr(7, "synchronize", false)), "edit has its own group");
+assert.notEqual(group(pr(7, "synchronize", false)), group(pr(8, "synchronize", false)), "pull requests do not share a group");
+assert.equal(group({ ref: "refs/heads/gh-readonly-queue/x", event: { pull_request: {} } }), "std-gate-refs/heads/gh-readonly-queue/x", "merge_group key unchanged");
+assert.equal(group({ ref: "refs/heads/main", event: { pull_request: {} } }, { pr: "7" }), "std-gate-7", "workflow_dispatch key unchanged");
+JS
+if [ -z "$why" ]; then ok gate-concurrency-groups; else fail gate-concurrency-groups "$why"; fi
+
 # dependency-cache-by-lockfile: gate and the warm-up cache the lockfile's package manager (npm, pnpm, yarn); pnpm and
 # yarn come through corepack, and when that fails there is no cache rather than a failed setup step; both workflows
 # run the same step, and the warm-up fires on any of the three lockfiles

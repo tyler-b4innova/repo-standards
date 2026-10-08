@@ -30,8 +30,9 @@ permissions:
   pull-requests: read
   issues: read
 concurrency:
-  # a description edit has its own group, so it never cancels the full gate running for the same pull request
-  group: std-gate-${{ github.event.pull_request.number || inputs.pr || github.ref }}${{ github.event.action == 'edited' && '-edit' || '' }}
+  # a description edit and a draft-payload run (all jobs skipped) each have their own group, so neither can cancel the full gate
+  # of a ready run: a push to a draft, then ready_for_review seconds later, creates both runs and their order is not guaranteed
+  group: std-gate-${{ github.event.pull_request.number || inputs.pr || github.ref }}${{ github.event.action == 'edited' && '-edit' || '' }}${{ github.event.pull_request.draft == true && '-draft' || '' }}
   cancel-in-progress: true
 jobs:
   checks:
