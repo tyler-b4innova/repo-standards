@@ -40,7 +40,7 @@ export function plan({ env = process.env, base = "", files = "", affected } = {}
   const full = (why) => ({ mode: "full", why, specs: [], rows: rows ?? [] });
   if ((affected ?? std.affected) === false) return full('standards.json sets "affected": false');
   if (env.GATE_SELECT === "full") return full("GATE_SELECT=full");
-  if (env.GITHUB_EVENT_NAME && env.GITHUB_EVENT_NAME !== "pull_request") return full(`a ${env.GITHUB_EVENT_NAME} run is not a pull request`);
+  if (env.GITHUB_EVENT_NAME !== "pull_request") return full(`${env.GITHUB_EVENT_NAME ? `a ${env.GITHUB_EVENT_NAME} run` : "a run with no GITHUB_EVENT_NAME"} is not a pull request`);
   if (!rows) return full("the pull request's base cannot be found in this checkout");
   const other = rows.find(([s, f]) => !(["A", "M"].includes(s) && isE2eSpec(f)));
   if (other) return full(`${other[1]} ${other[0] === "D" ? "was deleted" : "is not an added or modified e2e spec"}`);
