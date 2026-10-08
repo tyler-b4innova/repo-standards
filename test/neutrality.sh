@@ -22,6 +22,16 @@ preview: preview.example.com; download https://github.com/gitleaks/gitleaks/rele
 trigger 1477542a-ed67-4c5a-9f0f-943faadd42b7 timeout 1200000"
 if printf '%s\n' "$accept" | scan; then ok engine-neutral-allows-pins-and-docs; else fail engine-neutral-allows-pins-and-docs "$(printf '%s\n' "$accept" | node tools/neutrality.mjs --stdin 2>&1)"; fi
 if node tools/neutrality.mjs >/dev/null 2>&1; then ok engine-neutral-tree; else fail engine-neutral-tree "$(node tools/neutrality.mjs 2>&1)"; fi
+# GitHub's documented webhook example hosts pass; an organization's host still fails, even next to them
+github_hosts='"avatar_url": "https://avatars1.githubusercontent.com/in/29310?v=4", "html_url": "https://octocoders.io/Codertocat"'
+if printf '%s\n' "$github_hosts" | scan; then ok engine-neutral-github-example-hosts; else fail engine-neutral-github-example-hosts "$(printf '%s\n' "$github_hosts" | node tools/neutrality.mjs --stdin 2>&1)"; fi
+if printf '%s\n' "$github_hosts https://internal.$(echo corp).io/x https://evil-githubusercontent.$(echo com)/a" | scan; then fail engine-neutral-github-hosts-narrow "accepted an org host beside GitHub's"; else ok engine-neutral-github-hosts-narrow; fi
+# --history scans what HEAD reaches: a commit on another branch is checked in that branch's own pull request
+ENGINE=$PWD; H=$(mktemp -d); trap 'rm -rf "$H"' EXIT
+git init -q -b main "$H"; git -C "$H" commit -q --allow-empty -m base; git -C "$H" checkout -q -b other; echo "see https://internal.$(echo corp).io/runbook" >"$H/n.txt"; git -C "$H" add n.txt; git -C "$H" commit -q -m other; git -C "$H" checkout -q main
+if (cd "$H" && node "$ENGINE/tools/neutrality.mjs" --history >/dev/null 2>&1); then ok engine-neutral-history-head-only; else fail engine-neutral-history-head-only "another branch's commit failed HEAD's history scan"; fi
+git -C "$H" merge -q --no-ff other -m merge
+if (cd "$H" && node "$ENGINE/tools/neutrality.mjs" --history >/dev/null 2>&1); then fail engine-neutral-history-reaches-head "a reachable org host passed"; else ok engine-neutral-history-reaches-head; fi
 if node tools/neutrality.mjs --history >/dev/null 2>&1; then ok engine-neutral-history; else fail engine-neutral-history "$(node tools/neutrality.mjs --history 2>&1 | head -20)"; fi
 if [ "$FAILS" -eq 0 ]; then ok engine-neutral; else fail engine-neutral "$FAILS neutrality case(s) failed"; fi
 done_cases

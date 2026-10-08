@@ -99,9 +99,6 @@
     "pr_author",
     "app"
   ],
-  "gate_budget": {
-    "e2e": 5
-  },
   "preview": {
     "check_name": "Workers Builds",
     "check_app": "cloudflare-workers-and-pages",

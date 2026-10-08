@@ -171,4 +171,18 @@ for f in "$W/$WF"; do blk=$(awk '/- name: e2e/{f=1} f' "$f"); has 'RELEASE_CHECK
 rc=$(awk '/- name: repo checks/{f=1} /- name: still staging/{f=0} f' "$W/$WF"); has 'RELEASE_CHECK: "1"' "$rc" || why="$why; repo checks lack RELEASE_CHECK"
 grep -q "env -u RELEASE_CHECK bash scripts/agent/gate.local.sh" "$W/.github/workflows/std-gate.yml" || why="$why; PR gate repo checks do not clear RELEASE_CHECK"
 if [ -z "$why" ]; then ok release-check-a11y-contract; else fail release-check-a11y-contract "$why"; fi
+
+# a release run is the whole suite: every Playwright project (a non-browser one included), no file filter, no time cap;
+# the pull-request gate (no GATE_SELECT=full) runs Chromium only
+why=""
+R=$T/full; cp -R "$W" "$R"; echo '{"scripts":{}}' >"$R/package.json"; mkdir -p "$R/node_modules/.bin" "$R/tests/e2e"
+printf 'export default { projects: [{ name: "chromium" }, { name: "api" }] };\n' >"$R/playwright.config.ts"; echo "// spec" >"$R/tests/e2e/a.spec.ts"
+printf '#!/bin/sh\necho "PLAYWRIGHT $* PW_GLOBAL_TIMEOUT=${PW_GLOBAL_TIMEOUT:-none}"\n' >"$R/node_modules/.bin/playwright"; chmod +x "$R/node_modules/.bin/playwright"; commit "$R" full
+rune2e() { (cd "$R" && env "$@" GITHUB_OUTPUT= node scripts/agent/gate.mjs e2e --release 2>&1); }
+o=$(rune2e GATE_SELECT=full RELEASE_CHECK=1 GATE_BROWSERS=chromium,firefox)
+has "PLAYWRIGHT test" "$o" && ! has "--project" "$o" && has "PW_GLOBAL_TIMEOUT=none" "$o" && ! has "budget" "$o" || why="release run: $o"
+o=$(rune2e GATE_BROWSERS=chromium)
+has "--project=chromium" "$o" && ! has "--project=api" "$o" || why="$why; the PR gate did not stay on Chromium: $o"
+grep -q "timeout:" <(sed -n '/cmd === "e2e"/,/cmd === "secrets"/p' template/scripts/agent/gate.mjs | grep spawnSync) && why="$why; the e2e child has a time cap"
+if [ -z "$why" ]; then ok release-check-full-suite; else fail release-check-full-suite "$why"; fi
 done_cases

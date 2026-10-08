@@ -2,7 +2,7 @@
 // Org-neutrality check for this engine: no organization names, no hosts beyond vendor docs and
 // package registries, no account, App or vault identifiers.
 //   node tools/neutrality.mjs            scan tracked files at HEAD
-//   node tools/neutrality.mjs --history  scan every commit: added lines, messages, author and committer
+//   node tools/neutrality.mjs --history  scan every commit reachable from HEAD (another branch is checked in its own pull request): added lines, messages, author and committer
 //   node tools/neutrality.mjs --stdin    scan text on stdin (used by the self-test)
 // Organization names are held only as sha256 digests of lowercase tokens, so this file names none.
 import { execFileSync } from "node:child_process";
@@ -22,7 +22,10 @@ const HOSTS = new Set([
   "learn.chatgpt.com", "developers.openai.com", "chatgpt.com",
   "developers.cloudflare.com", "challenges.cloudflare.com", "cache.agilebits.com", "json-schema.org", "docs.sentry.io",
   "example.com", "example.org", "example.net",
+  "octocoders.io", // the example org host in GitHub's documented webhook payloads
 ]);
+// GitHub-owned avatar hosts (avatars.githubusercontent.com, avatars1.githubusercontent.com, ...) in the same documented payloads.
+const HOST_PATTERNS = [/^avatars\d*\.githubusercontent\.com$/];
 const TLD = "com|net|org|io|dev|app|ai|co|ca|us|uk|cloud|site|xyz|tech|info|biz|me";
 const RULES = [
   [/(?<![0-9a-f])[0-9a-f]{32}(?![0-9a-f])/i, "32-hex identifier (account or zone id)"],
@@ -43,7 +46,7 @@ export function findings(text, where) {
       const host = m[2].toLowerCase();
       const urlish = /(:\/\/|@|["'`])$/.test(line.slice(0, m.index + m[1].length));
       if (host.split(".").length < 3 && !urlish) continue;
-      if (!HOSTS.has(host) && !host.endsWith(".example.com")) out.push(`${at}: host ${host}`);
+      if (!HOSTS.has(host) && !host.endsWith(".example.com") && !HOST_PATTERNS.some((r) => r.test(host))) out.push(`${at}: host ${host}`);
     }
     for (const [re, what] of RULES) if (re.test(line)) out.push(`${at}: ${what}`);
   });
@@ -55,7 +58,7 @@ let found = [];
 if (process.argv.includes("--stdin")) {
   found = findings(readFileSync(0, "utf8"), "stdin");
 } else if (process.argv.includes("--history")) {
-  for (const sha of git("rev-list", "--all").split("\n").filter(Boolean)) {
+  for (const sha of git("rev-list", "HEAD").split("\n").filter(Boolean)) {
     found.push(...findings(git("show", "-s", "--format=%an <%ae>%n%cn <%ce>%n%B", sha), `${sha.slice(0, 7)} meta`));
     const added = git("show", "--format=", "--unified=0", "--no-color", sha).split("\n").filter((l) => l.startsWith("+") && !l.startsWith("+++"));
     found.push(...findings(added.join("\n"), `${sha.slice(0, 7)} diff`));

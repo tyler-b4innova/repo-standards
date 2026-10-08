@@ -117,8 +117,10 @@ else {
     one("sensitive", [true, false]); const e = std.e2e, eo = e && typeof e === "object" && !Array.isArray(e);
     const e2eOk = e === undefined || e === false || (typeof e === "string" && e.trim()) || (eo && Object.keys(e).every((k) => ["command", "browsers", "preview", "budget"].includes(k))
       && (e.command === undefined || (typeof e.command === "string" && e.command.trim())) && (e.browsers === undefined || (Array.isArray(e.browsers) && e.browsers.every((b) => ["chromium", "firefox", "webkit"].includes(b))))
-      && [undefined, false].includes(e.preview) && (e.budget === undefined || (typeof e.budget === "number" && e.budget > 0)));
-    if (!e2eOk) fail(`standards.json e2e is ${JSON.stringify(e)}`, 'use false (docs/static only), the e2e command, or {"command", "browsers" (extra, run on main against staging_url), "preview": false, "budget" (minutes, tighter only)}');
+      && [undefined, false].includes(e.preview));
+    if (eo && e.budget !== undefined) warn("standards.json e2e.budget is ignored: the e2e suite has no time budget | fix: remove it");
+    if (std.affected !== undefined && typeof std.affected !== "boolean") fail(`standards.json affected is ${JSON.stringify(std.affected)}`, 'use false (the whole e2e suite on every pull request), or omit it');
+    if (!e2eOk) fail(`standards.json e2e is ${JSON.stringify(e)}`, 'use false (docs/static only), the e2e command, or {"command", "browsers" (extra, run on main against staging_url), "preview": false}');
     if (std.deploy_workflow !== undefined && !(typeof std.deploy_workflow === "string" && /^[\w.-]+\.ya?ml$/.test(std.deploy_workflow)))
       fail(`standards.json deploy_workflow is ${JSON.stringify(std.deploy_workflow)}`, "name the one deploy workflow file, e.g. deploy.yml"); 
     if (std.flow !== "staged") one("flow", [undefined, "direct"]);
