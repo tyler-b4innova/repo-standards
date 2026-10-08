@@ -509,11 +509,15 @@ printf 'test("a", async ({ page }) => {\n  await page.waitForTimeout(500);\n  //
 printf 'test.describe.configure({ retries: 2 });\ntest.retries(1);\n' > "$R/tests/e2e/b.spec.ts"
 printf 'const c = await page.context().newCDPSession(page);\nawait c.send("Emulation.setCPUThrottlingRate", { rate: 4 });\nawait client.setCPUThrottlingRate(4);\n' > "$R/tests/e2e/c.spec.ts"
 printf 'export default { retries: process.env.CI ? 2 : 0 };\n' > "$R/playwright.config.ts"
+printf 'test.describe.configure({\n  mode: "serial",\n  retries: 2,\n});\ntest.use({ retries: 0 });\ntest.configure(\n  { retries: 1 });\n' > "$R/tests/e2e/d.spec.ts"
+printf 'const x = 1; // page.waitForTimeout(10)\nexpect(text).toBe("waitForTimeout");\n/* start\n page.waitForTimeout(5);\n test.retries = 2;\n setCPUThrottlingRate(1)\n*/\nconst s = `test.retries setCPUThrottlingRate`;\nawait c.send(\x27Emulation.setCPUThrottlingRate\x27, { rate: 4 });\n' > "$R/tests/e2e/e.spec.ts"
+mkdir -p "$R/pkg/node_modules/x/tests" "$R/vendor/x/e2e"
+printf 'page.waitForTimeout(1);\n' > "$R/pkg/node_modules/x/tests/a.spec.ts"; printf 'page.waitForTimeout(1);\n' > "$R/vendor/x/e2e/a.spec.ts"
 printf 'await page.waitForTimeout(5);\n' > "$R/src-helper.ts"
 commit "$R"; out=$(check "$R"); st=$?
 why=""
-for n in "tests/e2e/a.spec.ts:2 waitForTimeout" "tests/e2e/b.spec.ts:1 test.retries" "tests/e2e/b.spec.ts:2 test.retries" "tests/e2e/c.spec.ts:2 CPU throttling" "tests/e2e/c.spec.ts:3 CPU throttling" "playwright.config.ts:1 retries"; do has "WARN: $n" "$out" || why="$why; missing $n"; done
-has "a.spec.ts:3" "$out" && why="$why; comment flagged"; has "src-helper.ts" "$out" && why="$why; non-test flagged"
+for n in "tests/e2e/a.spec.ts:2 waitForTimeout" "tests/e2e/b.spec.ts:1 test.retries" "tests/e2e/b.spec.ts:2 test.retries" "tests/e2e/c.spec.ts:2 CPU throttling" "tests/e2e/c.spec.ts:3 CPU throttling" "playwright.config.ts:1 retries" "tests/e2e/d.spec.ts:3 test.retries" "tests/e2e/d.spec.ts:7 test.retries" "tests/e2e/e.spec.ts:9 CPU throttling"; do has "WARN: $n" "$out" || why="$why; missing $n"; done
+has "a.spec.ts:3" "$out" && why="$why; comment flagged"; for bad in "e.spec.ts:1 " "e.spec.ts:2 " "e.spec.ts:4 " "e.spec.ts:5 " "e.spec.ts:6 " "e.spec.ts:8 " "d.spec.ts:5 " node_modules vendor/; do has "$bad" "$out" && why="$why; false warning $bad"; done; has "src-helper.ts" "$out" && why="$why; non-test flagged"
 has "WARN: tests/" "$clean" && why="$why; clean repo warned"
 for f in template/AGENTS.block.md template/.agents/skills/std-implement/SKILL.md template/.agents/skills/std-autoreview/SKILL.md; do
   for w in waitForTimeout "screenshot count" "release-check" mutation; do grep -q -- "$w" "$ENGINE/$f" || why="$why; $f lacks $w"; done

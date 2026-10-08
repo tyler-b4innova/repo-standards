@@ -65,19 +65,46 @@ if (!pack) fail("scripts/agent/pack.json missing or invalid", "re-apply the pack
 else {
   const tracked = git("ls-files", "-z").split("\0").filter(Boolean);
   // Test-quality offenders (warnings; the std-implement step 4 rules): flaky-by-design waits, retries and throttling.
-  const qualityTestFile = /(^|\/)(tests?|e2e)\/.*\.[cm]?[jt]sx?$|\.(spec|test)\.[cm]?[jt]sx?$/;
+  // Matched on source with comments blanked (`code` also blanks string literals), so prose and strings stay silent.
+  const blank = (t, keepStrings) => {
+    let o = "", i = 0;
+    const sp = (s) => s.replace(/[^\n]/g, " ");
+    while (i < t.length) {
+      const c = t[i], n = t[i + 1];
+      if (c === "/" && n === "/") { const e = t.indexOf("\n", i); const j = e < 0 ? t.length : e; o += sp(t.slice(i, j)); i = j; }
+      else if (c === "/" && n === "*") { const e = t.indexOf("*/", i + 2); const j = e < 0 ? t.length : e + 2; o += sp(t.slice(i, j)); i = j; }
+      else if (c === '"' || c === "'" || c === "`") {
+        let j = i + 1;
+        while (j < t.length && t[j] !== c && (c === "`" || t[j] !== "\n")) j += t[j] === "\\" ? 2 : 1;
+        j = Math.min(j + 1, t.length);
+        o += keepStrings ? t.slice(i, j) : c + sp(t.slice(i + 1, j - 1)) + (t[j - 1] === c ? c : "");
+        i = j;
+      } else { o += c; i++; }
+    }
+    return o;
+  };
+  const thirdParty = /(^|\/)(node_modules|vendors?|third[_-]party|bower_components)\//;
+  const qualityTest = /(^|\/)(tests?|e2e)\/.*\.[cm]?[jt]sx?$|\.(spec|test)\.[cm]?[jt]sx?$/;
+  const pwConfig = /(^|\/)playwright[^/]*\.config\.[cm]?[jt]s$/;
   const offenders = [
-    [qualityTestFile, /\bsetCPUThrottlingRate\b/, "CPU throttling makes timing the assertion", "assert on an event or state, not on a slowed CPU"],
-    [qualityTestFile, /\bwaitForTimeout\b/, "waitForTimeout sleeps on the wall clock", "wait for an event or locator, or control time with page.clock"],
-    [qualityTestFile, /\btest\.(describe\.)?configure\s*\(\s*\{[^}]*\bretries\b|\btest\.retries\b/, "test.retries hides flaky tests", "remove retries and fix the cause"],
-    [/(^|\/)playwright[^/]*\.config\.[cm]?[jt]s$/, /\bretries\s*:/, "retries in a Playwright config hides flaky tests", "remove retries and fix the cause"],
+    [qualityTest, "code", /\bsetCPUThrottlingRate\b/g, "CPU throttling makes timing the assertion", "assert on an event or state, not on a slowed CPU"],
+    [qualityTest, "strings", /\.send\s*\(\s*["'`]Emulation\.setCPUThrottlingRate["'`]/g, "CPU throttling makes timing the assertion", "assert on an event or state, not on a slowed CPU"],
+    [qualityTest, "code", /\bwaitForTimeout\b/g, "waitForTimeout sleeps on the wall clock", "wait for an event or locator, or control time with page.clock"],
+    [qualityTest, "code", /\btest\.retries\b|\btest\.(?:describe\.)?configure\s*\([^)]*\bretries\b/g, "test.retries hides flaky tests", "remove retries and fix the cause"],
+    [pwConfig, "code", /\bretries\s*:/g, "retries in a Playwright config hides flaky tests", "remove retries and fix the cause"],
   ];
   for (const f of tracked) {
-    if (!offenders.some(([where]) => where.test(f))) continue;
-    (read(f) ?? "").split("\n").forEach((line, i) => {
-      if (/^\s*(\/\/|\*|\/\*)/.test(line)) return;
-      for (const [where, re, what, fix] of offenders) if (where.test(f) && re.test(line)) warn(`${f}:${i + 1} ${what} | fix: ${fix}`);
-    });
+    if (thirdParty.test(f) || !offenders.some(([where]) => where.test(f))) continue;
+    const text = read(f) ?? "", views = { strings: blank(text, true), code: blank(text, false) };
+    const seen = new Set();
+    for (const [where, view, re, what, fix] of offenders) {
+      if (!where.test(f)) continue;
+      for (const m of views[view].matchAll(re)) {
+        const line = views[view].slice(0, m.index + m[0].length).split("\n").length;
+        const key = `${line} ${what}`;
+        if (!seen.has(key)) { seen.add(key); warn(`${f}:${line} ${what} | fix: ${fix}`); }
+      }
+    }
   }
   const pin = git("log", "-1", "--format=%h", "--", "standards.lock").trim() || "HEAD";
   const restore = (p) => `git checkout ${pin} -- ${p}`;
