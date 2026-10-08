@@ -11,6 +11,9 @@
 # job and the one test job (install, typecheck, build, repo checks, affected e2e) and passes only when both succeeded
 # on a ready pull request. Each job's timeout is the overlay's gate.timeout_minutes.
 name: std-gate
+# The launcher parses a pull_request run's name: `gate pr=<n> base=<ref> head=<40-hex sha>` (GitHub can return an empty
+# pull_requests[] on a same-repo run); other events keep GitHub's default name.
+run-name: ${{ github.event_name == 'pull_request' && format('gate pr={0} base={1} head={2}', github.event.pull_request.number, github.base_ref, github.event.pull_request.head.sha) || '' }}
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]

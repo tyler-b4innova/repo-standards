@@ -186,6 +186,12 @@ v4=$(NEEDS='{"checks":{"result":"success","outputs":{"mode":"full"}},"test":{"re
 { [ $x1 -eq 0 ] && [ $x2 -ne 0 ] && [ $x3 -ne 0 ] && [ $x4 -ne 0 ]; } || why="$why; verdict $x1 $x2 $x3 $x4: $v1 $v2 $v3 $v4"
 if [ -z "$why" ]; then ok one-test-job; ok one-gate-run-per-push; else fail one-test-job "$why"; fail one-gate-run-per-push "$why"; fi
 
+# gate-run-name: the run-name carries the pull request's identity in the contract format, for pull_request events only
+why=""
+rn=$(sed -n 's/^run-name: //p' "$ENGINE/template/.github/workflows/std-gate.yml")
+case "$rn" in '${{ github.event_name == '"'pull_request'"' && format('"'gate pr={0} base={1} head={2}'"', github.event.pull_request.number, github.base_ref, github.event.pull_request.head.sha) || '"''"' }}') ;; *) why="run-name: $rn" ;; esac
+if [ -z "$why" ]; then ok gate-run-name; else fail gate-run-name "$why"; fi
+
 # dependency-cache-by-lockfile: gate and the warm-up cache the lockfile's package manager (npm, pnpm, yarn); pnpm and
 # yarn come through corepack, and when that fails there is no cache rather than a failed setup step; both workflows
 # run the same step, and the warm-up fires on any of the three lockfiles
