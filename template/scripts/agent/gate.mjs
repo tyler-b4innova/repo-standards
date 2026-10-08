@@ -525,7 +525,8 @@ if (cmd === "local") {
   // those projects; a config without projects runs as it is.
   const cfgFile = [...(rootPw ? ls(".") : []), ...(dir && !rootPw ? ls(dir).map((f) => `${dir}/${f}`) : [])].find((f) => /(^|\/)playwright\.config\.[cm]?[jt]s$/.test(f));
   const cfg = cfgFile ? rd(cfgFile, "utf8") : "", named = (b) => new RegExp(`name:\\s*['"\`]${b}['"\`]`).test(cfg);
-  const everything = env.GATE_SELECT === "full", projects = !everything && /\bprojects\s*:/.test(cfg) ? browsers().filter(named).map((b) => `--project=${b}`) : [];
+  // The release check, a push, the merge queue, a manual run and GATE_SELECT=full run every Playwright project with no file filter.
+  const everything = env.GATE_SELECT === "full" || (env.GITHUB_EVENT_NAME && env.GITHUB_EVENT_NAME !== "pull_request"), projects = !everything && /\bprojects\s*:/.test(cfg) ? browsers().filter(named).map((b) => `--project=${b}`) : [];
   const pwBin = has("node_modules/.bin/playwright") ? ["node_modules/.bin/playwright", []] : ["npx", ["--no-install", "playwright"]];
   // A package script that runs `playwright test` gets the same project selection (npm needs `--` before it).
   const pwScript = script && /\bplaywright\s+test\b/.test(pkg.scripts[script]);
@@ -563,21 +564,17 @@ if (cmd === "local") {
     // `node --test` runs take the selected files; a custom command or package script runs as written and reads GATE_AFFECTED*.
     const sel = planSelection({ env });
     console.log(summarize(describeSelection(sel), env));
-    // e2e is selected at app scope (select.mjs): the whole suite unless the PR touches only test files. null = unfiltered.
-    const e2eFiles = listFor(sel, "e2e"), unitFiles = listFor(sel, "unit"), esc = (f) => f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$";
-    const childEnv = { ...env, ...(url && { PLAYWRIGHT_BASE_URL: url, BASE_URL: url }), GATE_AFFECTED: sel.mode === "full" || !e2eFiles ? "full" : "scoped",
-      GATE_AFFECTED_E2E: (e2eFiles ?? []).join(" "), GATE_AFFECTED_UNIT: (unitFiles ?? []).join(" ") };
-    let argv = run[1], skip = null;
-    if (e2eFiles && kind === "pw") {
-      const mine = e2eFiles.filter((f) => script || rootPw || !dir || f.startsWith(`${dir}/`));
-      if (!mine.length) skip = "no affected e2e spec";
-      else argv = [...run[1].filter((a) => script || a !== dir), ...(script && pm === "npm" && !run[1].includes("--") ? ["--"] : []), ...mine.map(esc)];
-    } else if (e2eFiles && kind === "node") {
-      const mine = e2eFiles.filter((f) => f.startsWith(`${dir}/`) && /\.test\.[cm]?js$/.test(f));
-      if (!mine.length) skip = "no affected e2e test";
-      else argv = ["--test", ...mine];
-    } else if (e2eCmd || kind === null) console.log(`e2e: this command runs as written (${childEnv.GATE_AFFECTED}); it reads GATE_AFFECTED, GATE_AFFECTED_E2E and GATE_AFFECTED_UNIT, and GATE_SELECT=full, for the selection`);
-    if (skip) { console.log(`e2e: ${skip}; nothing to run`); process.exit(0); }
+    // The whole suite unless the PR only adds or modifies e2e specs (select.mjs). null = unfiltered.
+    const e2eFiles = listFor(sel), esc = (f) => f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$";
+    const childEnv = { ...env, ...(url && { PLAYWRIGHT_BASE_URL: url, BASE_URL: url }), GATE_AFFECTED: e2eFiles ? "scoped" : "full", GATE_AFFECTED_E2E: (e2eFiles ?? []).join(" "),
+      ...(e2eFiles ? {} : { GATE_SELECT: "full" }) };
+    let argv = run[1];
+    // Only specs the runner can be pointed at are passed as filters; any other layout runs the whole suite.
+    const mine = e2eFiles?.filter((f) => script || rootPw || !dir || f.startsWith(`${dir}/`));
+    const narrow = e2eFiles && mine.length === e2eFiles.length;
+    if (narrow && kind === "pw") argv = [...run[1].filter((a) => script || a !== dir), ...(script && pm === "npm" && !run[1].includes("--") ? ["--"] : []), ...mine.map(esc)];
+    else if (narrow && kind === "node" && mine.every((f) => /\.test\.[cm]?js$/.test(f))) argv = ["--test", ...mine];
+    else if (e2eFiles) console.log(`e2e: ${e2eCmd ? "this command" : "this layout"} runs as written; it reads GATE_AFFECTED, GATE_AFFECTED_E2E and GATE_SELECT for the selection`);
     console.log(`e2e: ${run[0]} ${argv.map((a) => (a.includes("*") ? `"${a}"` : a)).join(" ")}${url ? ` against ${url}` : ""}`);
     const r = spawnSync(run[0], argv, { stdio: "inherit", env: childEnv });
     if (r.status) process.exit(r.status);
