@@ -29,17 +29,17 @@ WF=.github/workflows/std-gate.yml
 
 # ---- e2e and repo scripts
 R=$(mkrepo)
-out=$(G "$R" e2e); st=$?
+out=$(GATE_SELECT=full G "$R" e2e); st=$?
 mkdir -p "$R/tests/e2e" && echo "notes" > "$R/tests/e2e/README.txt"
-out2=$(G "$R" e2e); st2=$?
+out2=$(GATE_SELECT=full G "$R" e2e); st2=$?
 echo 'import test from "node:test"; test("home renders", () => {});' > "$R/tests/e2e/home.test.mjs"
-out3=$(G "$R" e2e); st3=$?
+out3=$(GATE_SELECT=full G "$R" e2e); st3=$?
 echo 'import test from "node:test"; import assert from "node:assert"; test("broken", () => assert.fail("x"));' > "$R/tests/e2e/broken.test.mjs"
-G "$R" e2e >/dev/null; st4=$?
+GATE_SELECT=full G "$R" e2e >/dev/null; st4=$?
 rm "$R/tests/e2e/broken.test.mjs"
 echo '{"name":"app","private":true,"scripts":{"test:e2e":"echo e2e-script-ran"}}' > "$R/package.json"
-out5=$(G "$R" e2e); st5=$?
-if [ $st -eq 1 ] && has "add an end-to-end suite" "$out" && [ $st2 -eq 1 ] && [ $st3 -eq 0 ] && has "e2e: node --test tests/e2e/home.test.mjs" "$out3" &&
+out5=$(GATE_SELECT=full G "$R" e2e); st5=$?
+if [ $st -eq 1 ] && has "add an end-to-end suite" "$out" && [ $st2 -eq 1 ] && [ $st3 -eq 0 ] && has 'e2e: node --test "tests/e2e/**/*.test.*js"' "$out3" &&
   has "pass 1" "$out3" && [ $st4 -ne 0 ] && [ $st5 -eq 0 ] && has "e2e: npm run test:e2e" "$out5" && has "e2e-script-ran" "$out5"; then ok gate-fails-without-e2e
 else fail gate-fails-without-e2e "none=$st dir-without-runner=$st2 node-test=$st3 failing-test=$st4 script=$st5: $out $out3 $out5"; fi
 
@@ -144,7 +144,7 @@ let gates=0;
 for (const f of fs.readdirSync(dir)) {
   const L=fs.readFileSync(dir+"/"+f,"utf8").split("\n"),j=L.indexOf("jobs:");
   const jobs=L.slice(j+1).filter(l=>/^  [A-Za-z0-9_-]+:\s*$/.test(l)).map(l=>l.trim().slice(0,-1));
-  gates+=L.slice(j+1).filter(l=>/^    name: .*\|\| 'gate' \}\}\s*$/.test(l)).length;
+  gates+=L.slice(j+1).filter(l=>/^    name: .*\|\| .gate. \}\}\s*$/.test(l)).length;
   if (f==="std-gate.yml") {
     if (jobs.join()!=="checks,test,gate") out.push("jobs: "+jobs.join());
     const runs=L.slice(j+1).join("\n");

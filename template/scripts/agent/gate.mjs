@@ -535,7 +535,7 @@ if (cmd === "local") {
   // kind: what the run is, so the selected files can be handed to it ("pw" Playwright, "node" node --test, null as written).
   const nodeTests = dir && ls(dir, { recursive: true }).some((f) => /\.test\.[cm]?js$/.test(f));
   const kind = e2eCmd ? null : script ? (pwScript ? "pw" : null) : dir && pw ? "pw" : rootPw ? "pw" : nodeTests ? "node" : null;
-  const run = e2eCmd ? ["bash", ["-c", e2eCmd]] : script ? [pm, ["run", script, ...(pwScript && projects.length ? [...(pm === "npm" ? ["--"] : []), ...projects] : [])]] : dir && pw ? [pwBin[0], [...pwBin[1], "test", dir, ...projects]]
+  const run = e2eCmd ? ["bash", ["-c", e2eCmd]] : script ? [pm, ["run", script, ...(pwScript && projects.length ? [...(pm === "npm" ? ["--"] : []), ...projects] : [])]] : dir && pw ? [pwBin[0], [...pwBin[1], "test", ...(everything ? (rootPw ? [] : ["-c", cfgFile]) : [dir]), ...projects]]
     : rootPw ? [pwBin[0], [...pwBin[1], "test", ...projects]]
     : nodeTests ? ["node", ["--test", `${dir}/**/*.test.*js`]] : null;
   // No time limit of any kind here: a slow suite is a test-quality problem, not a gate failure. Only the workflow's
@@ -563,19 +563,20 @@ if (cmd === "local") {
     // `node --test` runs take the selected files; a custom command or package script runs as written and reads GATE_AFFECTED*.
     const sel = planSelection({ env });
     console.log(summarize(describeSelection(sel), env));
-    const pwFiles = listFor(sel, "playwright"), nodeFiles = listFor(sel, "node"), esc = (f) => f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$";
-    const scoped = sel.mode === "scoped", childEnv = { ...env, ...(url && { PLAYWRIGHT_BASE_URL: url, BASE_URL: url }), GATE_AFFECTED: sel.mode,
-      GATE_AFFECTED_PLAYWRIGHT: (pwFiles ?? []).join(" "), GATE_AFFECTED_NODE: (nodeFiles ?? []).join(" ") };
+    // e2e is selected at app scope (select.mjs): the whole suite unless the PR touches only test files. null = unfiltered.
+    const e2eFiles = listFor(sel, "e2e"), unitFiles = listFor(sel, "unit"), esc = (f) => f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$";
+    const childEnv = { ...env, ...(url && { PLAYWRIGHT_BASE_URL: url, BASE_URL: url }), GATE_AFFECTED: sel.mode === "full" || !e2eFiles ? "full" : "scoped",
+      GATE_AFFECTED_E2E: (e2eFiles ?? []).join(" "), GATE_AFFECTED_UNIT: (unitFiles ?? []).join(" ") };
     let argv = run[1], skip = null;
-    if (scoped && kind === "pw") {
-      const mine = pwFiles.filter((f) => script || rootPw || !dir || f.startsWith(`${dir}/`));
-      if (!mine.length) skip = "no affected Playwright spec";
+    if (e2eFiles && kind === "pw") {
+      const mine = e2eFiles.filter((f) => script || rootPw || !dir || f.startsWith(`${dir}/`));
+      if (!mine.length) skip = "no affected e2e spec";
       else argv = [...run[1].filter((a) => script || a !== dir), ...(script && pm === "npm" && !run[1].includes("--") ? ["--"] : []), ...mine.map(esc)];
-    } else if (scoped && kind === "node") {
-      const mine = listFor(sel, "all").filter((f) => f.startsWith(`${dir}/`) && /\.test\.[cm]?js$/.test(f));
-      if (!mine.length) skip = "no affected node test";
+    } else if (e2eFiles && kind === "node") {
+      const mine = e2eFiles.filter((f) => f.startsWith(`${dir}/`) && /\.test\.[cm]?js$/.test(f));
+      if (!mine.length) skip = "no affected e2e test";
       else argv = ["--test", ...mine];
-    } else if (scoped) console.log("e2e: this command runs as written; it can read GATE_AFFECTED_PLAYWRIGHT and GATE_AFFECTED_NODE for the selection");
+    } else if (e2eCmd || kind === null) console.log(`e2e: this command runs as written (${childEnv.GATE_AFFECTED}); it reads GATE_AFFECTED, GATE_AFFECTED_E2E and GATE_AFFECTED_UNIT, and GATE_SELECT=full, for the selection`);
     if (skip) { console.log(`e2e: ${skip}; nothing to run`); process.exit(0); }
     console.log(`e2e: ${run[0]} ${argv.map((a) => (a.includes("*") ? `"${a}"` : a)).join(" ")}${url ? ` against ${url}` : ""}`);
     const r = spawnSync(run[0], argv, { stdio: "inherit", env: childEnv });
