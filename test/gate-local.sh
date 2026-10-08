@@ -73,6 +73,8 @@ run default; d=$?
 order=$(sed -n 's/^local: \(.*\) starting$/\1/p' "$T/default.log" | paste -sd, -)
 summary=$(tail -1 "$T/default.log")
 sha=$(git -C "$R" rev-parse HEAD)
+gp=$(git -C "$R" rev-parse --git-path std-local-gate); case "$gp" in /*) ;; *) gp="$R/$gp" ;; esac
+[ "$d" -ne 0 ] || [ "$(cat "$gp" 2>/dev/null)" = "$sha" ] || { fail review-round-drafts "a passing local gate left no pass record for $sha"; }
 if [ "$d" -eq 0 ] && [ "$order" = 'setup --check,instructions,secrets,syntax,install,typecheck,build,gate.local.sh,e2e' ] && has "local gate $sha:" default && has 'worker=PASS; e2e=PASS' default && has 'standards ok:' default && has 'secrets: gitleaks git' default && has 'syntax: scripts and workflows parse' default; then ok gate-local-runs-ci-steps
 else fail gate-local-runs-ci-steps "exit=$d order=$order summary=$summary"; cat "$T/default.log"; fi
 if [ "$d" -eq 0 ] && has 'wrangler dev --ip 127.0.0.1 --port 8787 --local --config' default && has 'worker stopped' default && closed; then ok gate-local-starts-and-stops-worker
@@ -144,6 +146,7 @@ done
 if [ "$bad" -eq 0 ]; then ok gate-local-remote-refused; else fail gate-local-remote-refused "$bad unsafe commands accepted"; fi
 jset 'o.local={command:"wrangler dev --ip 127.0.0.1 --port "+process.env.LOCAL_FIXTURE_PORT,url:"http://127.0.0.1:"+process.env.LOCAL_FIXTURE_PORT,ready:"/health"}'
 FAIL_REPO=1 run repo; rc=$?
+[ ! -e "$gp" ] || fail review-round-drafts "a failing local gate left a stale pass record"
 if [ "$rc" -ne 0 ] && has 'gate.local.sh=FAIL; worker=not run; e2e=not run' repo && closed "$LOCAL_FIXTURE_PORT"; then ok gate-local-runs-ci-steps; else fail gate-local-runs-ci-steps 'failed repo check ran tail'; fi
 # A real Worker that redirects readiness must time out without following a remote URL.
 jset 'o.local={command:"wrangler dev --ip 127.0.0.1 --port "+process.env.LOCAL_FIXTURE_PORT,url:"http://127.0.0.1:"+process.env.LOCAL_FIXTURE_PORT,ready:"/redirect"}'
@@ -175,7 +178,10 @@ else fail gate-local-hup-cleanup "ready=$ready occupied=$busy interrupt=$interru
 # local:false skips the server, never the suite. Apply keeps the repo-owned opt-out.
 jset 'o.local=false'
 node bin/repo-standards.mjs apply --target "$R" --overlay examples/overlay.json --version 0.7.11 >/dev/null
+echo stray >"$R/untracked-source.txt"; git -C "$R" config status.showUntrackedFiles no
 NO_WORKER=1 run optout; o=$?
+[ ! -e "$gp" ] || fail review-round-drafts "a pass with a non-ignored untracked file left a pass record"
+rm -f "$R/untracked-source.txt"; git -C "$R" config --unset status.showUntrackedFiles
 if [ "$o" -eq 0 ] && has 'worker=SKIP (local: false); e2e=PASS' optout && has 'same e2e suite: no Worker requested' optout; then ok gate-local-opt-out
 else fail gate-local-opt-out "optout=$o"; cat "$T/optout.log"; fi
 # The offline check validates shape and origin, including escaped readiness URLs.
