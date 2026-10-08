@@ -200,13 +200,17 @@ resolve() {
   echo "resolved the thread holding comment $2"
 }
 
-gql_draft() { # gql_draft <pr> convertPullRequestToDraft|markPullRequestReadyForReview <want-draft true|false>
+gql_draft() { # gql_draft <pr> convertPullRequestToDraft|markPullRequestReadyForReview <want-draft true|false> [expected-head-sha]
   [ -n "$TOKEN" ] || { TOKEN=${GH_TOKEN:-${GITHUB_TOKEN:-}}; [ -n "$TOKEN" ] || TOKEN=$(gh auth token 2>/dev/null) || die "set GH_TOKEN or run gh auth login"; }
   req GET "pulls/$1"
   req POST /graphql "$(node -e 'console.log(JSON.stringify({ query: `mutation($id:ID!){${process.argv[2]}(input:{pullRequestId:$id}){pullRequest{isDraft}}}`, variables: { id: process.argv[1] } }))' -- "$(js 'd.node_id' <<<"$R")" "$2")"
   [ "$(js 'String(!!d.errors)' <<<"$R")" = false ] || die "$2 failed: ${R:0:300}"
   req GET "pulls/$1"
   [ "$(js 'String(!!d.draft)' <<<"$R")" = "$3" ] || die "PR #$1 did not become draft=$3 (read back $(js 'd.draft' <<<"$R"))"
+  if [ -n "${4:-}" ] && [ "$(js 'd.head.sha' <<<"$R")" != "$4" ]; then
+    gql_draft "$1" convertPullRequestToDraft true
+    die "PR #$1 head moved during the toggle (${4:0:7} -> now another commit); it is a draft again. Run the local gate on the new head, then pr.sh ready $1"
+  fi
 }
 
 review_round() {
@@ -224,16 +228,19 @@ review_round() {
 ready() {
   [ $# -eq 1 ] || die 'usage: pr.sh ready <pr>'
   local head file
+  # A ready flip made with the Actions GITHUB_TOKEN does not fire ready_for_review, so the full gate would never run.
+  [ -n "$TOKEN" ] || { TOKEN=${GH_TOKEN:-${GITHUB_TOKEN:-}}; [ -n "$TOKEN" ] || TOKEN=$(gh auth token 2>/dev/null) || die "set GH_TOKEN or run gh auth login"; }
+  [ "${GITHUB_ACTIONS:-}" != true ] || [ "$TOKEN" != "${GITHUB_TOKEN:-}" ] || die "ready cannot use the Actions GITHUB_TOKEN: the flip would not start the full gate. Run it with a person's or an App's token (GH_TOKEN)"
   req GET "pulls/$1"
   [ "$(js 'd.state' <<<"$R")" = open ] || die "PR #$1 is not open"
   [ "$(js 'String(!!d.draft)' <<<"$R")" = true ] || { echo "PR #$1 is already ready"; return; }
   [ "$(git branch --show-current)" = "$(js 'd.head.ref' <<<"$R")" ] || die "PR #$1 is not for the current branch $(git branch --show-current)"
   head=$(git rev-parse HEAD)
   [ "$(js 'd.head.sha' <<<"$R")" = "$head" ] || die "local HEAD ${head:0:7} is not the PR head $(js 'd.head.sha.slice(0,7)' <<<"$R"); push first"
-  [ -z "$(git status --porcelain --untracked-files=no)" ] || die "uncommitted changes; the local gate must pass on the pushed head"
+  [ -z "$(git status --porcelain)" ] || die "uncommitted or untracked files; the local gate must pass on exactly the pushed head"
   file=$(git rev-parse --git-path std-local-gate)
   [ -f "$file" ] && [ "$(cat "$file")" = "$head" ] || die "no passing local gate for ${head:0:7}; run: node scripts/agent/gate.mjs local"
-  gql_draft "$1" markPullRequestReadyForReview false
+  gql_draft "$1" markPullRequestReadyForReview false "$head"
   echo "PR #$1 is ready at ${head:0:7}; the full gate runs once on this head"
 }
 

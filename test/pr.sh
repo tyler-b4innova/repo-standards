@@ -198,8 +198,23 @@ g commit -q --allow-empty -m unpushed; out=$("$PR" ready 1 2>&1) && why="$why; r
 out=$("$PR" ready 1 2>&1) || why="$why; ready exit $?: $out"
 [ "$(draft)" = false ] || why="$why; ready did not mark the PR ready"
 m=$(count 'markPullRequestReadyForReview'); out=$("$PR" ready 1 2>&1) && [ "$(count 'markPullRequestReadyForReview')" = "$m" ] || why="$why; ready on a ready PR sent a mutation again"
+# an untracked, non-ignored file also blocks it
+mut "S.pulls[0].draft=true"; echo "$HEAD_SHA" >"$GATE"; echo junk >untracked.txt
+out=$("$PR" ready 1 2>&1) && why="$why; ready accepted an untracked file"; rm -f untracked.txt
+[ "$(draft)" = true ] || why="$why; untracked-file refusal flipped the PR"
+# the Actions GITHUB_TOKEN would flip it without starting the full gate: refused, nothing sent
+n=$(lines); out=$(GITHUB_ACTIONS=true GITHUB_TOKEN=test-token "$PR" ready 1 2>&1) && why="$why; ready accepted the Actions GITHUB_TOKEN"
+case "$out" in *"Actions GITHUB_TOKEN"*) ;; *) why="$why; refusal does not name the token: $out" ;; esac
+[ "$(lines)" = "$n" ] && [ "$(draft)" = true ] || why="$why; the Actions-token refusal still sent requests or flipped the PR"
+out=$(GITHUB_ACTIONS=true GITHUB_TOKEN=other GH_TOKEN=test-token "$PR" ready 1 2>&1) || why="$why; ready refused an explicit non-Actions token: $out"
+mut "S.pulls[0].draft=true"
+# a push lands during the toggle: the PR goes back to draft and ready fails
+mut "S.moveHead=true"; out=$("$PR" ready 1 2>&1) && why="$why; ready succeeded though the head moved"
+case "$out" in *"head moved"*) ;; *) why="$why; no plain head-moved message: $out" ;; esac
+[ "$(draft)" = true ] || why="$why; the moved-head PR was left ready"
+mut "S.moveHead=false;S.pulls[0].sha=null"
 # GitHub refusing the toggle is an error, not a silent success
-mut "S.gqlFail=true"; out=$("$PR" review-round 1 2>&1) && why="$why; refused toggle reported success"
+mut "S.pulls[0].draft=false;S.gqlFail=true"; out=$("$PR" review-round 1 2>&1) && why="$why; refused toggle reported success"
 mut "S.gqlFail=false"
 rm -f "$GATE"
 if [ -z "$why" ]; then ok review-round-drafts; else fail review-round-drafts "$why"; fi
