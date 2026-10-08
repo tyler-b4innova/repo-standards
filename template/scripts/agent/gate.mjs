@@ -416,7 +416,7 @@ if (cmd === "local") {
   output("url", url);
 } else if (cmd === "release") {
   // The release check (std-release-check.yml, on main): wait for this commit's Workers Builds (staging Preview and the
-  // uploaded production version), then name the extra browsers and the staging URL for the install and e2e steps.
+  // uploaded production version), then name every configured browser (Chromium and the extras) and the staging URL for the install, e2e and repo-check steps.
   const get = ghApi(), sha = env.GITHUB_SHA ?? git("rev-parse", "HEAD").trim(), short = sha.slice(0, 7);
   // A push that changes only non-deployable paths (pack.json non_deploy_paths) leaves staging as it was: nothing to test.
   // The whole push (the event's before..sha); a manual run, or a before no longer in history, skips nothing.
@@ -446,7 +446,7 @@ if (cmd === "local") {
       fail(runs.length ? `the Cloudflare build for ${short} is still running after ${wait / 1000}s` : `no "${name}" check on ${short} after ${wait / 1000}s, though the repository has Workers Builds`, "re-run the release check once the build finishes");
     await new Promise((r) => setTimeout(r, poll));
   }
-  const extra = [...new Set([...(e2eCfg.browsers ?? []), ...(pack.e2e_release_browsers ?? [])])];
+  const extra = [...new Set(["chromium", ...(e2eCfg.browsers ?? []), ...(pack.e2e_release_browsers ?? [])])]; // the full suite runs every configured browser
   console.log(`release: ${extra.join(", ")} against ${std.staging_url} (${short})`);
   output("browsers", extra.join(","));
   output("url", std.staging_url ?? "");

@@ -90,7 +90,7 @@ else {
     if (!(globs(ui) || (ui && typeof ui === "object" && globs(ui.include) && globs(ui.ignore))))
       fail("standards.json ui_paths must be a glob list or {include, ignore}", "fix it, or delete it for the engine defaults");
     if (!globs(std.risk_paths)) fail("standards.json risk_paths must be a glob list", "fix it, delete it for the engine defaults, or [] for none");
-    // staging_url: where the release check runs the extra browsers (the staging Preview), required when any are named
+    // staging_url: where the release check runs the full suite (extra browsers named make it required) (the staging Preview), required when any are named
     // and the repository has not opted out with "e2e": false (then no release check ships)
     const extra = e !== false && ((Array.isArray(e?.browsers) && e.browsers.length > 0) || (pack.e2e_release_browsers ?? []).length > 0);
     const https = (u) => { try { return new URL(u).protocol === "https:"; } catch { return false; } };
@@ -240,6 +240,7 @@ else {
     if (/playwright install\b(?![^\n;&|]*\b(chromium|chrome|firefox|webkit|msedge)\b)/.test(runs))
       fail(`${f} runs playwright install without naming a browser (it downloads all of them)`, "name the browser: playwright install --with-deps chromium");
     const checks = /\b(tests?|e2e|lint|typecheck|tsc|vitest|jest|playwright|eslint|biome|gate|check)\b/i, builds = /\bbuild\b/i;
+    // `managed` (std-*, hash-locked) is the exception: std-release-check.yml is the one workflow that tests on push to main.
     if (!managed && !exceptions.has(f) && (triggers.some((t) => ["pull_request", "pull_request_target"].includes(t)) || (integrationPush && name !== deploy)) && (checks.test(runs) || (name !== deploy && integrationPush && builds.test(runs))))
       fail(`${f} runs checks on ${triggers.filter((t) => ["pull_request", "pull_request_target", "push"].includes(t)).join(" and ")}, beside the one gate`, "move them into scripts/agent/gate.local.sh and delete the workflow (a deploy workflow on push is declared as standards.json deploy_workflow and does not test)");
     if (!managed && name === deploy && checks.test(runs)) fail(`${f} is the declared deploy workflow but runs checks`, "gate tests; the deploy workflow only builds and deploys");
@@ -346,6 +347,14 @@ else {
     fail(`standards.json secrets is ${JSON.stringify(sec)}`, '{"required": ["NAME", ...], "store": "1password" (our accounts) or "secrets_store" (a client-owned account)}');
   if (![undefined, false].includes(std?.staging)) fail(`standards.json staging is ${JSON.stringify(std.staging)}`, "remove it, or false for a Worker that is not released through staging (previews are still checked)");
   const rootWrangler = ["wrangler.json", "wrangler.jsonc", "wrangler.toml"].find((f) => tracked.includes(f));
+  // The release check (std-release-check.yml) ships to every Worker with a staging_url; say why a repository has none.
+  if (std?.e2e !== false && !tracked.includes(".github/workflows/std-release-check.yml"))
+    warn(`no release check: ${!rootWrangler ? "no Worker (no root wrangler config)" : "standards.json has no staging_url"} | fix: ${!rootWrangler ? "none needed unless a Worker is added" : "set staging_url to the staging Worker's https URL and re-run sync"}; the production deploy waits for a release-check on the version's commit`);
+  // Every production `versions upload` carries `--tag <full commit sha>`: the portal maps a version to its commit, and
+  // so to its release-check, through the tag. release.mjs does; a deploy command the repo's own files document must too.
+  for (const [where, text] of [["package.json scripts", Object.values(json("package.json")?.scripts ?? {}).join("\n")],
+    ...tracked.filter((f) => /^\.github\/workflows\/(?!std-)[^/]+\.ya?ml$/.test(f) || f === "scripts/agent/gate.local.sh").map((f) => [f, read(f) ?? ""])])
+    if (/\bversions upload\b(?![^\n]*--tag\b)/.test(text)) warn(`${where}: wrangler versions upload without --tag | fix: add --tag "$WORKERS_CI_COMMIT_SHA" (Workers Builds; the full commit SHA) so the portal can tie the version to its release-check`);
   let productionConfigs = [];
   try {
     const extras = workerFiles(std ?? {}, rootWrangler ?? null);

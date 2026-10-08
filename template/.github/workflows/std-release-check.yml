@@ -1,8 +1,10 @@
-# Managed by the standards pack, shipped only to repositories that name extra browsers (standards.json e2e.browsers, or
-# the org overlay's e2e.release_browsers). Pull requests run Chromium against their preview; a merge to main deploys
-# the staging Preview and uploads the production version, and this runs the extra browsers against staging
-# (standards.json staging_url) before a person deploys that version; a push of only non-deployable paths skips the
-# browsers. Not a required check.
+# Managed by the standards pack, shipped to every repository with a Worker and a standards.json staging_url (and to
+# one that names extra browsers). Pull requests run the affected tests in Chromium against their preview; a merge to
+# main deploys the staging Preview and uploads the production version, and this runs the repo's FULL suite (e2e and
+# scripts/agent/gate.local.sh), every configured browser, against staging (standards.json staging_url) once, as the
+# check-run `release-check` on the merge commit. The production deploy waits for that check to succeed. A push of only
+# non-deployable paths skips the suite. Never scheduled; one run per commit; the timeout is runaway protection only,
+# not a quality signal. Not a required check.
 name: std-release-check
 on:
   push:
@@ -12,12 +14,13 @@ permissions:
   checks: read
   contents: read
 concurrency:
-  group: std-release-check-${{ github.ref }}
+  group: std-release-check-${{ github.sha }}
   cancel-in-progress: true
 jobs:
-  release:
+  release-check:
+    name: release-check
     runs-on: ${{ vars.STD_GATE_RUNNER || 'ubuntu-24.04' }}
-    timeout-minutes: 20
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -49,4 +52,13 @@ jobs:
         env:
           GATE_BROWSERS: ${{ steps.release.outputs.browsers }}
           GATE_PREVIEW_URL: ${{ steps.release.outputs.url }}
+          GATE_FULL: "1"
         run: node scripts/agent/gate.mjs e2e
+      - name: repo checks
+        if: steps.release.outputs.skip != 'true'
+        env:
+          GATE_BROWSERS: ${{ steps.release.outputs.browsers }}
+          GATE_PREVIEW_URL: ${{ steps.release.outputs.url }}
+          GATE_FULL: "1"
+        run: |
+          if [ -f scripts/agent/gate.local.sh ]; then bash scripts/agent/gate.local.sh; else echo "notice: no scripts/agent/gate.local.sh"; fi

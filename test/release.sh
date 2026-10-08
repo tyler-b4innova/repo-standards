@@ -51,7 +51,7 @@ grep -q 'GATE_BROWSERS: ${{ steps.release.outputs.browsers }}' "$R/$WF" && grep 
 
 # gate.mjs release: waits for this commit's Workers Builds, then names the extra browsers and the staging URL
 put '{"checks":[{"name":"Workers Builds: demo","status":"completed","conclusion":"success"}]}'
-o=$(rel "$R"); has "exit=0" "$o" && has "browsers=firefox,webkit" "$o" && has "url=https://staging.preview.example.com/" "$o" || why="$why; release: $o"
+o=$(rel "$R"); has "exit=0" "$o" && has "browsers=chromium,firefox,webkit" "$o" && has "url=https://staging.preview.example.com/" "$o" || why="$why; release: $o"
 put '{"checks":[{"name":"Workers Builds: demo","status":"completed","conclusion":"failure","details_url":"u"}]}'
 o=$(rel "$R"); has "exit=1" "$o" && has "Cloudflare build failed for eeeeeee" "$o" || why="$why; failed build: $o"
 put '{"checks":[{"name":"Workers Builds: demo","status":"in_progress"}]}'
@@ -65,7 +65,7 @@ put "{\"checksBy\":{\"$P\":[{\"name\":\"Workers Builds: demo\",\"status\":\"comp
 o=$(rel "$R"); has "exit=1" "$o" && has "no \"Workers Builds\" check on ${SHA:0:7}" "$o" && has "though the repository has Workers Builds" "$o" || why="$why; missing build treated as absent: $o"
 ( sleep 2; printf '%s' "{\"checksBy\":{\"$P\":[{\"name\":\"Workers Builds: demo\",\"status\":\"completed\",\"conclusion\":\"success\"}],\"$SHA\":[{\"name\":\"Workers Builds: demo\",\"status\":\"completed\",\"conclusion\":\"success\"}]}}" > "$T/state.json" ) & LATE=$!
 o=$( (cd "$R" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_SHA=$SHA GATE_PREVIEW_WAIT_S=20 GATE_POLL_S=1 GITHUB_OUTPUT= node scripts/agent/gate.mjs release 2>&1); echo "exit=$?"); wait $LATE
-has "exit=0" "$o" && has "browsers=firefox,webkit" "$o" || why="$why; late check: $o"
+has "exit=0" "$o" && has "browsers=chromium,firefox,webkit" "$o" || why="$why; late check: $o"
 if [ -z "$why" ]; then ok release-browsers-on-main; else fail release-browsers-on-main "$why"; fi
 
 # a push of only non-deployable paths (docs, instruction files) skips the release check's browsers; one deployable
@@ -83,7 +83,7 @@ mkdir -p "$R/src" && echo "export {};" >"$R/src/index.ts" && echo "more" >>"$R/R
 put '{"checks":[{"name":"Workers Builds: demo","status":"completed","conclusion":"success"}]}'
 # a push of a code commit followed by a docs-only commit is judged as a whole: it runs
 echo "again" >>"$R/README.md"; commit "$R" docs2; SHA=$(git -C "$R" rev-parse HEAD); pushed "$B1"
-o=$(GITHUB_EVENT_PATH=$T/push.json rel "$R"); has "exit=0" "$o" && ! has "skip=true" "$o" && has "browsers=firefox,webkit" "$o" || why="$why; code push: $o"
+o=$(GITHUB_EVENT_PATH=$T/push.json rel "$R"); has "exit=0" "$o" && ! has "skip=true" "$o" && has "browsers=chromium,firefox,webkit" "$o" || why="$why; code push: $o"
 for step in install e2e; do
   blk=$(awk -v s="- name: $step" 'index($0,s){f=1;next} f&&/- name:/{exit} f' "$R/$WF")
   has "if: steps.release.outputs.skip != 'true'" "$blk" || why="$why; $step step not skipped: $blk"

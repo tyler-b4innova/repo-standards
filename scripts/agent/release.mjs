@@ -220,7 +220,9 @@ async function deploy() {
     if (production.cfg.name !== cfg.name) fail("production build does not target the production Worker", "build without CLOUDFLARE_ENV before uploading");
     for (const worker of extras) if (effectiveConfig(worker.file, false, { redirect: false }).cfg.name !== worker.cfg.name)
       fail("secondary production build targets a different Worker", "restore each secondary config's production name before uploading");
-    const sha = env.WORKERS_CI_COMMIT_SHA;
+    // Every production version carries its full commit SHA as its tag: the portal maps a version to its commit (and its
+    // release-check) through the tag. Workers Builds sets WORKERS_CI_COMMIT_SHA; elsewhere it is the checked-out commit.
+    const sha = env.WORKERS_CI_COMMIT_SHA || execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
     const tags = sha ? ["--tag", sha, "--message", `main ${sha}`, "--var", `SENTRY_RELEASE:${sha}`] : [];
     must(["versions", "upload", ...tags]);
     secretCheck("the production Worker", ["secret", "list", "--name", productionName, "--format", "json"]);
