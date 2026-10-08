@@ -88,9 +88,9 @@ if has 'test --project=chromium tests/e2e/b\.spec\.ts$ ge=scoped' "$pw1" && has 
   && has "CUSTOM scoped [tests/e2e/y.test.mjs]" "$c1" && has "runs as written" "$c1" && has "CUSTOM full full []" "$c2"
 then ok affected-runners; else fail affected-runners "pw1=$pw1 | pw2=$pw2 | n1=$n1 | n2=$n2 | c1=$c1 | c2=$c2"; fi
 
-# affected-full-runs-every-project: with a real multi-project Playwright config, GATE_SELECT=full and every non-pull_request event (push, release check, merge
-# queue, manual run) run every project with no --project and no positional tests/e2e, so a failing spec outside tests/e2e fails the run; a pull request runs the
-# Chromium project only. The e2e step carries no time limit.
+# affected-full-runs-every-project: with a real multi-project Playwright config, GATE_SELECT=full (the release check) runs every project with no --project and no
+# positional tests/e2e, so a failing spec outside tests/e2e fails the run; a pull request, the merge queue and a manual re-gate run the Chromium project only.
+# The e2e step carries no time limit.
 if curl -sSfI --max-time 5 https://registry.npmjs.org/ >/dev/null 2>&1; then
   R10=$T/r10; fixture "$R10"; rm -rf "$R10/tests"
   put "$R10" package.json '{"name":"app","private":true,"devDependencies":{"@playwright/test":"1.55.0"}}'
@@ -103,12 +103,15 @@ test("api project", async () => { expect(1).toBe(2); });'
   put "$R10" src/lib/a.ts 'export const a = 3;'; chg "$R10"
   po=$(cd "$R10" && node scripts/agent/gate.mjs e2e 2>&1); px=$?
   bad=""
-  for ev in GATE_SELECT=full GITHUB_EVENT_NAME=push GITHUB_EVENT_NAME=workflow_dispatch GITHUB_EVENT_NAME=merge_group; do
-    fo=$(cd "$R10" && env "$ev" node scripts/agent/gate.mjs e2e 2>&1); fx=$?
-    { [ $fx -ne 0 ] && has "api project" "$fo"; } || bad="$bad $ev(exit=$fx)"
+  fo=$(cd "$R10" && GATE_SELECT=full node scripts/agent/gate.mjs e2e 2>&1); fx=$?
+  { [ $fx -ne 0 ] && has "api project" "$fo"; } || bad="$bad GATE_SELECT=full(exit=$fx)"
+  # every other gate run (the merge queue, a manual re-gate, a push) is Chromium only and never narrows
+  for ev in merge_group workflow_dispatch; do
+    fo=$(cd "$R10" && env GITHUB_EVENT_NAME=$ev node scripts/agent/gate.mjs e2e 2>&1); fx=$?
+    { [ $fx -eq 0 ] && ! has "api project" "$fo"; } || bad="$bad $ev(exit=$fx)"
   done
   if [ $px -eq 0 ] && [ -z "$bad" ] && ! grep -Eq "AbortSignal|timeout:|killSignal|PW_GLOBAL_TIMEOUT" <(sed -n '/cmd === "e2e"/,/cmd === "secrets"/p' "$ENGINE/template/scripts/agent/gate.mjs")
-  then ok affected-full-runs-every-project; else fail affected-full-runs-every-project "pr exit=$px: $po | did not run the api project:$bad"; fi
+  then ok affected-full-runs-every-project; else fail affected-full-runs-every-project "pr exit=$px: $po | wrong project selection:$bad"; fi
 else echo "skip affected-full-runs-every-project (no network to install Playwright)"; fi
 
 done_cases
