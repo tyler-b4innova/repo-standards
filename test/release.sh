@@ -69,14 +69,16 @@ o=$( (cd "$R" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t 
 has "exit=0" "$o" && has "browsers=chromium,firefox,webkit" "$o" || why="$why; waiting for the last Worker's build: $o"
 if [ -z "$why" ]; then ok release-browsers-on-main; else fail release-browsers-on-main "$why"; fi
 
-# a commit of only non-deployable paths (docs, instruction files) has nothing to certify (cancelled); a deployable one runs
+# what there is to certify comes only from the authenticated Builds results on the commit, never from its paths: a commit
+# whose builds Cloudflare skipped has nothing to certify (cancelled); a push whose last commit is README-only but whose
+# build succeeded (source then docs, deployed together) is certified
 why=""
 echo "notes" >"$R/README.md"; mkdir -p "$R/docs" && echo "guide" >"$R/docs/guide.md"; commit "$R" docs; SHA=$(git -C "$R" rev-parse HEAD)
-put '{"checks":[{"name":"Workers Builds: demo","status":"in_progress"}]}'
-o=$(rel "$R"); has "nothing to certify: only non-deployable paths changed (README.md, docs/guide.md)" "$o" && has "skip=true" "$o" && has "exit=1" "$o" && grep -q cancelled "$T/state.json" || why="$why; docs commit: $o"
-mkdir -p "$R/src" && echo "export {};" >"$R/src/index.ts" && echo "more" >>"$R/README.md"; commit "$R" code; SHA=$(git -C "$R" rev-parse HEAD)
+put '{"checks":[{"name":"Workers Builds: demo","status":"completed","conclusion":"skipped"}]}'
+o=$(rel "$R"); has "nothing to certify: Cloudflare deployed nothing" "$o" && has "skip=true" "$o" && has "exit=1" "$o" && grep -q cancelled "$T/state.json" || why="$why; skipped build: $o"
+mkdir -p "$R/src" && echo "export {};" >"$R/src/index.ts"; commit "$R" code; echo "more" >>"$R/README.md"; commit "$R" docs-last; SHA=$(git -C "$R" rev-parse HEAD)
 put '{"checks":[{"name":"Workers Builds: demo","status":"completed","conclusion":"success"}]}'
-o=$(rel "$R"); has "exit=0" "$o" && ! has "skip=true" "$o" && has "browsers=chromium,firefox,webkit" "$o" || why="$why; code commit: $o"
+o=$(rel "$R"); has "exit=0" "$o" && ! has "skip=true" "$o" && has "browsers=chromium,firefox,webkit" "$o" || why="$why; source-then-docs push with a successful build: $o"
 for step in install e2e; do
   blk=$(awk -v s="- name: $step" 'index($0,s){f=1;next} f&&/- name:/{exit} f' "$R/$WF")
   has "if: steps.release.outputs.skip != 'true'" "$blk" || why="$why; $step step not skipped: $blk"

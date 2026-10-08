@@ -54,7 +54,16 @@ const ghApi = () => {
 // The Workers Builds check-runs of one commit: its staging deployment (and uploaded production version) is that build.
 // Only the Cloudflare App's checks count: a same-named check from another App is no deployment evidence.
 const buildApp = () => pack.preview?.check_app ?? "cloudflare-workers-and-pages";
-const buildRuns = async (get, commit, name) => ((await get(`/commits/${commit}/check-runs?per_page=100`))?.check_runs ?? []).filter((x) => x.name?.startsWith(name) && x.app?.slug === buildApp());
+// Every page is read (a commit can carry more than 100 check-runs) before filtering by name and App.
+const buildRuns = async (get, commit, name) => {
+  const all = [];
+  for (let page = 1; ; page++) {
+    const batch = (await get(`/commits/${commit}/check-runs?per_page=100&page=${page}`))?.check_runs ?? [];
+    all.push(...batch);
+    if (batch.length < 100) break;
+  }
+  return all.filter((x) => x.name?.startsWith(name) && x.app?.slug === buildApp());
+};
 // Staging serves the newest build that deployed. Any commit after this one on the default branch (each one, never the net
 // diff: a change and its revert net to nothing but each deploys) whose build is running or succeeded replaces what this
 // commit's release check would test; builds that Cloudflare skipped (watch paths) deploy nothing and do not count.
@@ -433,7 +442,7 @@ if (cmd === "local") {
   let skipped = false;
   for (;;) {
     const runs = await builds(head);
-    const red = runs.find((c) => c.status === "completed" && !["success", "skipped"].includes(c.conclusion));
+    const red = runs.find((c) => c.status === "completed" && !["success", "skipped", "neutral"].includes(c.conclusion));
     if (red) fail(`Cloudflare build failed for ${short}: ${red.name} ${red.conclusion} (${red.details_url})`, "fix the Worker build; gate needs the preview to pass");
     if (runs.length && runs.every((c) => c.status === "completed")) { skipped = runs.every((c) => c.conclusion === "skipped"); break; }
     if (Date.now() - start >= wait)
@@ -461,12 +470,7 @@ if (cmd === "local") {
   // is the default branch's tip. Wait for every Workers Builds check on that commit, then name every configured browser
   // (Chromium and the extras) and the staging URL for the install, e2e and repo-check steps.
   const get = ghApi(), sha = env.RELEASE_SHA || git("rev-parse", "HEAD").trim(), short = sha.slice(0, 7);
-  // A commit that changes only non-deployable paths (pack.json non_deploy_paths) leaves staging as it was: nothing to certify.
-  let pushed = null;
-  try { pushed = git("diff", "--name-only", "--no-renames", "-z", `${sha}^`, sha).split("\0").filter(Boolean); } catch {}
-  const nd = (pack.non_deploy_paths ?? []).map(glob);
   const name = pack.preview?.check_name ?? "Workers Builds";
-  if (pushed?.length && pushed.every((f) => nd.some((r) => r.test(f)))) await cancelRun(`nothing to certify: only non-deployable paths changed (${pushed.join(", ")})`);
   // Every Workers Builds check on the commit (one per Worker) must have completed successfully before the suite runs (no
   // time cap; the job's timeout is the only backstop). The run was started by one of them, so none at all is an error.
   const wait = Number(env.GATE_PREVIEW_WAIT_S ?? Infinity) * 1000, poll = Number(env.GATE_POLL_S ?? 15) * 1000, start = Date.now();
@@ -480,7 +484,8 @@ if (cmd === "local") {
     if (Date.now() - start >= wait) fail(`the Cloudflare build for ${short} is still running after ${wait / 1000}s`, "re-run the release check once the build finishes");
     await new Promise((r) => setTimeout(r, poll));
   }
-  if (runs.every((c) => c.conclusion === "skipped")) await cancelRun(`nothing to certify: Cloudflare skipped the build for ${short} (no deployable change)`);
+  // What there is to certify comes only from the authenticated Builds results on this commit: any success certifies it, none (all skipped or neutral) is nothing to certify.
+  if (!runs.some((c) => c.conclusion === "success")) await cancelRun(`nothing to certify: Cloudflare deployed nothing for ${short} (every build skipped or neutral)`);
   const sup = await supersededBy(get, sha, name);
   if (sup) await cancelRun(`superseded: ${sup.slice(0, 7)} on the default branch deploys staging after ${short}; its release check covers it`);
   const extra = [...new Set(["chromium", ...(e2eCfg.browsers ?? []), ...(pack.e2e_release_browsers ?? [])])]; // the full suite runs every configured browser

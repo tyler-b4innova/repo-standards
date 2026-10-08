@@ -87,7 +87,7 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 
 - **`release-check-full-suite`**: a release run (`gate.mjs e2e --release`, `GATE_SELECT=full`) runs every Playwright project, including a non-browser one, with no file filter and no time cap (no `PW_GLOBAL_TIMEOUT`, no subprocess timeout), while the pull-request gate stays on Chromium.
 
-- **`release-check-skips-docs`**: a push to main that changes only non-deployable paths (`non_deploy_paths`) cancels the release check (nothing to certify) with a notice naming the files, and later steps are skipped through a step output rather than a job-level `if`; one deployable path runs them. Stated rule: no CI run when nothing deployable changed.
+- **`release-check-skips-docs`**: a release check certifies only what the authenticated Builds results on the commit show: builds all skipped (or neutral) mean nothing to certify and cancel the run, while any successful build certifies the commit even when its last commit changed only non-deployable paths (a source-then-docs push); later steps are skipped through a step output rather than a job-level `if`. Stated rule: no CI run when nothing deployable changed.
 
 ## Staging environment and PR Previews (stated rule: staging is a Wrangler environment, a separate Worker with its own data, queues, Workflows, cron and keys; Previews point at staging; nothing outside production reaches production. Incident: Worker Previews share Workflows, service bindings, queue consumers and cron with production)
 

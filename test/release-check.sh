@@ -98,6 +98,12 @@ o=$(verify release); has "superseded: aaaaaaa" "$o" && has "skip=true" "$o" && !
 # later commits whose builds Cloudflare skipped (docs) deploy nothing
 st "{\"compareCommits\":[\"$DOC\"],\"checksBy\":{\"$DOC\":[$SKIPB]}}"
 o=$(verify release-verify); has "exit=0" "$o" && ! grep -q cancelled "$T/state.json" || why="$why; a skipped later build superseded: $o"
+# check-runs come 100 to a page: an in-progress own build on page 2 is waited for, a superseding later build on page 2 is seen
+FILL=$(node -e 'console.log(JSON.stringify(Array.from({length:100},(_, i)=>({name:"other-"+i,status:"completed",conclusion:"success"}))).slice(1,-1))')
+st "{\"checksBy\":{\"$SHA\":[$FILL,$RUNB]}}"
+o=$(verify release); has "exit=1" "$o" && has "still running" "$o" || why="$why; an own build on page 2 was not waited for: $o"
+st "{\"checksBy\":{\"$SHA\":[$OKB],\"$MID\":[$FILL,$RUNB]},\"compareCommits\":[\"$MID\"]}"
+o=$(verify release-verify); has "superseded during the suite: aaaaaaa" "$o" || why="$why; a superseding build on page 2 was missed: $o"
 # a later build that FAILED may already have deployed staging (release.mjs deploys staging, then fails in a later step)
 FAILB='{"name":"Workers Builds: demo","status":"completed","conclusion":"failure"}'
 st "{\"compareCommits\":[\"$MID\"],\"checksBy\":{\"$MID\":[$FAILB]}}"
