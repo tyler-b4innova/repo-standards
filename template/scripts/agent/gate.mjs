@@ -234,7 +234,7 @@ if (cmd === "local") {
   writeFileSync(eventFile, JSON.stringify({ pull_request: { number: 1, base: { sha: base }, head: { sha: head, ref: git("branch", "--show-current").trim() }, user: { login: "local" } } }));
   const localEnv = { ...env, CI: "true", GITHUB_EVENT_NAME: "pull_request", GITHUB_EVENT_PATH: eventFile, GITHUB_SHA: head,
     PATH: `${process.cwd()}/node_modules/.bin:${env.PATH}`, GATE_BROWSERS: "chromium", WRANGLER_SEND_METRICS: "false", WRANGLER_CHECK_FOR_UPDATES: "false", WRANGLER_HOME: `${dir}/wrangler`, HOME: dir, USERPROFILE: dir, XDG_CONFIG_HOME: `${dir}/xdg` };
-  for (const k of ["GH_TOKEN", "GITHUB_TOKEN", "GITHUB_OUTPUT", "GATE_PREVIEW_URL", "BASE_URL", "PLAYWRIGHT_BASE_URL", "CLOUDFLARE_ENV", "RANGE", "ROLLBACK_BASE", "ROLLBACK_DRAFT"])
+  for (const k of ["RELEASE_CHECK", "GH_TOKEN", "GITHUB_TOKEN", "GITHUB_OUTPUT", "GATE_PREVIEW_URL", "BASE_URL", "PLAYWRIGHT_BASE_URL", "CLOUDFLARE_ENV", "RANGE", "ROLLBACK_BASE", "ROLLBACK_DRAFT"])
     delete localEnv[k];
   for (const k of Object.keys(localEnv)) if (/^(CLOUDFLARE_|CF_)/.test(k)) delete localEnv[k];
   for (const k of ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_API_KEY", "CLOUDFLARE_EMAIL", "CLOUDFLARE_ACCOUNT_ID"]) localEnv[k] = "";
@@ -559,6 +559,9 @@ if (cmd === "local") {
   if (e2eCfg.budget !== undefined && !(typeof e2eCfg.budget === "number" && e2eCfg.budget > 0)) fail(`standards.json e2e.budget is ${JSON.stringify(e2eCfg.budget)}`, "minutes above 0 (it may only tighten the org budget)");
   const mins = Math.min(e2eCfg.budget ?? Infinity, pack.gate_budget?.e2e ?? 5), ms = Math.round(mins * 60000);
   const url = env.GATE_PREVIEW_URL ?? "";
+  // The @a11y contract: tests tagged @a11y skip unless RELEASE_CHECK=1. Only the release check (e2e --release) passes it on; a
+  // pull request's gate clears it, even when inherited.
+  const { RELEASE_CHECK: releaseFlag, ...cleanEnv } = env, childEnv = args.includes("--release") && releaseFlag === "1" ? env : cleanEnv;
   // A client site's preview must not be indexed: its home page and a page only the Worker can answer (a 404; static
   // _headers rules do not cover Worker-rendered responses) both say noindex, in a robots meta or X-Robots-Tag. The
   // fetches and their body reads stop at the e2e budget, and the suite gets only the time left.
@@ -584,7 +587,7 @@ if (cmd === "local") {
   if (run) {
     console.log(`e2e: ${run[0]} ${run[1].map((a) => (a.includes("*") ? `"${a}"` : a)).join(" ")}${url ? ` against ${url}` : ""} (budget ${mins} min)`);
     const r = spawnSync(run[0], run[1], { stdio: "inherit", timeout: left, killSignal: "SIGKILL",
-      env: { ...env, PW_GLOBAL_TIMEOUT: String(left), ...(url && { PLAYWRIGHT_BASE_URL: url, BASE_URL: url }) } });
+      env: { ...childEnv, PW_GLOBAL_TIMEOUT: String(left), ...(url && { PLAYWRIGHT_BASE_URL: url, BASE_URL: url }) } });
     if (r.error?.code === "ETIMEDOUT" || r.signal) fail(`e2e exceeded its ${mins}-minute budget`, "make the slow tests faster (fewer navigations, the preview URL), then move the slow tail to the release check on main; do not shard");
     if (r.status) process.exit(r.status);
   }

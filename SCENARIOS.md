@@ -81,6 +81,8 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 
 - **`release-check-staging-superseded`**: a release check certifies a commit only if staging still serves its deployment: before and after the suite `gate.mjs` compares the default branch head; a newer commit that changes deployable paths cancels the run (neither a pass for the older commit nor a red failure; the newer commit's release check covers staging), a docs-only newer commit does not, and a failed cancel fails loudly; the repo-checks step gets `BASE_URL` and `PLAYWRIGHT_BASE_URL` as well as `GATE_PREVIEW_URL`.
 
+- **`release-check-a11y-contract`**: `RELEASE_CHECK=1` is set by the release check's e2e (`gate.mjs e2e --release`) and repo-check steps and never by the pull-request gate: a failing `@a11y`-style test (one that runs only when `RELEASE_CHECK=1`) fails the release run, and the PR gate's e2e and repo checks clear the variable even when inherited, so it does not run. Stated rule: axe scans run once, in the release check.
+
 - **`release-check-skips-docs`**: a push to main that changes only non-deployable paths (`non_deploy_paths`) skips the release check's browser install and e2e steps with a notice naming the files, through a step output rather than a job-level `if`; one deployable path runs them. Stated rule: no CI run when nothing deployable changed.
 
 ## Staging environment and PR Previews (stated rule: staging is a Wrangler environment, a separate Worker with its own data, queues, Workflows, cron and keys; Previews point at staging; nothing outside production reaches production. Incident: Worker Previews share Workflows, service bindings, queue consumers and cron with production)

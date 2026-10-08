@@ -13,7 +13,7 @@ description: Implement an issue or requested change end to end - fix a bug, buil
    - One behaviour, one layer: Worker/integration tests prove rules; a browser test covers only what needs a browser.
    - Seed through the API or SQL, never by replaying UI steps.
    - No test that only asserts a mock, a snapshot or a screenshot count.
-   - axe lives only in dedicated `@a11y` tests that run in `release-check`, one scan per distinct page or state; functional specs never call it.
+   - axe lives only in dedicated `@a11y` tests that run in `release-check` (skipped unless `RELEASE_CHECK=1`), one scan per distinct page or state; functional specs never call it.
    - No CPU throttling, `test.retries`, `waitForTimeout` or wall-clock assertions: wait on an event, or use `page.clock`.
    - Every test can fail for a real reason: break the code (revert the fix, flip the condition), watch it fail, and put that mutation in the PR body.
    - A new slow test (browser, multi-step) says in a comment what it alone proves; if another test proves it, delete one.

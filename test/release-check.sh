@@ -95,4 +95,16 @@ blk=$(awk '/- name: repo checks/{f=1} f' "$W/$WF")
 for v in BASE_URL PLAYWRIGHT_BASE_URL GATE_PREVIEW_URL; do has "$v: \${{ steps.release.outputs.url }}" "$blk" || why="$why; repo checks lack $v"; done
 has "actions: write" "$(cat "$W/$WF")" && has "gate.mjs release-verify" "$(cat "$W/$WF")" || why="$why; no still-staging step"
 if [ -z "$why" ]; then ok release-check-staging-superseded; else fail release-check-staging-superseded "$why"; fi
+
+# the @a11y contract: RELEASE_CHECK=1 reaches the suite only through the release check
+why=""
+R=$T/a11y; cp -R "$W" "$R"; echo '{"scripts":{"test:e2e":"[ \"$RELEASE_CHECK\" != 1 ]"}}' >"$R/package.json"; commit "$R" a11y
+e2e() { (cd "$R" && env "$@" GITHUB_OUTPUT= node scripts/agent/gate.mjs "${E2E_ARGS[@]}" 2>&1); echo "exit=$?"; }
+E2E_ARGS=(e2e --release); o=$(e2e RELEASE_CHECK=1); has "exit=1" "$o" || why="a failing @a11y test passed the release run: $o"
+E2E_ARGS=(e2e); o=$(e2e RELEASE_CHECK=1); has "exit=0" "$o" || why="$why; the PR gate ran @a11y tests: $o"
+E2E_ARGS=(e2e --release); o=$(e2e); has "exit=0" "$o" || why="$why; release run without the flag still set it: $o"
+for f in "$W/$WF"; do blk=$(awk '/- name: e2e/{f=1} f' "$f"); has 'RELEASE_CHECK: "1"' "$blk" && has "gate.mjs e2e --release" "$blk" || why="$why; release e2e step lacks the contract"; done
+rc=$(awk '/- name: repo checks/{f=1} /- name: still staging/{f=0} f' "$W/$WF"); has 'RELEASE_CHECK: "1"' "$rc" || why="$why; repo checks lack RELEASE_CHECK"
+grep -q "env -u RELEASE_CHECK bash scripts/agent/gate.local.sh" "$W/.github/workflows/std-gate.yml" || why="$why; PR gate repo checks do not clear RELEASE_CHECK"
+if [ -z "$why" ]; then ok release-check-a11y-contract; else fail release-check-a11y-contract "$why"; fi
 done_cases
