@@ -98,7 +98,7 @@ cp "$T/pw.orig" "$R/node_modules/.bin/playwright"; echo '{"name":"app","private"
 echo '{"name":"app","private":true,"devDependencies":{"@playwright/test":"1.63.0"}}' > "$R/package.json"
 bwf=$(node -e '
 const y=require("fs").readFileSync(process.argv[1],"utf8"),out=[],body=(j)=>{const i=y.indexOf("\n  "+j+":\n");const r=y.slice(i+1).split("\n").slice(1);const e=r.findIndex(l=>/^  \S/.test(l));return (e<0?r:r.slice(0,e)).join("\n")};
-for(const j of ["e2e","repo"]){const b=body(j);
+for(const j of ["test"]){const b=body(j);
  if(!/actions\/cache\/restore@[0-9a-f]{40} # v/.test(b)||!b.includes("path: ~/.cache/ms-playwright")||!/steps\.pw\.outputs\.key/.test(b))out.push(j+" caches no browsers");
  if(!/gate\.mjs install --no-browsers/.test(b)||!/gate\.mjs install --browsers-only/.test(b)||/gate\.mjs install$/m.test(b))out.push(j+" installs browsers uncached")}
 console.log(out.join("; ")||"ok")' "$R/$WF")
@@ -146,7 +146,7 @@ for (const f of fs.readdirSync(dir)) {
   const jobs=L.slice(j+1).filter(l=>/^  [A-Za-z0-9_-]+:\s*$/.test(l)).map(l=>l.trim().slice(0,-1));
   gates+=L.slice(j+1).filter(l=>/^    name: gate\s*$/.test(l)).length;
   if (f==="std-gate.yml") {
-    if (jobs.join()!=="checks,build,e2e,repo,gate") out.push("jobs: "+jobs.join());
+    if (jobs.join()!=="checks,test,gate") out.push("jobs: "+jobs.join());
     const runs=L.slice(j+1).join("\n");
     for (const s of ["scripts/agent/setup.sh --check","gate.mjs secrets","gate.mjs install","gate.mjs run typecheck","gate.mjs run build","gate.mjs e2e","scripts/agent/gate.local.sh"])
       if (!runs.includes(s)) out.push("missing step: "+s);
@@ -156,6 +156,34 @@ for (const f of fs.readdirSync(dir)) {
 if (gates!==1) out.push(gates+" jobs named gate");
 console.log(out.join("; ")||"ok")')
 if [ "$shape" = ok ]; then ok gate-fails-without-e2e; else fail gate-fails-without-e2e "$shape"; fi
+
+# one-test-job / one-gate-run-per-push: the full gate is `checks` plus ONE `test` job that installs once and runs
+# typecheck, build, the repo checks and e2e in that order (the preview wait just before e2e); a push to a draft starts no
+# jobs and a cancelled run posts no gate; the verdict needs exactly checks and test
+why=""; WFT=$ENGINE/template/.github/workflows/std-gate.yml
+node --input-type=module - "$WFT" <<'JS' || why="$why; $?"
+import { readFileSync } from "node:fs";
+import assert from "node:assert/strict";
+const y = readFileSync(process.argv[2], "utf8"), parts = y.slice(y.indexOf("\njobs:")).split(/^  ([\w-]+):\s*$/m), jobs = {};
+for (let i = 1; i < parts.length; i += 2) jobs[parts[i]] = parts[i + 1];
+assert.deepEqual(Object.keys(jobs), ["checks", "test", "gate"]);
+assert.equal((jobs.test.match(/gate\.mjs install --no-browsers/g) ?? []).length, 1, "one install");
+assert.equal((jobs.test.match(/actions\/checkout@/g) ?? []).length, 1, "one checkout");
+const order = ["run typecheck", "run build", "gate.local.sh", "gate.mjs preview", "gate.mjs e2e"].map((k) => jobs.test.indexOf(k));
+assert.ok(order.every((n, i) => n > 0 && (i === 0 || n > order[i - 1])), "typecheck, build, repo checks, preview, e2e in order: " + order);
+assert.match(jobs.gate, /needs: \[checks, test\]/);
+assert.match(jobs.gate, /^    if: \$\{\{ always\(\) && !cancelled\(\) \}\}$/m, "a cancelled run posts no gate, and gate never skips");
+const skip = /github\.event\.action != 'synchronize' \|\| github\.event\.pull_request\.draft != true \|\| vars\.STD_GATE_DRAFT_PUSHES == 'true'/;
+assert.match(jobs.checks, skip, "a push to a draft starts no checks");
+assert.match(jobs.test, /needs: checks/);
+JS
+NEEDS_OK='{"checks":{"result":"success","outputs":{"mode":"full"}},"test":{"result":"success"}}'
+v1=$(NEEDS="$NEEDS_OK" node template/scripts/agent/gate.mjs verdict 2>&1); x1=$?
+v2=$(NEEDS='{"checks":{"result":"success","outputs":{"mode":"full"}},"test":{"result":"failure"}}' node template/scripts/agent/gate.mjs verdict 2>&1); x2=$?
+v3=$(NEEDS='{"checks":{"result":"success","outputs":{"mode":"cheap"}},"test":{"result":"skipped"}}' node template/scripts/agent/gate.mjs verdict 2>&1); x3=$?
+v4=$(NEEDS='{"checks":{"result":"success","outputs":{"mode":"full"}},"test":{"result":"skipped"}}' node template/scripts/agent/gate.mjs verdict 2>&1); x4=$?
+{ [ $x1 -eq 0 ] && [ $x2 -ne 0 ] && [ $x3 -ne 0 ] && [ $x4 -ne 0 ]; } || why="$why; verdict $x1 $x2 $x3 $x4: $v1 $v2 $v3 $v4"
+if [ -z "$why" ]; then ok one-test-job; ok one-gate-run-per-push; else fail one-test-job "$why"; fail one-gate-run-per-push "$why"; fi
 
 # dependency-cache-by-lockfile: gate and the warm-up cache the lockfile's package manager (npm, pnpm, yarn); pnpm and
 # yarn come through corepack, and when that fails there is no cache rather than a failed setup step; both workflows

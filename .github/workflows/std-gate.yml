@@ -2,12 +2,15 @@
 # request's commits (opened, synchronize, reopened, ready_for_review), the merge queue, and a `workflow_dispatch`
 # the org launcher sends after a base change (gate then tests the fresh merge ref). Comments, reviews and edits start
 # nothing: the org rulesets require every review thread resolved, and scripts/agent/review.mjs is the conversation's
-# rule for whatever merges (a launcher or merge helper).
+# rule for whatever merges (a launcher or merge helper). A push to a draft runs no checks or tests (iterate with
+# `gate.mjs local`): a draft gets the cheap checks on opened/reopened and the one full gate on ready_for_review.
 # This workflow only restores caches, never saves them: a re-gate on the default branch runs a pull request's tree, so a
 # cache written here could be seeded by that tree; std-cache-warm (main only) writes them.
 # Repo-owned checks go in scripts/agent/gate.local.sh. The job `gate` is the one required check: it needs the checks
-# job and the parallel tail (build, e2e, repo checks), runs whatever happened, and passes only when each of them
-# succeeded, or (a draft's cheap gate) the tail was skipped. Each job's timeout is the overlay's gate.timeout_minutes.
+# job and the one test job (install, typecheck, build, repo checks, affected e2e), runs whatever happened except a
+# cancelled run, and passes only when both succeeded on a ready pull request: a draft head (cheap gate, or a push the
+# checks skipped) always fails it, so a pull request flipped to ready without a ready_for_review run has no passing
+# gate to merge on. Each job's timeout is the overlay's gate.timeout_minutes.
 name: std-gate
 on:
   pull_request:
@@ -30,6 +33,9 @@ concurrency:
   cancel-in-progress: true
 jobs:
   checks:
+    # a push to a draft starts nothing (skipped jobs bill nothing): the push-then-ready_for_review pair was two runs, the first
+    # cancelled but billed. A draft gets the cheap gate on opened/reopened; ready_for_review runs the one full gate.
+    if: github.event_name != 'pull_request' || github.event.action != 'synchronize' || github.event.pull_request.draft != true || vars.STD_GATE_DRAFT_PUSHES == 'true'
     # The runner is an org variable, so an org can move gate to another pool (and back) without a pack release.
     runs-on: ${{ vars.STD_GATE_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 30
@@ -75,8 +81,9 @@ jobs:
       - name: syntax
         if: steps.plan.outputs.mode == 'cheap'
         run: node scripts/agent/gate.mjs syntax
-  # The tail runs in parallel once the checks pass, and only for the full gate.
-  build:
+  # One test job for the full gate: one checkout, one install, then typecheck, build, the repo's checks and the
+  # affected e2e, so the setup is paid (and billed) once.
+  test:
     needs: checks
     if: needs.checks.outputs.mode == 'full'
     runs-on: ${{ vars.STD_GATE_RUNNER || 'ubuntu-24.04' }}
@@ -106,6 +113,24 @@ jobs:
           key: deps-${{ runner.os }}-${{ runner.arch }}-${{ steps.pm.outputs.cache }}-${{ hashFiles('package-lock.json', 'pnpm-lock.yaml', 'yarn.lock') }}
       - name: install
         run: node scripts/agent/gate.mjs install --no-browsers
+      # browsers are cached by the exact Playwright version and this run's browsers: a hit downloads nothing, and
+      # system packages are installed only when the browsers' shared libraries are missing
+      - name: playwright
+        id: pw
+        env:
+          GATE_BROWSERS: ${{ needs.checks.outputs.browsers }}
+        run: node scripts/agent/gate.mjs playwright
+      - name: browser cache
+        if: steps.pw.outputs.key != ''
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ steps.pw.outputs.key }}
+      - name: browsers
+        if: steps.pw.outputs.key != ''
+        env:
+          GATE_BROWSERS: ${{ needs.checks.outputs.browsers }}
+        run: node scripts/agent/gate.mjs install --browsers-only
       - name: typecheck
         run: node scripts/agent/gate.mjs run typecheck
       - name: build
@@ -113,127 +138,27 @@ jobs:
           ROLLBACK_BASE: ${{ needs.checks.outputs.rollback_base }}
           ROLLBACK_DRAFT: ${{ needs.checks.outputs.rollback_draft }}
         run: node scripts/agent/gate.mjs run build
-  e2e:
-    needs: checks
-    if: needs.checks.outputs.mode == 'full'
-    runs-on: ${{ vars.STD_GATE_RUNNER || 'ubuntu-24.04' }}
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.checks.outputs.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - name: package manager
-        id: pm
-        # the lockfile's package manager caches (pnpm and yarn run through corepack; no cache if that fails)
+      - name: repo checks
         run: |
-          if [ -f pnpm-lock.yaml ]; then if corepack enable && pnpm --version >/dev/null; then echo cache=pnpm >>"$GITHUB_OUTPUT"; echo "path=$(pnpm store path --silent)" >>"$GITHUB_OUTPUT"; fi
-          elif [ -f yarn.lock ]; then if corepack enable && yarn --version >/dev/null; then echo cache=yarn >>"$GITHUB_OUTPUT"; echo "path=$(yarn cache dir 2>/dev/null || yarn config get cacheFolder)" >>"$GITHUB_OUTPUT"; fi
-          elif [ -f package-lock.json ]; then echo cache=npm >>"$GITHUB_OUTPUT"; echo "path=$(npm config get cache)" >>"$GITHUB_OUTPUT"; fi
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-          package-manager-cache: false # the dependency cache below is an explicit restore (this workflow never writes caches)
-      - name: dependency cache
-        if: steps.pm.outputs.cache != ''
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ steps.pm.outputs.path }}
-          key: deps-${{ runner.os }}-${{ runner.arch }}-${{ steps.pm.outputs.cache }}-${{ hashFiles('package-lock.json', 'pnpm-lock.yaml', 'yarn.lock') }}
-      - name: install
-        run: node scripts/agent/gate.mjs install --no-browsers
-      # browsers are cached by the exact Playwright version and this run's browsers: a hit downloads nothing, and
-      # system packages are installed only when the browsers' shared libraries are missing
-      - name: playwright
-        id: pw
-        env:
-          GATE_BROWSERS: ${{ needs.checks.outputs.browsers }}
-        run: node scripts/agent/gate.mjs playwright
-      - name: browser cache
-        if: steps.pw.outputs.key != ''
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ steps.pw.outputs.key }}
-      - name: browsers
-        if: steps.pw.outputs.key != ''
-        env:
-          GATE_BROWSERS: ${{ needs.checks.outputs.browsers }}
-        run: node scripts/agent/gate.mjs install --browsers-only
+          if [ -f scripts/agent/gate.local.sh ]; then bash scripts/agent/gate.local.sh; else echo "notice: no scripts/agent/gate.local.sh"; fi
+      # last before e2e, so the Workers Build for this head has the earlier steps' time to finish
       - name: preview
         id: preview
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/agent/gate.mjs preview
-      # a local e2e run (no preview URL) gets this job's own build, as it did when one job ran everything
-      - name: build
-        if: steps.preview.outputs.url == ''
-        env:
-          ROLLBACK_BASE: ${{ needs.checks.outputs.rollback_base }}
-          ROLLBACK_DRAFT: ${{ needs.checks.outputs.rollback_draft }}
-        run: node scripts/agent/gate.mjs run build
       - name: e2e
         env:
           GATE_BROWSERS: ${{ needs.checks.outputs.browsers }}
           GATE_PREVIEW_URL: ${{ steps.preview.outputs.url }}
         run: node scripts/agent/gate.mjs e2e
-  repo:
-    needs: checks
-    if: needs.checks.outputs.mode == 'full'
-    runs-on: ${{ vars.STD_GATE_RUNNER || 'ubuntu-24.04' }}
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.checks.outputs.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - name: package manager
-        id: pm
-        # the lockfile's package manager caches (pnpm and yarn run through corepack; no cache if that fails)
-        run: |
-          if [ -f pnpm-lock.yaml ]; then if corepack enable && pnpm --version >/dev/null; then echo cache=pnpm >>"$GITHUB_OUTPUT"; echo "path=$(pnpm store path --silent)" >>"$GITHUB_OUTPUT"; fi
-          elif [ -f yarn.lock ]; then if corepack enable && yarn --version >/dev/null; then echo cache=yarn >>"$GITHUB_OUTPUT"; echo "path=$(yarn cache dir 2>/dev/null || yarn config get cacheFolder)" >>"$GITHUB_OUTPUT"; fi
-          elif [ -f package-lock.json ]; then echo cache=npm >>"$GITHUB_OUTPUT"; echo "path=$(npm config get cache)" >>"$GITHUB_OUTPUT"; fi
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 24
-          package-manager-cache: false # the dependency cache below is an explicit restore (this workflow never writes caches)
-      - name: dependency cache
-        if: steps.pm.outputs.cache != ''
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ steps.pm.outputs.path }}
-          key: deps-${{ runner.os }}-${{ runner.arch }}-${{ steps.pm.outputs.cache }}-${{ hashFiles('package-lock.json', 'pnpm-lock.yaml', 'yarn.lock') }}
-      # with the run's browsers: repo checks may run Playwright
-      - name: install
-        run: node scripts/agent/gate.mjs install --no-browsers
-      # browsers are cached by the exact Playwright version and this run's browsers: a hit downloads nothing, and
-      # system packages are installed only when the browsers' shared libraries are missing
-      - name: playwright
-        id: pw
-        env:
-          GATE_BROWSERS: ${{ needs.checks.outputs.browsers }}
-        run: node scripts/agent/gate.mjs playwright
-      - name: browser cache
-        if: steps.pw.outputs.key != ''
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ steps.pw.outputs.key }}
-      - name: browsers
-        if: steps.pw.outputs.key != ''
-        env:
-          GATE_BROWSERS: ${{ needs.checks.outputs.browsers }}
-        run: node scripts/agent/gate.mjs install --browsers-only
-      - name: repo checks
-        run: |
-          if [ -f scripts/agent/gate.local.sh ]; then bash scripts/agent/gate.local.sh; else echo "notice: no scripts/agent/gate.local.sh"; fi
   gate:
     name: gate
-    needs: [checks, build, e2e, repo]
-    if: always()
+    needs: [checks, test]
+    # Never skipped: a skipped job reports success, and a draft head must not carry a passing gate (a pull request marked
+    # ready by an Actions token fires no ready_for_review run). The verdict fails a draft head; a run cancelled by a newer
+    # one in the group posts nothing.
+    if: ${{ always() && !cancelled() }}
     runs-on: ${{ vars.STD_GATE_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 5
     steps:
