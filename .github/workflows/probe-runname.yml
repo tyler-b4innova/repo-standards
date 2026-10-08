@@ -1,8 +1,0 @@
-name: probe-runname
-run-name: ${{ github.event_name == 'pull_request' && 'WRONG' || '' }}
-on: push
-jobs:
-  a:
-    runs-on: ubuntu-24.04
-    steps:
-      - run: echo hi
