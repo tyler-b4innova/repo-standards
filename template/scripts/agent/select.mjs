@@ -21,8 +21,10 @@ const SOURCE = /\.(?:[cm]?[jt]sx?|astro|svelte|vue|css|scss|md|mdx|html|json)$/;
 const SKIP = /(^|\/)(node_modules|dist|build|\.astro|\.next|\.wrangler|coverage|test-results|playwright-report)\//;
 const SUPPORT = /(^|\/)(support|helpers|fixtures|utils)\//;
 // Shared foundations: a change to one can break any test.
-const FOUNDATIONS = ["package.json", "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "yarn.lock", ".yarnrc.yml", ".npmrc",
-  "**/*.config.*", "**/tsconfig*.json", "**/wrangler.{json,jsonc,toml}", "**/wrangler.*.{json,jsonc,toml}", "standards.json", ".github/workflows/**", "scripts/agent/**", ".node-version", ".nvmrc", ".tool-versions", ".env*", "**/.env*"].map(globRe);
+const FOUNDATIONS = ["**/package.json", "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "yarn.lock", ".yarnrc.yml", ".npmrc",
+  "**/*.config.*", "**/tsconfig*.json", "**/wrangler.{json,jsonc,toml}", "**/wrangler.*.{json,jsonc,toml}", "standards.json", ".github/workflows/**", "scripts/agent/**", ".node-version", ".nvmrc", ".tool-versions", ".env*", "**/.env*",
+  // data every test may depend on without importing it: schema, seeds and shared fixtures
+  "**/*.sql", "**/migration/**", "**/migrations/**", "**/seed/**", "**/seeds/**", "**/seed.*", "**/*.seed.*", "**/*-seed.*", "**/*-seeds.*", "**/fixtures/**", "**/__fixtures__/**", "**/*.fixture.*", "**/*.fixtures.*"].map(globRe);
 // Files no test exercises.
 const INERT = ["docs/**", "**/*.md", "LICENSE", "**/LICENSE", "**/LICENSE.*", ".github/ISSUE_TEMPLATE/**", ".github/PULL_REQUEST_TEMPLATE.md", ".github/CODEOWNERS", ".agents/**", ".claude/**", ".codex/**",
   ".gitignore", ".gitattributes", ".gitleaks.toml", ".gitleaksignore", ".vscode/**", ".idea/**", "**/*.d.ts"].map(globRe);
@@ -50,6 +52,13 @@ const PATTERNS = [
   /<(?:script|link|img|source)\b[^>]*?\b(?:src|href)=["'](\.{1,2}\/[^"'\n]+)["']/g,
   /^layout:\s*["']?(\.{1,2}\/[^"'\s]+)["']?\s*$/gm,
 ];
+// import()/require() whose target cannot be enumerated: a computed argument. A literal, or a template with a relative prefix (globImports), is enumerable.
+const computedLoads = (t) => [...t.matchAll(/(?<![.\w$])(?:import|require)\s*\(\s*([^)]{0,200})/g)].some((m) => {
+  const a = m[1].trimStart();
+  return !(/^(["'])[^"'\n]*\1\s*(,|$)/.test(a) || /^`(\.{1,2}\/[^`$]*)\$\{/.test(a) || /^`[^`$]*`\s*(,|$)/.test(a));
+});
+// The destinations a test or helper requests (goto, fetch, request.get ...): "/route" literals, external URLs, and anything else (a variable).
+const destinations = (t) => [...t.matchAll(/\b(?:goto|fetch)\(\s*([^,)]*)|\brequest\.(?:get|post|put|patch|delete|head|fetch)\(\s*([^,)]*)/g)].map((m) => (m[1] ?? m[2] ?? "").trim());
 const specifiers = (text) => { const out = new Set(); for (const p of PATTERNS) for (const m of text.matchAll(p)) out.add(m[1]); return [...out]; };
 const globImports = (text) => {
   const out = new Set();
@@ -82,7 +91,7 @@ function aliases(read) {
 }
 
 /** The import graph of `files` (repo-relative posix paths); `read(f)` returns a file's text or null. */
-export function buildGraph(files, read, deps = new Set()) {
+export function buildGraph(files, read, deps = new Set(), pkgs = new Map()) {
   const set = new Set(files), src = files.filter((f) => SOURCE.test(f) && !SKIP.test(f) && !f.endsWith(".json"));
   const text = new Map(src.map((f) => [f, read(f) ?? ""]));
   const alias = aliases(read), unresolved = [];
@@ -94,7 +103,7 @@ export function buildGraph(files, read, deps = new Set()) {
     if (t !== base) for (const e of [".ts", ".tsx", ".mts", ".cts"]) if (set.has(t + e)) return t + e;
     return null;
   };
-  const imports = new Map(), literals = new Map();
+  const imports = new Map(), literals = new Map(), dynamic = new Set(), httpLost = new Set();
   for (const [f, t] of text) {
     const to = new Set();
     for (const s of specifiers(t)) {
@@ -102,6 +111,8 @@ export function buildGraph(files, read, deps = new Set()) {
       if (spec.startsWith(".")) { const r = find(posix.normalize(posix.join(posix.dirname(f), spec))); if (r) to.add(r); continue; }
       if (/^(node|cloudflare|https?|data|astro|virtual|npm|bun|jsr):/.test(spec) || spec.startsWith("/") && !set.has(spec.slice(1))) continue;
       let hit = null;
+      const pname = /^@[^/]+\/[^/]+|^[^/@#$~][^/]*/.exec(spec)?.[0];
+      if (pname && pkgs.has(pname)) { for (const o of files) if (o.startsWith(`${pkgs.get(pname)}/`) && SOURCE.test(o) && !SKIP.test(o) && !isTest(o)) to.add(o); continue; }
       for (const a of alias) { if (a.exact ? spec === a.prefix : spec.startsWith(a.prefix)) { hit = find(posix.normalize(a.exact ? a.base : posix.join(a.base, spec.slice(a.prefix.length)))); if (hit) break; } }
       if (hit) { to.add(hit); continue; }
       if (spec.startsWith("/") && set.has(spec.slice(1))) { to.add(spec.slice(1)); continue; }
@@ -114,6 +125,7 @@ export function buildGraph(files, read, deps = new Set()) {
       for (const o of files) if (o !== f && m.test(o)) to.add(o);
     }
     imports.set(f, to); literals.set(f, pathLiterals(t));
+    if (computedLoads(t)) dynamic.add(f);
   }
   const pages = new Map(); for (const f of files) if (isPage(f) && !SKIP.test(f)) pages.set(pageRoute(f), f);
   const owners = new Map();
@@ -123,13 +135,25 @@ export function buildGraph(files, read, deps = new Set()) {
   }
   const edges = new Map([...imports].map(([f, t]) => [f, new Set(t)]));
   for (const [f, rs] of literals) {
-    const own = edges.get(f), test = isTest(f), caller = test || /^(src|tests?|e2e)\//.test(f);
+    const own = edges.get(f), test = isTest(f) || /^(tests?|e2e|__tests__)\//.test(f) || SUPPORT.test(f), caller = test || /^src\//.test(f);
     for (const r of rs) {
       if (isApi(r)) { if (caller) for (const [o, fs] of owners) if (routeMatches(r, o)) for (const x of fs) if (x !== f) own.add(x); continue; }
       if (test) for (const [route, page] of pages) if (routeMatches(r, route)) own.add(page);
     }
   }
-  return { edges, imports, literals, pages, unresolved, text };
+  // Every destination a test or helper requests must resolve to a page or an API route; one that cannot makes the file (and its dependants) always run.
+  for (const f of text.keys()) {
+    if (!(isTest(f) || /^(tests?|e2e|__tests__)\//.test(f) || SUPPORT.test(f))) continue;
+    for (const a of destinations(text.get(f))) {
+      const lit = /^(["'`])(.*)\1$/.exec(a);
+      let v = lit ? lit[2].replace(/^(?:\$\{[^}]*\})+(?=\/)/, "") : "";
+      if (lit && /^[a-z][a-z0-9+.-]*:\/\//i.test(v)) continue;
+      v = v.startsWith("/") ? v.split(/[?#]/)[0].replace(/\$\{[^}]*\}/g, "*") : "";
+      const ok = v && ([...pages.keys()].some((r) => routeMatches(v, r)) || [...owners.keys()].some((r) => routeMatches(v, r)));
+      if (!ok) { httpLost.add(f); break; }
+    }
+  }
+  return { edges, imports, literals, pages, unresolved, text, dynamic, httpLost };
 }
 const NODE_BUILTIN = new Set(["assert", "buffer", "child_process", "cluster", "crypto", "dns", "events", "fs", "http", "http2", "https", "net", "os", "path", "perf_hooks", "process", "querystring", "readline", "stream", "string_decoder", "timers", "tls", "url", "util", "v8", "vm", "worker_threads", "zlib", "module", "test"]);
 
@@ -154,8 +178,8 @@ function reaching(graph, file) {
  * @param {{ files: string[], changed: string[], deleted?: string[], read: (f: string) => string|null, config?: object, deps?: Set<string>, forced?: string|null }} input
  * @returns {{ mode: "full"|"scoped", full: string[], notes: string[], tests: Map<string, string[]>, kinds: Map<string, "playwright"|"node">, universe: string[] }}
  */
-export function select({ files, changed, deleted = [], read, config = {}, deps = new Set(), forced = null }) {
-  const graph = buildGraph(files, read, deps);
+export function select({ files, changed, deleted = [], read, config = {}, deps = new Set(), pkgs = new Map(), forced = null }) {
+  const graph = buildGraph(files, read, deps, pkgs);
   const universe = files.filter((f) => isTest(f) && !SKIP.test(f)).sort();
   const kinds = new Map(universe.map((t) => [t, /node:test|['"](?:vitest|mocha|@jest\/globals|bun:test)['"]/.test(graph.text.get(t) ?? read(t) ?? "") ? "node" : "playwright"]));
   const reasons = new Map(), full = [], notes = [];
@@ -176,9 +200,6 @@ export function select({ files, changed, deleted = [], read, config = {}, deps =
     const reached = reaching(graph, f);
     if (reached.length) { for (const { test, chain } of reached) why(test, `${f} changed: ${chain.join(" -> ")}`); continue; }
     if (inert.some((r) => r.test(f))) { notes.push(`${f} is documentation or tooling no test exercises`); continue; }
-    // A file a test reads by name (a fixture, a data file).
-    const readers = universe.filter((t) => (graph.text.get(t) ?? read(t) ?? "").includes(posix.basename(f)));
-    if (readers.length && !SOURCE.test(f)) { for (const t of readers) why(t, `${f} changed: ${t} reads it`); continue; }
     full.push(`no test reaches ${f}`);
   }
   // Smoke tests, and tests whose pages, API routes and imports cannot be derived, always run.
@@ -187,6 +208,14 @@ export function select({ files, changed, deleted = [], read, config = {}, deps =
     if (head.some((l) => l.trim() === "// @smoke") || smokeGlobs.some((r) => r.test(t))) why(t, "the smoke set always runs");
     const own = graph.edges.get(t) ?? new Set();
     if (![...own].some((x) => !SUPPORT.test(x) && !isTest(x))) why(t, "its pages and imports cannot be derived, so it always runs");
+  }
+  // A test that depends on a file loading a computed path, or requesting a destination that cannot be resolved, always runs.
+  for (const t of universe) {
+    const seen = new Set([t]), todo = [t];
+    while (todo.length) for (const x of graph.edges.get(todo.pop()) ?? []) if (!seen.has(x)) { seen.add(x); todo.push(x); }
+    const d = [...seen].find((x) => graph.dynamic.has(x)), h = [...seen].find((x) => graph.httpLost.has(x));
+    if (d) why(t, `it depends on ${d}, which loads a path the graph cannot enumerate, so it always runs`);
+    if (h) why(t, `it depends on ${h}, which requests a destination the graph cannot resolve, so it always runs`);
   }
   return { mode: full.length ? "full" : "scoped", full, notes, tests: reasons, kinds, universe };
 }
@@ -201,7 +230,7 @@ export function context({ env = process.env, base = "", files = "" } = {}) {
   try {
     const head = git("rev-parse", "HEAD").trim(), parents = git("rev-list", "--parents", "-n", "1", "HEAD").trim().split(" ").slice(1);
     if (!sha && head !== event.pull_request?.head?.sha && parents.length === 2) sha = parents[0];
-    else if (sha || event.pull_request?.base?.sha || event.merge_group?.base_sha) sha = git("merge-base", sha || event.pull_request?.base?.sha || event.merge_group.base_sha, "HEAD").trim();
+    else if (sha || event.pull_request?.base?.sha) sha = git("merge-base", sha || event.pull_request.base.sha, "HEAD").trim();
     else for (const r of ["origin/HEAD", "origin/main", "origin/master", "main", "master"]) { try { sha = git("merge-base", r, "HEAD").trim(); break; } catch {} }
     if (!sha) return { changed: [], deleted: [], base: null };
     const changed = [], deleted = [], rows = git("diff", "--name-status", "--no-renames", "-z", sha).split("\0").filter(Boolean);
@@ -217,16 +246,26 @@ export function plan({ env = process.env, base = "", files = "", config } = {}) 
   const std = (() => { try { return JSON.parse(readFileSync("standards.json", "utf8")); } catch { return {}; } })();
   const cfg = config ?? std.affected;
   const pkg = (() => { try { return JSON.parse(readFileSync("package.json", "utf8")); } catch { return {}; } })();
-  const deps = new Set(Object.keys({ ...pkg.dependencies, ...pkg.devDependencies, ...pkg.optionalDependencies, ...pkg.peerDependencies }));
   const tracked = git("ls-files", "-co", "--exclude-standard", "-z").split("\0").filter(Boolean).filter((f) => existsSync(f));
   const read = (f) => { try { return readFileSync(f, "utf8"); } catch { return null; } };
+  // Dependencies: the root's and every nested package's. A workspace package (a nested package.json) or a file:/link: dependency maps to its
+  // directory; a local dependency that cannot be mapped is left out, so importing it is an import the graph cannot resolve (the full suite).
+  const pkgs = new Map(), deps = new Set(), local = /^(workspace:|file:|link:|portal:)/;
+  const manifests = [["package.json", pkg], ...tracked.filter((f) => /(^|\/)package\.json$/.test(f) && f !== "package.json" && !SKIP.test(f)).map((f) => [f, (() => { try { return JSON.parse(read(f)); } catch { return {}; } })()])];
+  for (const [f, m] of manifests) if (f !== "package.json" && typeof m.name === "string") pkgs.set(m.name, posix.dirname(f));
+  for (const [f, m] of manifests) for (const [n, v] of Object.entries({ ...m.dependencies, ...m.devDependencies, ...m.optionalDependencies, ...m.peerDependencies })) {
+    if (!local.test(String(v))) { deps.add(n); continue; }
+    const to = /^(file|link|portal):/.test(v) ? posix.normalize(posix.join(posix.dirname(f), String(v).replace(/^[a-z]+:/, ""))) : null;
+    if (to && tracked.some((t) => t.startsWith(`${to}/`)) && !pkgs.has(n)) pkgs.set(n, to);
+  }
   const ctx = context({ env, base, files });
   const override = env.GATE_SELECT ?? "";
   let forced = null;
   if (cfg === false) forced = 'standards.json sets "affected": false';
   else if (override === "full") forced = "GATE_SELECT=full";
+  else if (env.GITHUB_EVENT_NAME && env.GITHUB_EVENT_NAME !== "pull_request") forced = `a ${env.GITHUB_EVENT_NAME} run is not a pull request`;
   else if (ctx.base === null) forced = "the pull request's base cannot be found in this checkout";
-  const result = select({ files: tracked, changed: ctx.changed, deleted: ctx.deleted, read, config: cfg && typeof cfg === "object" ? cfg : {}, deps, forced });
+  const result = select({ files: tracked, changed: ctx.changed, deleted: ctx.deleted, read, config: cfg && typeof cfg === "object" ? cfg : {}, deps, pkgs, forced });
   return { ...result, base: ctx.base, changed: ctx.changed, deleted: ctx.deleted };
 }
 

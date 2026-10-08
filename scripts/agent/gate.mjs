@@ -516,12 +516,12 @@ if (cmd === "local") {
   // those projects; a config without projects runs as it is.
   const cfgFile = [...(rootPw ? ls(".") : []), ...(dir && !rootPw ? ls(dir).map((f) => `${dir}/${f}`) : [])].find((f) => /(^|\/)playwright\.config\.[cm]?[jt]s$/.test(f));
   const cfg = cfgFile ? rd(cfgFile, "utf8") : "", named = (b) => new RegExp(`name:\\s*['"\`]${b}['"\`]`).test(cfg);
-  const projects = /\bprojects\s*:/.test(cfg) ? browsers().filter(named).map((b) => `--project=${b}`) : [];
+  const everything = env.GATE_SELECT === "full", projects = !everything && /\bprojects\s*:/.test(cfg) ? browsers().filter(named).map((b) => `--project=${b}`) : [];
   const pwBin = has("node_modules/.bin/playwright") ? ["node_modules/.bin/playwright", []] : ["npx", ["--no-install", "playwright"]];
   // A package script that runs `playwright test` gets the same project selection (npm needs `--` before it).
   const pwScript = script && /\bplaywright\s+test\b/.test(pkg.scripts[script]);
   // Without --project Playwright runs every project, so a config whose projects are named otherwise is refused.
-  if (!e2eCmd && (!script || pwScript) && cfg && /\bprojects\s*:/.test(cfg) && !projects.length)
+  if (!everything && !e2eCmd && (!script || pwScript) && cfg && /\bprojects\s*:/.test(cfg) && !projects.length)
     fail(`${cfgFile} defines projects but none named ${browsers().join(" or ")}, so gate cannot pick the Chromium run`, 'name the Chromium project "chromium" (gate runs only that), or set standards.json e2e.command');
   // kind: what the run is, so the selected files can be handed to it ("pw" Playwright, "node" node --test, null as written).
   const nodeTests = dir && ls(dir, { recursive: true }).some((f) => /\.test\.[cm]?js$/.test(f));
@@ -529,20 +529,18 @@ if (cmd === "local") {
   const run = e2eCmd ? ["bash", ["-c", e2eCmd]] : script ? [pm, ["run", script, ...(pwScript && projects.length ? [...(pm === "npm" ? ["--"] : []), ...projects] : [])]] : dir && pw ? [pwBin[0], [...pwBin[1], "test", dir, ...projects]]
     : rootPw ? [pwBin[0], [...pwBin[1], "test", ...projects]]
     : nodeTests ? ["node", ["--test", `${dir}/**/*.test.*js`]] : null;
-  // No time budget: a slow suite is a test-quality problem, not a gate failure. The workflow's timeout-minutes only stops a
-  // runaway job; the preview fetches below stop at GATE_PREVIEW_FETCH_S (default 60 s) so a hung preview cannot hold the job.
-  const fetchMs = Math.round(Number(env.GATE_PREVIEW_FETCH_S ?? 60) * 1000);
+  // No time limit of any kind here: a slow suite is a test-quality problem, not a gate failure. Only the workflow's
+  // timeout-minutes stops a runaway job.
   const url = env.GATE_PREVIEW_URL ?? "";
   // A client site's preview must not be indexed: its home page and a page only the Worker can answer (a 404; static
   // _headers rules do not cover Worker-rendered responses) both say noindex, in a robots meta or X-Robots-Tag.
   if (url && pack.profile === "client" && !args.includes("--local")) {
     const directives = (v) => v.toLowerCase().split(",").map((d) => d.replace(/^[^:]*:/, "").trim());
     const attrs = (tag) => Object.fromEntries([...tag.matchAll(/([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/g)].map((a) => [a[1].toLowerCase(), a[2] ?? a[3] ?? a[4]]));
-    const signal = AbortSignal.timeout(fetchMs);
     for (const page of [url, new URL("/__std-noindex-probe", url).href]) {
       let res = null, html = "";
-      try { res = await fetch(page, { redirect: "follow", signal }); html = await res.text(); }
-      catch (e) { fail(e.name === "TimeoutError" || e.name === "AbortError" ? `the preview at ${page} did not answer within ${fetchMs / 1000} s` : `the preview at ${page} did not answer: ${e.cause?.code ?? e.message}`, "re-run gate once the preview is up"); }
+      try { res = await fetch(page, { redirect: "follow" }); html = await res.text(); }
+      catch (e) { fail(`the preview at ${page} did not answer: ${e.cause?.code ?? e.message}`, "re-run gate once the preview is up"); }
       // Only active markup counts: not inside an HTML comment, <noscript> or <template>.
       const active = html.replace(/<!--[\s\S]*?-->/g, "").replace(/<(noscript|template)\b[\s\S]*?<\/\1\s*>/gi, "");
       const meta = [...active.matchAll(/<meta\b[^>]*>/gi)].map(([t]) => attrs(t)).some((a) => /^(robots|googlebot)$/i.test(a.name ?? "") && directives(a.content ?? "").some((d) => ["noindex", "none"].includes(d)));
