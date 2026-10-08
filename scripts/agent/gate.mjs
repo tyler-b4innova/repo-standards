@@ -187,6 +187,11 @@ function ownersBlock(rev) {
 if (cmd === "local") {
   const steps = ["setup --check", "instructions", "secrets", "syntax", "install", "typecheck", "build", "gate.local.sh", "worker", "e2e"], results = new Map(steps.map((s) => [s, "not run"]));
   const head = git("rev-parse", "HEAD").trim();
+  // pr.sh ready reads this: written only when every step passed on a clean tree at this HEAD, cleared at the start of each run.
+  const passFile = git("rev-parse", "--git-path", "std-local-gate").trim();
+  rmSync(passFile, { force: true });
+  const dirty = () => git("status", "--porcelain", "--untracked-files=all").trim(); // tracked changes and non-ignored untracked files
+  const dirtyBefore = dirty();
   let base, baseRef, worker, active, address, interrupted = 0;
   if (args.length && (args.length !== 2 || args[0] !== "--base" || !args[1] || args[1].startsWith("-")))
     fail("local: expected local [--base <ref>]", "supply a comparison branch or commit with --base");
@@ -299,6 +304,7 @@ if (cmd === "local") {
     for (const [signal, handler] of Object.entries(handlers)) process.off(signal, handler);
     if (interrupted) process.exitCode = interrupted;
     console.log(`local gate ${head}: ${steps.map((s) => `${s}=${results.get(s)}`).join("; ")}`);
+    if (!process.exitCode && !dirtyBefore && !dirty() && git("rev-parse", "HEAD").trim() === head) writeFileSync(passFile, `${head}\n`);
   }
 } else if (cmd === "instructions") {
   // Agents never change instruction files. Only the org App's standards-sync (standards/v*) and approved retro
