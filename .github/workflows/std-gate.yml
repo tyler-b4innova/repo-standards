@@ -87,7 +87,8 @@ jobs:
   # affected e2e, so the setup is paid (and billed) once.
   test:
     needs: checks
-    if: needs.checks.outputs.mode == 'full'
+    # skipped when the plan saw a live draft too: a ready run queued before review-round converted the PR
+    if: needs.checks.outputs.mode == 'full' && needs.checks.outputs.rollback_draft != 'true'
     runs-on: ${{ vars.STD_GATE_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 30
     steps:
@@ -155,11 +156,12 @@ jobs:
           GATE_PREVIEW_URL: ${{ steps.preview.outputs.url }}
         run: node scripts/agent/gate.mjs e2e
   gate:
-    name: ${{ github.event.pull_request.draft == true && 'draft (not gated)' || 'gate' }}
+    name: ${{ (github.event.pull_request.draft == true || needs.checks.outputs.rollback_draft == 'true') && 'draft (not gated)' || 'gate' }}
     needs: [checks, test]
-    # Skipped for a draft (see checks). Otherwise it runs whatever happened except a run cancelled by a newer one in the
+    # Skipped for a draft: the event's (a draft push) or the plan's live state (a ready run whose PR was converted to draft
+    # by review-round before plan ran), so neither posts a failing `gate`. Otherwise it runs whatever happened except a run cancelled by a newer one in the
     # group, which would post a red gate.
-    if: ${{ always() && !cancelled() && github.event.pull_request.draft != true }}
+    if: ${{ always() && !cancelled() && github.event.pull_request.draft != true && needs.checks.outputs.rollback_draft != 'true' }}
     runs-on: ${{ vars.STD_GATE_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 5
     steps:

@@ -1,0 +1,25 @@
+name: probe-needs
+on: push
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    outputs:
+      d1: ${{ steps.o.outputs.d1 }}
+      d2: ${{ steps.o.outputs.d2 }}
+    steps:
+      - id: o
+        run: echo "d1=true" >> "$GITHUB_OUTPUT"; echo "d2=false" >> "$GITHUB_OUTPUT"
+  skipped:
+    name: ${{ needs.a.outputs.d1 == 'true' && 'draft (not gated)' || 'gate' }}
+    needs: a
+    if: ${{ always() && needs.a.outputs.d1 != 'true' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo x
+  running:
+    name: ${{ needs.a.outputs.d2 == 'true' && 'draft (not gated)' || 'gate-running' }}
+    needs: a
+    if: ${{ always() && needs.a.outputs.d2 != 'true' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo x
