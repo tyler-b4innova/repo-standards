@@ -23,8 +23,9 @@ permissions:
 jobs:
   release:
     name: release
-    # only the default branch's Workers Builds completions: any other check-run starts no job (no runner, nothing billed)
-    if: ${{ github.event_name == 'workflow_dispatch' || (startsWith(github.event.check_run.name, '{check_name}') && github.event.check_run.head_branch == github.event.repository.default_branch) }}
+    # only the Cloudflare App's Workers Builds completions on the default branch: any other check-run (or another App's check
+    # of the same name) starts no job (no runner, nothing billed)
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.check_run.check_suite.app.slug == '{check_app}' && startsWith(github.event.check_run.name, '{check_name}') && github.event.check_run.check_suite.head_branch == github.event.repository.default_branch) }}
     # one run per commit: with several Workers the last build completion wins and earlier runs cancel. A job-level group is
     # taken only by a job that runs, so unrelated check-runs on the same commit cancel nothing.
     concurrency:

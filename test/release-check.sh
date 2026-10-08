@@ -98,6 +98,19 @@ o=$(verify release); has "superseded: aaaaaaa" "$o" && has "skip=true" "$o" && !
 # later commits whose builds Cloudflare skipped (docs) deploy nothing
 st "{\"compareCommits\":[\"$DOC\"],\"checksBy\":{\"$DOC\":[$SKIPB]}}"
 o=$(verify release-verify); has "exit=0" "$o" && ! grep -q cancelled "$T/state.json" || why="$why; a skipped later build superseded: $o"
+# a later build that FAILED may already have deployed staging (release.mjs deploys staging, then fails in a later step)
+FAILB='{"name":"Workers Builds: demo","status":"completed","conclusion":"failure"}'
+st "{\"compareCommits\":[\"$MID\"],\"checksBy\":{\"$MID\":[$FAILB]}}"
+o=$(verify release-verify); has "superseded during the suite: aaaaaaa" "$o" || why="$why; a later failed build did not supersede: $o"
+NEUB='{"name":"Workers Builds: demo","status":"completed","conclusion":"neutral"}'
+st "{\"compareCommits\":[\"$MID\"],\"checksBy\":{\"$MID\":[$NEUB]}}"
+o=$(verify release-verify); has "exit=0" "$o" || why="$why; a neutral build superseded: $o"
+# provenance: a same-named check from another App is no deployment evidence (later commits, or this one)
+FOREIGN='{"name":"Workers Builds: demo","status":"completed","conclusion":"success","app":{"slug":"some-other-app"}}'
+st "{\"compareCommits\":[\"$MID\"],\"checksBy\":{\"$MID\":[$FOREIGN]}}"
+o=$(verify release-verify); has "exit=0" "$o" && ! grep -q cancelled "$T/state.json" || why="$why; a foreign App's build superseded: $o"
+st "{\"checks\":[$FOREIGN]}"
+o=$(verify release); has "exit=1" "$o" && has "no \"Workers Builds\" check on ${SHA:0:7}" "$o" || why="$why; a foreign App's success certified the commit: $o"
 # cancel accepted but the runner is never interrupted: force-cancel, then fail closed, never green
 st "{\"compareCommits\":[\"$MID\"],\"checksBy\":{\"$MID\":[$OKB]}}"
 o=$(verify release-verify); has "exit=1" "$o" && has "not interrupted after cancel and force-cancel" "$o" && grep -q '"forced":\[77\]' "$T/state.json" || why="$why; uninterrupted cancel did not fail closed: $o"
@@ -123,18 +136,25 @@ st '{}'; o2=$(cd "$W" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_
 node -e 'const st=require(process.argv[1]);const p=st.posted?.[0];process.exit(p&&p.name==="release-check"&&p.head_sha===process.argv[2]&&p.conclusion==="success"?0:1)' "$T/state.json" "$SHA" || why="$why; success not posted on head_sha: $o2"
 st '{}'; (cd "$W" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t RELEASE_SHA=$SHA GITHUB_SHA=$TIP RELEASE_JOB_STATUS=failure node scripts/agent/gate.mjs release-report >/dev/null 2>&1)
 node -e 'const p=require(process.argv[1]).posted?.[0];process.exit(p&&p.head_sha===process.argv[2]&&p.conclusion==="failure"?0:1)' "$T/state.json" "$SHA" || why="$why; failure not posted on head_sha"
-# the job condition (evaluated as GitHub does) starts a job only for a default-branch Workers Builds completion or a manual run
+# the job condition (evaluated as GitHub does) against the octokit/webhooks check_run completed payload (test/fixtures), with
+# only the values under test changed: it starts a job only for the Cloudflare App's Workers Builds completion on the default
+# branch, or a manual run
 cond=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");const m=y.match(/^    if: \$\{\{ (.*) \}\}$/m);console.log(m[1])' "$W/$WF")
 runs() { node -e '
-const [cond, event, name, branch] = process.argv.slice(1);
+const [cond, event, name, branch, slug] = process.argv.slice(1);
+const p = JSON.parse(require("fs").readFileSync("test/fixtures/check_run.completed.json", "utf8"));
+p.repository.default_branch = "main"; p.check_run.name = name; p.check_run.check_suite.head_branch = branch; p.check_run.check_suite.app = { ...p.check_run.check_suite.app, slug };
 const startsWith = (a, b) => String(a ?? "").toLowerCase().startsWith(String(b).toLowerCase());
-const github = { event_name: event, event: { check_run: { name, head_branch: branch }, repository: { default_branch: "main" } } };
+const github = { event_name: event, event: p };
 console.log(new Function("github", "startsWith", "return (" + cond + ")")(github, startsWith) ? "job" : "no job")' "$cond" "$@"; }
-[ "$(runs check_run 'Workers Builds: site' main)" = job ] || why="$why; a default-branch Workers Builds completion starts no job"
-[ "$(runs check_run 'gate' main)" = "no job" ] || why="$why; a non-Builds check-run started a job"
-[ "$(runs check_run 'release-check' main)" = "no job" ] || why="$why; the verdict check-run restarts the release check"
-[ "$(runs check_run 'Workers Builds: site' feat/x)" = "no job" ] || why="$why; a non-default-branch build started a job"
-[ "$(runs workflow_dispatch '' '')" = job ] || why="$why; a manual run starts no job"
+CF=cloudflare-workers-and-pages
+node -e 'const p=require("./test/fixtures/check_run.completed.json");process.exit("head_branch" in p.check_run || !("head_branch" in p.check_run.check_suite) ? 1 : 0)' || why="$why; the fixture is not the real payload shape"
+[ "$(runs check_run 'Workers Builds: site' main $CF)" = job ] || why="$why; a default-branch Workers Builds completion starts no job"
+[ "$(runs check_run 'Workers Builds: site' main some-other-app)" = "no job" ] || why="$why; another App's same-named check started a job"
+[ "$(runs check_run 'gate' main $CF)" = "no job" ] || why="$why; a non-Builds check-run started a job"
+[ "$(runs check_run 'release-check' main github-actions)" = "no job" ] || why="$why; the verdict check-run restarts the release check"
+[ "$(runs check_run 'Workers Builds: site' feat/x $CF)" = "no job" ] || why="$why; a non-default-branch build started a job"
+[ "$(runs workflow_dispatch '' '' '')" = job ] || why="$why; a manual run starts no job"
 # several Workers finish at different times: one group per commit, the last completion's run cancels earlier ones
 has 'group: std-release-check-${{ github.event.check_run.head_sha || inputs.sha }}' "$yml" && has "cancel-in-progress: true" "$yml" && grep -qE '^    concurrency:' "$W/$WF" && ! grep -qE '^concurrency:' "$W/$WF" || why="$why; concurrency is not per commit at job level"
 ! grep -q GATE_BUILD_GRACE_S template/scripts/agent/gate.mjs || why="$why; a runtime grace remains"

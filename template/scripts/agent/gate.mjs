@@ -51,7 +51,9 @@ const ghApi = () => {
   };
 };
 // The Workers Builds check-runs of one commit: its staging deployment (and uploaded production version) is that build.
-const buildRuns = async (get, commit, name) => ((await get(`/commits/${commit}/check-runs?per_page=100`))?.check_runs ?? []).filter((x) => x.name?.startsWith(name));
+// Only the Cloudflare App's checks count: a same-named check from another App is no deployment evidence.
+const buildApp = () => pack.preview?.check_app ?? "cloudflare-workers-and-pages";
+const buildRuns = async (get, commit, name) => ((await get(`/commits/${commit}/check-runs?per_page=100`))?.check_runs ?? []).filter((x) => x.name?.startsWith(name) && x.app?.slug === buildApp());
 // Staging serves the newest build that deployed. Any commit after this one on the default branch (each one, never the net
 // diff: a change and its revert net to nothing but each deploys) whose build is running or succeeded replaces what this
 // commit's release check would test; builds that Cloudflare skipped (watch paths) deploy nothing and do not count.
@@ -60,7 +62,7 @@ async function supersededBy(get, sha, name) {
   for (let page = 1; ; page++) {
     const commits = ((await get(`/compare/${sha}...${encodeURIComponent(branch)}?per_page=100&page=${page}`))?.commits ?? []).map((c) => c.sha).filter((c) => c !== sha);
     for (const c of commits) {
-      const live = (await buildRuns(get, c, name)).some((r) => r.status !== "completed" || r.conclusion === "success");
+      const live = (await buildRuns(get, c, name)).some((r) => r.status !== "completed" || !["skipped", "neutral"].includes(r.conclusion));
       if (live) return c;
     }
     if (commits.length < 100) return null;
