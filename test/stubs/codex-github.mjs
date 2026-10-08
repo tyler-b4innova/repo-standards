@@ -25,6 +25,13 @@ const server = createServer((req, res) => {
     if ((m = p.match(/^\/branches\/(.+)$/))) return send(200, { commit: { sha: st.branchHeads?.[decodeURIComponent(m[1])] ?? decodeURIComponent(m[1]) } });
     if ((m = p.match(/^\/actions\/runs\/(\d+)\/attempts\/(\d+)\/jobs$/))) return send(200, { jobs: [{ name: "gate", steps: (st.attempts ?? {})[m[2]] ?? [] }] });
     if (p === "/actions/workflows/std-gate.yml/runs") return send(200, { workflow_runs: st.gateRuns ?? [] });
+    if (p === "/check-runs" && req.method === "POST") { st.posted = [...(st.posted ?? []), JSON.parse(raw)]; save(); return send(201, {}); }
+    // compareCommits: the commits after a commit on the branch (newer pushes)
+    if (/^\/compare\/[0-9a-f]+\.\.\.[^/]+$/.test(p)) return send(200, { commits: (st.compareCommits ?? []).map((sha) => ({ sha })) });
+    if ((m = p.match(/^\/actions\/runs\/(\d+)\/(cancel|force-cancel)$/)) && req.method === "POST") {
+      st[m[2] === "cancel" ? "cancelled" : "forced"] = [...(st[m[2] === "cancel" ? "cancelled" : "forced"] ?? []), Number(m[1])]; save();
+      return send((m[2] === "cancel" ? st.cancelFail : st.forceFail) ? 403 : 202, {});
+    }
     if ((m = p.match(/^\/actions\/runs\/(\d+)\/rerun$/)) && req.method === "POST") { st.reruns = [...(st.reruns ?? []), Number(m[1])]; save(); return send(201, {}); }
     if ((m = p.match(/^\/actions\/runs\/(\d+)$/))) return send(200, (st.gateRuns ?? []).find((r) => r.id === Number(m[1])) ?? {});
     if ((m = p.match(/^\/statuses\/([0-9a-f]+)$/)) && req.method === "POST") {
@@ -33,7 +40,8 @@ const server = createServer((req, res) => {
     }
     if ((m = p.match(/^\/commits\/([0-9a-f]+)\/status$/))) return send(200, { statuses: (st.statuses ?? []).filter((s) => s.sha === m[1]).reverse() });
     // checksBy: check runs per commit (the base tip's and the head's differ); checks: the same list for every commit
-    if ((m = p.match(/^\/commits\/([0-9a-f]+)\/check-runs$/))) return send(200, { check_runs: st.checksBy?.[m[1]] ?? st.checks ?? [] });
+    // 100 check-runs per page (page=N), as the real API
+    if ((m = p.match(/^\/commits\/([0-9a-f]+)\/check-runs$/))) return send(200, { check_runs: (st.checksBy?.[m[1]] ?? st.checks ?? []).slice((Number(url.searchParams.get("page") ?? 1) - 1) * 100, Number(url.searchParams.get("page") ?? 1) * 100).map((c) => ("app" in c ? c : { ...c, app: { slug: "cloudflare-workers-and-pages" } })) });
     if ((m = p.match(/^\/contents\/(.+)$/))) { const f = st.files?.[`${m[1]}@${url.searchParams.get("ref")}`] ?? st.files?.[m[1]]; return f ? send(200, f) : send(404, { message: "Not Found" }); }
     // retargetAfter: n reads of the PR see its base; later reads see it retargeted (a base change mid-run)
     if (p === "/pulls/7" && st.retargetAfter !== undefined) { st.reads = (st.reads ?? 0) + 1; save(); if (st.failAt === st.reads) return send(502, { message: "Bad Gateway" }); return send(200, st.reads > st.retargetAfter ? (st.newHead ? { ...st.pr, head: { ...st.pr.head, sha: st.newHead } } : { ...st.pr, base: st.advance ? { ...st.pr.base, sha: "f".repeat(40) } : { ref: "elsewhere" } }) : st.pr); }

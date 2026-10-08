@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Steps of the `gate` job (std-gate.yml), also runnable locally:
-//   local [--base <ref>] | plan | classify [base] | install [--no-browsers|--browsers-only] | playwright | run <script>... | preview | release | e2e | secrets | syntax | instructions | verdict
+//   local [--base <ref>] | plan | release-verify | release-report | classify [base] | install [--no-browsers|--browsers-only] | playwright | run <script>... | preview | release | e2e | secrets | syntax | instructions | verdict
 // UI paths: pack.json defaults; standards.json "ui_paths" as a list replaces the include globs,
 // as {include, ignore} replaces include and adds ignore. e2e: none fails unless "e2e": false.
 import { execFileSync as ex, spawn, spawnSync } from "node:child_process";
@@ -15,7 +15,7 @@ import { verifyGeneratedBuild } from "./release-config.mjs";
 import { describe as describeSelection, listFor, plan as planSelection, summarize } from "./select.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
-const SUBS = ["local", "verdict", "plan", "classify", "install", "playwright", "run", "preview", "release", "e2e", "secrets", "syntax", "instructions"], ok = SUBS.includes(cmd);
+const SUBS = ["local", "verdict", "plan", "classify", "install", "playwright", "run", "preview", "release", "release-verify", "release-report", "e2e", "secrets", "syntax", "instructions"], ok = SUBS.includes(cmd);
 if (!ok || args.includes("--help")) {
   console.log(rd(new URL(import.meta.url), "utf8").split("\n").slice(1, 6).map((l) => l.slice(3)).join("\n"));
   process.exit(ok || cmd === "--help" ? 0 : 2);
@@ -51,6 +51,49 @@ const ghApi = () => {
     return null;
   };
 };
+// The Workers Builds check-runs of one commit: its staging deployment (and uploaded production version) is that build.
+// Only the Cloudflare App's checks count: a same-named check from another App is no deployment evidence.
+const buildApp = () => pack.preview?.check_app ?? "cloudflare-workers-and-pages";
+// Every page is read (a commit can carry more than 100 check-runs) before filtering by name and App.
+const buildRuns = async (get, commit, name) => {
+  const all = [];
+  for (let page = 1; ; page++) {
+    const batch = (await get(`/commits/${commit}/check-runs?per_page=100&page=${page}`))?.check_runs ?? [];
+    all.push(...batch);
+    if (batch.length < 100) break;
+  }
+  return all.filter((x) => x.name?.startsWith(name) && x.app?.slug === buildApp());
+};
+// Staging serves the newest build that deployed. Any commit after this one on the default branch (each one, never the net
+// diff: a change and its revert net to nothing but each deploys) whose build is running or succeeded replaces what this
+// commit's release check would test; builds that Cloudflare skipped (watch paths) deploy nothing and do not count.
+async function supersededBy(get, sha, name) {
+  const branch = event.repository?.default_branch || "main";
+  for (let page = 1; ; page++) {
+    const commits = ((await get(`/compare/${sha}...${encodeURIComponent(branch)}?per_page=100&page=${page}`))?.commits ?? []).map((c) => c.sha).filter((c) => c !== sha);
+    for (const c of commits) {
+      const live = (await buildRuns(get, c, name)).some((r) => r.status !== "completed" || !["skipped", "neutral"].includes(r.conclusion));
+      if (live) return c;
+    }
+    if (commits.length < 100) return null;
+  }
+}
+// Cancel this run and never return: neither a pass for a commit it cannot certify nor a red failure. The cancel is
+// asynchronous (GitHub documents up to five minutes): wait for the runner to be interrupted, then force-cancel, then fail closed.
+async function cancelRun(why) {
+  console.log(`::notice::release check cancelled: ${why}`);
+  output("skip", "true"); output("browsers", ""); output("url", "");
+  const base = `${env.GITHUB_API_URL || "https://api.github.com"}/repos/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID || "0"}`;
+  const post = (tail) => fetch(`${base}/${tail}`, { method: "POST", headers: { Authorization: `Bearer ${env.GH_TOKEN || env.GITHUB_TOKEN}`, Accept: "application/vnd.github+json" } });
+  const sleep = (sec) => new Promise((res) => setTimeout(res, sec * 1000));
+  let r = await post("cancel");
+  if (!r.ok) fail(`could not cancel the release check (${r.status}): ${why}`, "grant the job actions: write");
+  await sleep(Number(env.GATE_CANCEL_WAIT_S ?? 300));
+  r = await post("force-cancel");
+  if (!r.ok) fail(`the release check was not interrupted after cancel, and force-cancel failed (${r.status}): ${why}`, "cancel the run; it must not pass");
+  await sleep(Number(env.GATE_FORCE_WAIT_S ?? 60));
+  fail(`the release check was not interrupted after cancel and force-cancel: ${why}`, "cancel the run; it must not pass");
+}
 const playwrightBin = () => has("node_modules/.bin/playwright") ? ["node_modules/.bin/playwright", []] : ["npx", ["--no-install", "playwright"]];
 // True when the system packages for this run's browsers must be installed (Linux only; elsewhere Playwright has none).
 // Playwright's own host validation is bundled and not callable, so Chromium gets an equivalent check: `ldd` over every
@@ -218,7 +261,7 @@ if (cmd === "local") {
   writeFileSync(eventFile, JSON.stringify({ pull_request: { number: 1, base: { sha: base }, head: { sha: head, ref: git("branch", "--show-current").trim() }, user: { login: "local" } } }));
   const localEnv = { ...env, CI: "true", GITHUB_EVENT_NAME: "pull_request", GITHUB_EVENT_PATH: eventFile, GITHUB_SHA: head,
     PATH: `${process.cwd()}/node_modules/.bin:${env.PATH}`, GATE_BROWSERS: "chromium", WRANGLER_SEND_METRICS: "false", WRANGLER_CHECK_FOR_UPDATES: "false", WRANGLER_HOME: `${dir}/wrangler`, HOME: dir, USERPROFILE: dir, XDG_CONFIG_HOME: `${dir}/xdg` };
-  for (const k of ["GH_TOKEN", "GITHUB_TOKEN", "GITHUB_OUTPUT", "GATE_PREVIEW_URL", "BASE_URL", "PLAYWRIGHT_BASE_URL", "CLOUDFLARE_ENV", "RANGE", "ROLLBACK_BASE", "ROLLBACK_DRAFT"])
+  for (const k of ["RELEASE_CHECK", "GH_TOKEN", "GITHUB_TOKEN", "GITHUB_OUTPUT", "GATE_PREVIEW_URL", "BASE_URL", "PLAYWRIGHT_BASE_URL", "CLOUDFLARE_ENV", "RANGE", "ROLLBACK_BASE", "ROLLBACK_DRAFT"])
     delete localEnv[k];
   for (const k of Object.keys(localEnv)) if (/^(CLOUDFLARE_|CF_)/.test(k)) delete localEnv[k];
   for (const k of ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_API_KEY", "CLOUDFLARE_EMAIL", "CLOUDFLARE_ACCOUNT_ID"]) localEnv[k] = "";
@@ -402,7 +445,7 @@ if (cmd === "local") {
   let skipped = false;
   for (;;) {
     const runs = await builds(head);
-    const red = runs.find((c) => c.status === "completed" && !["success", "skipped"].includes(c.conclusion));
+    const red = runs.find((c) => c.status === "completed" && !["success", "skipped", "neutral"].includes(c.conclusion));
     if (red) fail(`Cloudflare build failed for ${short}: ${red.name} ${red.conclusion} (${red.details_url})`, "fix the Worker build; gate needs the preview to pass");
     if (runs.length && runs.every((c) => c.status === "completed")) { skipped = runs.every((c) => c.conclusion === "skipped"); break; }
     if (Date.now() - start >= wait)
@@ -425,41 +468,49 @@ if (cmd === "local") {
   console.log(`preview: ${url} (${short})`);
   output("url", url);
 } else if (cmd === "release") {
-  // The release check (std-release-check.yml, on main): wait for this commit's Workers Builds (staging Preview and the
-  // uploaded production version), then name the extra browsers and the staging URL for the install and e2e steps.
-  const get = ghApi(), sha = env.GITHUB_SHA ?? git("rev-parse", "HEAD").trim(), short = sha.slice(0, 7);
-  // A push that changes only non-deployable paths (pack.json non_deploy_paths) leaves staging as it was: nothing to test.
-  // The whole push (the event's before..sha); a manual run, or a before no longer in history, skips nothing.
-  let pushed = null;
-  const before = event.before && !/^0+$/.test(event.before) ? event.before : null;
-  if (before) try { pushed = git("diff", "--name-only", "--no-renames", "-z", before, sha).split("\0").filter(Boolean); } catch {}
-  const nd = (pack.non_deploy_paths ?? []).map(glob);
-  if (pushed?.length && pushed.every((f) => nd.some((r) => r.test(f)))) {
-    console.log(`::notice::release check skipped: only non-deployable paths changed (${pushed.join(", ")})`);
-    output("skip", "true"); output("browsers", ""); output("url", "");
-    process.exit(0);
-  }
+  // The release check (std-release-check.yml): started by a Workers Builds completion on the default branch. The commit under
+  // test is RELEASE_SHA (the check-run's head_sha, or a manual run's input), never GITHUB_SHA, which on a check_run event
+  // is the default branch's tip. Wait for every Workers Builds check on that commit, then name every configured browser
+  // (Chromium and the extras) and the staging URL for the install, e2e and repo-check steps.
+  const get = ghApi(), sha = env.RELEASE_SHA || git("rev-parse", "HEAD").trim(), short = sha.slice(0, 7);
   const name = pack.preview?.check_name ?? "Workers Builds";
-  const builds = async (c) => ((await get(`/commits/${c}/check-runs?per_page=100`))?.check_runs ?? []).filter((x) => x.name?.startsWith(name));
-  // The check can be created late: where the parent commit had a build, this commit's is waited for, not taken as absent.
-  let parent = null;
-  try { parent = git("rev-parse", `${sha}^`).trim(); } catch {}
-  const hasBuilds = (await builds(sha)).length > 0 || (parent ? (await builds(parent)).length > 0 : false);
-  const wait = Number(env.GATE_PREVIEW_WAIT_S ?? 480) * 1000, poll = Number(env.GATE_POLL_S ?? 15) * 1000, start = Date.now();
-  if (!hasBuilds) console.log(`release: no "${name}" check on ${short} or its parent; testing staging as it stands`);
-  else for (;;) {
-    const runs = await builds(sha);
+  // Every Workers Builds check on the commit (one per Worker) must have completed successfully before the suite runs (no
+  // time cap; the job's timeout is the only backstop). The run was started by one of them, so none at all is an error.
+  const wait = Number(env.GATE_PREVIEW_WAIT_S ?? Infinity) * 1000, poll = Number(env.GATE_POLL_S ?? 15) * 1000, start = Date.now();
+  let runs;
+  for (;;) {
+    runs = await buildRuns(get, sha, name);
+    if (!runs.length) fail(`no "${name}" check on ${short}`, "release-check starts from a completed Workers Builds check on the default branch; for a manual run, pass the sha of a commit that has one");
     const red = runs.find((c) => c.status === "completed" && !["success", "skipped"].includes(c.conclusion));
     if (red) fail(`Cloudflare build failed for ${short}: ${red.name} ${red.conclusion} (${red.details_url})`, "fix the Worker build on main; staging and the uploaded version come from it");
-    if (runs.length && runs.every((c) => c.status === "completed")) break;
-    if (Date.now() - start >= wait)
-      fail(runs.length ? `the Cloudflare build for ${short} is still running after ${wait / 1000}s` : `no "${name}" check on ${short} after ${wait / 1000}s, though the repository has Workers Builds`, "re-run the release check once the build finishes");
+    if (runs.every((c) => c.status === "completed")) break;
+    if (Date.now() - start >= wait) fail(`the Cloudflare build for ${short} is still running after ${wait / 1000}s`, "re-run the release check once the build finishes");
     await new Promise((r) => setTimeout(r, poll));
   }
-  const extra = [...new Set([...(e2eCfg.browsers ?? []), ...(pack.e2e_release_browsers ?? [])])];
+  // What there is to certify comes only from the authenticated Builds results on this commit: any success certifies it, none (all skipped or neutral) is nothing to certify.
+  if (!runs.some((c) => c.conclusion === "success")) await cancelRun(`nothing to certify: Cloudflare deployed nothing for ${short} (every build skipped or neutral)`);
+  const sup = await supersededBy(get, sha, name);
+  if (sup) await cancelRun(`superseded: ${sup.slice(0, 7)} on the default branch deploys staging after ${short}; its release check covers it`);
+  const extra = [...new Set(["chromium", ...(e2eCfg.browsers ?? []), ...(pack.e2e_release_browsers ?? [])])]; // the full suite runs every configured browser
   console.log(`release: ${extra.join(", ")} against ${std.staging_url} (${short})`);
   output("browsers", extra.join(","));
   output("url", std.staging_url ?? "");
+} else if (cmd === "release-verify") {
+  // After the suite: a commit that deployed to staging meanwhile means the suite tested its deployment, not this commit's.
+  const get = ghApi(), sha = env.RELEASE_SHA || git("rev-parse", "HEAD").trim();
+  const sup = await supersededBy(get, sha, pack.preview?.check_name ?? "Workers Builds");
+  if (sup) await cancelRun(`superseded during the suite: ${sup.slice(0, 7)} on the default branch deploys staging after ${sha.slice(0, 7)}; its release check covers it`);
+  console.log(`release: no later commit deployed staging during ${sha.slice(0, 7)}'s suite`);
+} else if (cmd === "release-report") {
+  // The verdict: the check-run `release-check` on the commit that was built (the workflow's own job check lands on the default branch's tip).
+  const sha = env.RELEASE_SHA || git("rev-parse", "HEAD").trim(), ok = env.RELEASE_JOB_STATUS === "success";
+  const r = await fetch(`${env.GITHUB_API_URL || "https://api.github.com"}/repos/${env.GITHUB_REPOSITORY}/check-runs`, { method: "POST",
+    headers: { Authorization: `Bearer ${env.GH_TOKEN || env.GITHUB_TOKEN}`, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "release-check", head_sha: sha, status: "completed", conclusion: ok ? "success" : "failure",
+      details_url: `${env.GITHUB_SERVER_URL || "https://github.com"}/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`,
+      output: { title: ok ? "release-check passed" : "release-check failed", summary: `The full suite ${ok ? "passed" : "failed"} against staging for ${sha}.` } }) });
+  if (!r.ok) fail(`could not post release-check on ${sha.slice(0, 7)} (${r.status})`, "grant the job checks: write");
+  console.log(`release-check ${ok ? "success" : "failure"} posted on ${sha.slice(0, 7)}`);
 } else if (cmd === "classify") {
   // Codex cloud has no origin: fall back to a local default branch, then to HEAD itself (uncommitted and untracked
   // files only). Never the branch's upstream: that is usually the pushed feature head, which would hide its changes.
@@ -542,6 +593,9 @@ if (cmd === "local") {
   // No time limit of any kind here: a slow suite is a test-quality problem, not a gate failure. Only the workflow's
   // timeout-minutes stops a runaway job.
   const url = env.GATE_PREVIEW_URL ?? "";
+  // The @a11y contract: tests tagged @a11y skip unless RELEASE_CHECK=1. Only the release check (e2e --release) passes it on; a
+  // pull request's gate clears it, even when inherited.
+  const { RELEASE_CHECK: releaseFlag, ...cleanEnv } = env, baseEnv = args.includes("--release") && releaseFlag === "1" ? env : cleanEnv;
   // A client site's preview must not be indexed: its home page and a page only the Worker can answer (a 404; static
   // _headers rules do not cover Worker-rendered responses) both say noindex, in a robots meta or X-Robots-Tag.
   if (url && pack.profile === "client" && !args.includes("--local")) {
@@ -566,7 +620,7 @@ if (cmd === "local") {
     console.log(summarize(describeSelection(sel), env));
     // The whole suite unless the PR only adds or modifies e2e specs (select.mjs). null = unfiltered.
     const e2eFiles = listFor(sel), esc = (f) => f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$";
-    const childEnv = { ...env, ...(url && { PLAYWRIGHT_BASE_URL: url, BASE_URL: url }), GATE_AFFECTED: e2eFiles ? "scoped" : "full", GATE_AFFECTED_E2E: (e2eFiles ?? []).join(" "),
+    const childEnv = { ...baseEnv, ...(url && { PLAYWRIGHT_BASE_URL: url, BASE_URL: url }), GATE_AFFECTED: e2eFiles ? "scoped" : "full", GATE_AFFECTED_E2E: (e2eFiles ?? []).join(" "),
       ...(e2eFiles ? {} : { GATE_SELECT: "full" }) };
     let argv = run[1];
     // Only specs the runner can be pointed at are passed as filters; any other layout runs the whole suite.

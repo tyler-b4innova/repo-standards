@@ -1,0 +1,26 @@
+{
+  "action": "completed",
+  "check_run": {
+    "id": 128620228,
+    "head_sha": "ec26c3e57ca3a959ca5aad62de7213c562f8c821",
+    "status": "completed",
+    "conclusion": "success",
+    "name": "Octocoders-linter",
+    "check_suite": {
+      "id": 118578147,
+      "head_branch": "changes",
+      "head_sha": "ec26c3e57ca3a959ca5aad62de7213c562f8c821",
+      "app": {
+        "id": 29310,
+        "slug": "cloudflare-workers-and-pages"
+      }
+    },
+    "app": {
+      "id": 29310,
+      "slug": "cloudflare-workers-and-pages"
+    }
+  },
+  "repository": {
+    "default_branch": "master"
+  }
+}

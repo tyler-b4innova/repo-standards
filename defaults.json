@@ -101,6 +101,7 @@
   ],
   "preview": {
     "check_name": "Workers Builds",
+    "check_app": "cloudflare-workers-and-pages",
     "comment_author": "cloudflare-workers-and-pages[bot]"
   }
 }

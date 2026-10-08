@@ -74,7 +74,7 @@ o=$(WORKERS_CI_COMMIT_SHA=abc1234 rel "$R" main)
 want="wrangler deploy --env staging --config $R/wrangler.jsonc --name site-staging
 wrangler versions upload --tag abc1234 --message main abc1234 --var SENTRY_RELEASE:abc1234"
 [ "$(log)" = "$want" ] && has "exit=0" "$o" || why="main: $o // $(log)"
-reset; o=$(rel "$R" main); [ "$(log | tail -1)" = "wrangler versions upload" ] || why="$why; no sha: $(log)"
+reset; o=$(rel "$R" main); [ "$(log | tail -1)" = "wrangler versions upload" ] && has "production version is untagged" "$o" || why="$why; no sha: $(log)"
 L=$(site legacy legacy); reset; o=$(WORKERS_CI_COMMIT_SHA=abc1234 rel "$L" main)
 has "exit=0" "$o" && has "::warning::wrangler.jsonc has no env.staging" "$o" && [ "$(log | head -1)" = "wrangler preview --name staging" ] && has "versions upload" "$(log)" || why="$why; legacy: $o // $(log)"
 reset; echo "deploy --env staging" >"$T/failon"; o=$(rel "$R" main); has "exit=7" "$o" && ! has "versions upload" "$(log)" || why="$why; failed deploy went on: $o // $(log)"

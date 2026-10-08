@@ -144,7 +144,7 @@ jobs:
         run: node scripts/agent/gate.mjs run build
       - name: repo checks
         run: |
-          if [ -f scripts/agent/gate.local.sh ]; then bash scripts/agent/gate.local.sh; else echo "notice: no scripts/agent/gate.local.sh"; fi
+          if [ -f scripts/agent/gate.local.sh ]; then env -u RELEASE_CHECK bash scripts/agent/gate.local.sh; else echo "notice: no scripts/agent/gate.local.sh"; fi
       # last before e2e, so the Workers Build for this head has the earlier steps' time to finish
       - name: preview
         id: preview
