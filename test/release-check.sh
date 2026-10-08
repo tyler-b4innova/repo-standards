@@ -36,9 +36,9 @@ git init -q -b main "$T/plain"; apply "$T/plain" >/dev/null
 O=$(worker off "$STAGING"); jset "$O/standards.json" 'o.e2e=false'; apply "$O" >/dev/null; [ ! -e "$O/$WF" ] || why="$why; shipped despite e2e false"
 # the workflow: the job is the check-run, pushes to main and manual runs only, one run per commit, never scheduled
 yml=$(cat "$W/$WF")
-has "name: release-check" "$yml" && grep -qE '^  release-check:' "$W/$WF" || why="$why; job is not named release-check"
-has "branches: [main]" "$yml" && has "workflow_dispatch" "$yml" && ! has pull_request "$yml" && ! grep -qE '^\s*(schedule|- cron):' "$W/$WF" || why="$why; triggers"
-has 'group: std-release-check-${{ github.sha }}' "$yml" || why="$why; concurrency is not per commit"
+has "check_run:" "$yml" && has "types: [completed]" "$yml" && has "workflow_dispatch" "$yml" && ! has pull_request "$yml" && ! grep -qE '^\s*(push:|schedule:|- cron:)' "$W/$WF" || why="$why; triggers"
+has "ref: \${{ env.RELEASE_SHA }}" "$yml" || why="$why; does not check out the built commit"
+has "gate.mjs release-report" "$yml" || why="$why; the verdict is not posted as release-check"
 has "gate.mjs e2e" "$yml" && has "gate.local.sh" "$yml" || why="$why; not the full suite (e2e and repo checks)"
 has "GATE_SELECT" "$yml" || why="$why; selection is not switched off"
 if [ -z "$why" ]; then ok release-check-every-worker; else fail release-check-every-worker "$why"; fi
@@ -79,7 +79,7 @@ if [ -z "$why" ]; then ok release-version-tagged; else fail release-version-tagg
 why=""
 SHA=$(git -C "$W" rev-parse HEAD); MID=$(printf 'a%.0s' $(seq 40)); REV=$(printf 'b%.0s' $(seq 40)); DOC=$(printf 'c%.0s' $(seq 40))
 st() { printf '%s' "$1" > "$T/state.json"; }
-verify() { (cd "$W" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_SHA=$SHA GITHUB_RUN_ID=77 GATE_CANCEL_WAIT_S=0 GATE_FORCE_WAIT_S=0 GATE_BUILD_GRACE_S=0 GATE_PREVIEW_WAIT_S=${WAIT:-0} GITHUB_OUTPUT= node scripts/agent/gate.mjs "$@" 2>&1); echo "exit=$?"; }
+verify() { (cd "$W" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t RELEASE_SHA=$SHA GITHUB_SHA=$(printf 'd%.0s' $(seq 40)) GITHUB_RUN_ID=77 GATE_CANCEL_WAIT_S=0 GATE_FORCE_WAIT_S=0 GATE_PREVIEW_WAIT_S=${WAIT:-0} GITHUB_OUTPUT= node scripts/agent/gate.mjs "$@" 2>&1); echo "exit=$?"; }
 OKB='{"name":"Workers Builds: demo","status":"completed","conclusion":"success"}'
 RUNB='{"name":"Workers Builds: demo","status":"in_progress"}'
 SKIPB='{"name":"Workers Builds: demo","status":"completed","conclusion":"skipped"}'
@@ -105,18 +105,40 @@ st "{\"compareCommits\":[\"$MID\"],\"checksBy\":{\"$MID\":[$OKB]},\"forceFail\":
 o=$(verify release-verify); has "exit=1" "$o" && has "force-cancel failed" "$o" || why="$why; failed force-cancel passed: $o"
 st "{\"compareCommits\":[\"$MID\"],\"checksBy\":{\"$MID\":[$OKB]},\"cancelFail\":true}"
 o=$(verify release-verify); has "exit=1" "$o" && has "could not cancel" "$o" || why="$why; failed cancel passed: $o"
-# this commit's own build is missing or running: wait (no cap, no failure) until it completes, then test
-st "{\"checksBy\":{\"$SHA\":[$RUNB]}}"
-( sleep 2; st "{\"checksBy\":{\"$SHA\":[$OKB]}}" ) & LATER=$!
-WAIT= o=$( (cd "$W" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_SHA=$SHA GATE_POLL_S=1 GITHUB_OUTPUT= node scripts/agent/gate.mjs release 2>&1); echo "exit=$?"); wait $LATER
-has "exit=0" "$o" && has "browsers=chromium" "$o" || why="$why; did not wait for its own build: $o"
 # the post-suite step runs after a failing suite (a failure caused by a newer deploy cancels); never after a cancel
 yml=$(cat "$W/$WF"); has 'if: ${{ !cancelled() && steps.release.outputs.skip != '"'"'true'"'"' }}' "$yml" && has "gate.mjs release-verify" "$yml" || why="$why; still-staging step skipped after a failing suite"
 # the repo checks and the suite both see the staging URL
 blk=$(awk '/- name: repo checks/{f=1} f' "$W/$WF")
 for v in BASE_URL PLAYWRIGHT_BASE_URL GATE_PREVIEW_URL; do has "$v: \${{ steps.release.outputs.url }}" "$blk" || why="$why; repo checks lack $v"; done
-has "actions: write" "$yml" || why="$why; cannot cancel"
+has "actions: write" "$yml" && has "checks: write" "$yml" || why="$why; cannot cancel or post"
 if [ -z "$why" ]; then ok release-check-staging-superseded; else fail release-check-staging-superseded "$why"; fi
+
+why=""
+# the commit under test is the check-run's head_sha, never GITHUB_SHA (the default branch's tip, a newer commit here):
+# its builds are the ones waited for, and the verdict is posted on it
+TIP=$(printf 'd%.0s' $(seq 40))
+st "{\"checksBy\":{\"$SHA\":[$OKB],\"$TIP\":[$RUNB]}}"
+o=$(verify release); has "exit=0" "$o" && has "browsers=chromium" "$o" && has "(${SHA:0:7})" "$o" || why="$why; tested the tip's build, not head_sha: $o"
+st '{}'; o2=$(cd "$W" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t RELEASE_SHA=$SHA GITHUB_SHA=$TIP RELEASE_JOB_STATUS=success node scripts/agent/gate.mjs release-report 2>&1)
+node -e 'const st=require(process.argv[1]);const p=st.posted?.[0];process.exit(p&&p.name==="release-check"&&p.head_sha===process.argv[2]&&p.conclusion==="success"?0:1)' "$T/state.json" "$SHA" || why="$why; success not posted on head_sha: $o2"
+st '{}'; (cd "$W" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t RELEASE_SHA=$SHA GITHUB_SHA=$TIP RELEASE_JOB_STATUS=failure node scripts/agent/gate.mjs release-report >/dev/null 2>&1)
+node -e 'const p=require(process.argv[1]).posted?.[0];process.exit(p&&p.head_sha===process.argv[2]&&p.conclusion==="failure"?0:1)' "$T/state.json" "$SHA" || why="$why; failure not posted on head_sha"
+# the job condition (evaluated as GitHub does) starts a job only for a default-branch Workers Builds completion or a manual run
+cond=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");const m=y.match(/^    if: \$\{\{ (.*) \}\}$/m);console.log(m[1])' "$W/$WF")
+runs() { node -e '
+const [cond, event, name, branch] = process.argv.slice(1);
+const startsWith = (a, b) => String(a ?? "").toLowerCase().startsWith(String(b).toLowerCase());
+const github = { event_name: event, event: { check_run: { name, head_branch: branch }, repository: { default_branch: "main" } } };
+console.log(new Function("github", "startsWith", "return (" + cond + ")")(github, startsWith) ? "job" : "no job")' "$cond" "$@"; }
+[ "$(runs check_run 'Workers Builds: site' main)" = job ] || why="$why; a default-branch Workers Builds completion starts no job"
+[ "$(runs check_run 'gate' main)" = "no job" ] || why="$why; a non-Builds check-run started a job"
+[ "$(runs check_run 'release-check' main)" = "no job" ] || why="$why; the verdict check-run restarts the release check"
+[ "$(runs check_run 'Workers Builds: site' feat/x)" = "no job" ] || why="$why; a non-default-branch build started a job"
+[ "$(runs workflow_dispatch '' '')" = job ] || why="$why; a manual run starts no job"
+# several Workers finish at different times: one group per commit, the last completion's run cancels earlier ones
+has 'group: std-release-check-${{ github.event.check_run.head_sha || inputs.sha }}' "$yml" && has "cancel-in-progress: true" "$yml" && grep -qE '^    concurrency:' "$W/$WF" && ! grep -qE '^concurrency:' "$W/$WF" || why="$why; concurrency is not per commit at job level"
+! grep -q GATE_BUILD_GRACE_S template/scripts/agent/gate.mjs || why="$why; a runtime grace remains"
+if [ -z "$why" ]; then ok release-check-trigger; else fail release-check-trigger "$why"; fi
 
 # the @a11y contract: RELEASE_CHECK=1 reaches the suite only through the release check
 why=""

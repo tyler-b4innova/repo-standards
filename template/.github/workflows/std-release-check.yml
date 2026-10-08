@@ -1,31 +1,44 @@
 # Managed by the standards pack, shipped to every repository with a Worker and a standards.json staging_url (and to
 # one that names extra browsers). Pull requests run the affected tests in Chromium against their preview; a merge to
-# main deploys the staging Preview and uploads the production version, and this runs the repo's FULL suite (e2e and
-# scripts/agent/gate.local.sh), every configured browser, against staging (standards.json staging_url) once, as the
-# check-run `release-check` on the merge commit. The production deploy waits for that check to succeed. A push of only
-# non-deployable paths skips the suite. Never scheduled; one run per commit; the timeout is runaway protection only,
-# not a quality signal. Not a required check.
+# main deploys the staging Preview and uploads the production version, and the completion of that deploy's Workers
+# Builds check-run (on the default branch) starts this: the repo's FULL suite (e2e and scripts/agent/gate.local.sh),
+# every configured browser, against staging (standards.json staging_url), once per commit, posted as the check-run
+# `release-check` on the commit that was built. The production deploy waits for that check to succeed. A repository
+# whose staging is not deployed by Workers Builds never starts it. The commit under test is the check-run's head_sha,
+# not GITHUB_SHA (the default branch's tip on a check_run event). Never scheduled; the timeout is runaway protection
+# only, not a quality signal. Not a required check.
 name: std-release-check
 on:
-  push:
-    branches: [main]
+  check_run:
+    types: [completed]
   workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit to release-check (a manual rerun)"
+        required: true
 permissions:
   actions: write # cancels the run when a newer commit replaces staging, or there is nothing to certify
-  checks: read
+  checks: write # posts the check-run release-check on the commit under test
   contents: read
-concurrency:
-  group: std-release-check-${{ github.sha }}
-  cancel-in-progress: true
 jobs:
-  release-check:
-    name: release-check
+  release:
+    name: release
+    # only the default branch's Workers Builds completions: any other check-run starts no job (no runner, nothing billed)
+    if: ${{ github.event_name == 'workflow_dispatch' || (startsWith(github.event.check_run.name, '{check_name}') && github.event.check_run.head_branch == github.event.repository.default_branch) }}
+    # one run per commit: with several Workers the last build completion wins and earlier runs cancel. A job-level group is
+    # taken only by a job that runs, so unrelated check-runs on the same commit cancel nothing.
+    concurrency:
+      group: std-release-check-${{ github.event.check_run.head_sha || inputs.sha }}
+      cancel-in-progress: true
+    env:
+      RELEASE_SHA: ${{ github.event.check_run.head_sha || inputs.sha }}
     runs-on: ${{ vars.STD_GATE_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0 # the push's before commit (what the push changed) and the parent (whether a Workers Builds check is still to come)
+          ref: ${{ env.RELEASE_SHA }} # the commit that was built, not the default branch's tip
+          fetch-depth: 0 # the parent (what the commit changed) and the later commits (whether one superseded it)
           persist-credentials: false
       - name: package manager
         id: pm
@@ -74,3 +87,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/agent/gate.mjs release-verify
+      - name: report
+        # the job's own check-run lands on the default branch's tip, so the verdict is posted on the commit that was built
+        if: ${{ !cancelled() && steps.release.outputs.skip != 'true' }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_JOB_STATUS: ${{ job.status }}
+        run: node scripts/agent/gate.mjs release-report

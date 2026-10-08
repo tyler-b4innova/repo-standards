@@ -25,6 +25,7 @@ const server = createServer((req, res) => {
     if ((m = p.match(/^\/branches\/(.+)$/))) return send(200, { commit: { sha: st.branchHeads?.[decodeURIComponent(m[1])] ?? decodeURIComponent(m[1]) } });
     if ((m = p.match(/^\/actions\/runs\/(\d+)\/attempts\/(\d+)\/jobs$/))) return send(200, { jobs: [{ name: "gate", steps: (st.attempts ?? {})[m[2]] ?? [] }] });
     if (p === "/actions/workflows/std-gate.yml/runs") return send(200, { workflow_runs: st.gateRuns ?? [] });
+    if (p === "/check-runs" && req.method === "POST") { st.posted = [...(st.posted ?? []), JSON.parse(raw)]; save(); return send(201, {}); }
     // compareCommits: the commits after a commit on the branch (newer pushes)
     if (/^\/compare\/[0-9a-f]+\.\.\.[^/]+$/.test(p)) return send(200, { commits: (st.compareCommits ?? []).map((sha) => ({ sha })) });
     if ((m = p.match(/^\/actions\/runs\/(\d+)\/(cancel|force-cancel)$/)) && req.method === "POST") {

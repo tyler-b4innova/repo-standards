@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Steps of the `gate` job (std-gate.yml), also runnable locally:
-//   local [--base <ref>] | plan | release-verify | classify [base] | install [--no-browsers|--browsers-only] | playwright | run <script>... | preview | release | e2e | secrets | syntax | instructions | verdict
+//   local [--base <ref>] | plan | release-verify | release-report | classify [base] | install [--no-browsers|--browsers-only] | playwright | run <script>... | preview | release | e2e | secrets | syntax | instructions | verdict
 // UI paths: pack.json defaults; standards.json "ui_paths" as a list replaces the include globs,
 // as {include, ignore} replaces include and adds ignore. e2e: none fails unless "e2e": false.
 import { execFileSync as ex, spawn, spawnSync } from "node:child_process";
@@ -14,7 +14,7 @@ import { rollbackFindings } from "./rollback.mjs";
 import { verifyGeneratedBuild } from "./release-config.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
-const SUBS = ["local", "verdict", "plan", "classify", "install", "playwright", "run", "preview", "release", "release-verify", "e2e", "secrets", "syntax", "instructions"], ok = SUBS.includes(cmd);
+const SUBS = ["local", "verdict", "plan", "classify", "install", "playwright", "run", "preview", "release", "release-verify", "release-report", "e2e", "secrets", "syntax", "instructions"], ok = SUBS.includes(cmd);
 if (!ok || args.includes("--help")) {
   console.log(rd(new URL(import.meta.url), "utf8").split("\n").slice(1, 6).map((l) => l.slice(3)).join("\n"));
   process.exit(ok || cmd === "--help" ? 0 : 2);
@@ -447,36 +447,28 @@ if (cmd === "local") {
   console.log(`preview: ${url} (${short})`);
   output("url", url);
 } else if (cmd === "release") {
-  // The release check (std-release-check.yml, on main): wait for this commit's Workers Builds (staging Preview and the
-  // uploaded production version), then name every configured browser (Chromium and the extras) and the staging URL for the install, e2e and repo-check steps.
-  const get = ghApi(), sha = env.GITHUB_SHA ?? git("rev-parse", "HEAD").trim(), short = sha.slice(0, 7);
-  // A push that changes only non-deployable paths (pack.json non_deploy_paths) leaves staging as it was: nothing to test.
-  // The whole push (the event's before..sha); a manual run, or a before no longer in history, skips nothing.
+  // The release check (std-release-check.yml): started by a Workers Builds completion on the default branch. The commit under
+  // test is RELEASE_SHA (the check-run's head_sha, or a manual run's input), never GITHUB_SHA, which on a check_run event
+  // is the default branch's tip. Wait for every Workers Builds check on that commit, then name every configured browser
+  // (Chromium and the extras) and the staging URL for the install, e2e and repo-check steps.
+  const get = ghApi(), sha = env.RELEASE_SHA || git("rev-parse", "HEAD").trim(), short = sha.slice(0, 7);
+  // A commit that changes only non-deployable paths (pack.json non_deploy_paths) leaves staging as it was: nothing to certify.
   let pushed = null;
-  const before = event.before && !/^0+$/.test(event.before) ? event.before : null;
-  if (before) try { pushed = git("diff", "--name-only", "--no-renames", "-z", before, sha).split("\0").filter(Boolean); } catch {}
+  try { pushed = git("diff", "--name-only", "--no-renames", "-z", `${sha}^`, sha).split("\0").filter(Boolean); } catch {}
   const nd = (pack.non_deploy_paths ?? []).map(glob);
   const name = pack.preview?.check_name ?? "Workers Builds";
   if (pushed?.length && pushed.every((f) => nd.some((r) => r.test(f)))) await cancelRun(`nothing to certify: only non-deployable paths changed (${pushed.join(", ")})`);
-  const builds = (c) => buildRuns(get, c, name);
-  // This commit's own staging build must have completed successfully before the suite runs. The check can be created late:
-  // where the parent commit had a build it is waited for (no time cap; the job's timeout is the only backstop); with no
-  // build on either, a grace window for it to appear, then there is nothing to certify.
-  let parent = null;
-  try { parent = git("rev-parse", `${sha}^`).trim(); } catch {}
-  const parentBuilt = parent ? (await builds(parent)).length > 0 : false;
-  const wait = Number(env.GATE_PREVIEW_WAIT_S ?? Infinity) * 1000, grace = Number(env.GATE_BUILD_GRACE_S ?? 300) * 1000, poll = Number(env.GATE_POLL_S ?? 15) * 1000, start = Date.now();
+  // Every Workers Builds check on the commit (one per Worker) must have completed successfully before the suite runs (no
+  // time cap; the job's timeout is the only backstop). The run was started by one of them, so none at all is an error.
+  const wait = Number(env.GATE_PREVIEW_WAIT_S ?? Infinity) * 1000, poll = Number(env.GATE_POLL_S ?? 15) * 1000, start = Date.now();
   let runs;
   for (;;) {
-    runs = await builds(sha);
+    runs = await buildRuns(get, sha, name);
+    if (!runs.length) fail(`no "${name}" check on ${short}`, "release-check starts from a completed Workers Builds check on the default branch; for a manual run, pass the sha of a commit that has one");
     const red = runs.find((c) => c.status === "completed" && !["success", "skipped"].includes(c.conclusion));
     if (red) fail(`Cloudflare build failed for ${short}: ${red.name} ${red.conclusion} (${red.details_url})`, "fix the Worker build on main; staging and the uploaded version come from it");
-    if (runs.length && runs.every((c) => c.status === "completed")) break;
-    const known = runs.length > 0 || parentBuilt;
-    if (Date.now() - start >= (known ? wait : Math.min(grace, wait))) {
-      if (!known) await cancelRun(`nothing to certify: no "${name}" check on ${short} or its parent, so no staging deployment for it`);
-      fail(runs.length ? `the Cloudflare build for ${short} is still running after ${wait / 1000}s` : `no "${name}" check on ${short} after ${wait / 1000}s, though the repository has Workers Builds`, "re-run the release check once the build finishes");
-    }
+    if (runs.every((c) => c.status === "completed")) break;
+    if (Date.now() - start >= wait) fail(`the Cloudflare build for ${short} is still running after ${wait / 1000}s`, "re-run the release check once the build finishes");
     await new Promise((r) => setTimeout(r, poll));
   }
   if (runs.every((c) => c.conclusion === "skipped")) await cancelRun(`nothing to certify: Cloudflare skipped the build for ${short} (no deployable change)`);
@@ -488,10 +480,20 @@ if (cmd === "local") {
   output("url", std.staging_url ?? "");
 } else if (cmd === "release-verify") {
   // After the suite: a commit that deployed to staging meanwhile means the suite tested its deployment, not this commit's.
-  const get = ghApi(), sha = env.GITHUB_SHA ?? git("rev-parse", "HEAD").trim();
+  const get = ghApi(), sha = env.RELEASE_SHA || git("rev-parse", "HEAD").trim();
   const sup = await supersededBy(get, sha, pack.preview?.check_name ?? "Workers Builds");
   if (sup) await cancelRun(`superseded during the suite: ${sup.slice(0, 7)} on the default branch deploys staging after ${sha.slice(0, 7)}; its release check covers it`);
   console.log(`release: no later commit deployed staging during ${sha.slice(0, 7)}'s suite`);
+} else if (cmd === "release-report") {
+  // The verdict: the check-run `release-check` on the commit that was built (the workflow's own job check lands on the default branch's tip).
+  const sha = env.RELEASE_SHA || git("rev-parse", "HEAD").trim(), ok = env.RELEASE_JOB_STATUS === "success";
+  const r = await fetch(`${env.GITHUB_API_URL || "https://api.github.com"}/repos/${env.GITHUB_REPOSITORY}/check-runs`, { method: "POST",
+    headers: { Authorization: `Bearer ${env.GH_TOKEN || env.GITHUB_TOKEN}`, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
+    body: JSON.stringify({ name: "release-check", head_sha: sha, status: "completed", conclusion: ok ? "success" : "failure",
+      details_url: `${env.GITHUB_SERVER_URL || "https://github.com"}/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`,
+      output: { title: ok ? "release-check passed" : "release-check failed", summary: `The full suite ${ok ? "passed" : "failed"} against staging for ${sha}.` } }) });
+  if (!r.ok) fail(`could not post release-check on ${sha.slice(0, 7)} (${r.status})`, "grant the job checks: write");
+  console.log(`release-check ${ok ? "success" : "failure"} posted on ${sha.slice(0, 7)}`);
 } else if (cmd === "classify") {
   // Codex cloud has no origin: fall back to a local default branch, then to HEAD itself (uncommitted and untracked
   // files only). Never the branch's upstream: that is usually the pushed feature head, which would hide its changes.
