@@ -144,7 +144,7 @@ let gates=0;
 for (const f of fs.readdirSync(dir)) {
   const L=fs.readFileSync(dir+"/"+f,"utf8").split("\n"),j=L.indexOf("jobs:");
   const jobs=L.slice(j+1).filter(l=>/^  [A-Za-z0-9_-]+:\s*$/.test(l)).map(l=>l.trim().slice(0,-1));
-  gates+=L.slice(j+1).filter(l=>/^    name: gate\s*$/.test(l)).length;
+  gates+=L.slice(j+1).filter(l=>/^    name: .*\|\| 'gate' \}\}\s*$/.test(l)).length;
   if (f==="std-gate.yml") {
     if (jobs.join()!=="checks,test,gate") out.push("jobs: "+jobs.join());
     const runs=L.slice(j+1).join("\n");
@@ -172,9 +172,10 @@ assert.equal((jobs.test.match(/actions\/checkout@/g) ?? []).length, 1, "one chec
 const order = ["run typecheck", "run build", "gate.local.sh", "gate.mjs preview", "gate.mjs e2e"].map((k) => jobs.test.indexOf(k));
 assert.ok(order.every((n, i) => n > 0 && (i === 0 || n > order[i - 1])), "typecheck, build, repo checks, preview, e2e in order: " + order);
 assert.match(jobs.gate, /needs: \[checks, test\]/);
-assert.match(jobs.gate, /^    if: \$\{\{ always\(\) && !cancelled\(\) \}\}$/m, "a cancelled run posts no gate, and gate never skips");
-const skip = /github\.event\.action != 'synchronize' \|\| github\.event\.pull_request\.draft != true \|\| vars\.STD_GATE_DRAFT_PUSHES == 'true'/;
-assert.match(jobs.checks, skip, "a push to a draft starts no checks");
+assert.match(jobs.checks, /^    if: github\.event\.pull_request\.draft != true$/m, "a draft starts no checks");
+assert.match(jobs.gate, /^    name: \$\{\{ github\.event\.pull_request\.draft == true && 'draft \(not gated\)' \|\| 'gate' \}\}$/m, "a draft's gate job is not named gate");
+assert.match(jobs.gate, /^    if: \$\{\{ always\(\) && !cancelled\(\) && github\.event\.pull_request\.draft != true \}\}$/m, "gate is skipped for a draft, never skipped otherwise");
+assert.ok(!y.includes("STD_GATE_DRAFT_PUSHES"), "no draft opt-in knob");
 assert.match(jobs.test, /needs: checks/);
 JS
 NEEDS_OK='{"checks":{"result":"success","outputs":{"mode":"full"}},"test":{"result":"success"}}'

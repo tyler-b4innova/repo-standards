@@ -19,7 +19,7 @@ const g=body("gate");
 if(!/needs: \[checks, test\]/.test(g))out.push("gate needs");
 for(const j of ["test","gate"])if(!/ref: \$\{\{ needs\.checks\.outputs\.sha \}\}/.test(body(j)))out.push(j+" not pinned to the checked tree");
 if(!/actions\/setup-node/.test(g))out.push("gate job sets up no node");
-if(!/^    if: \$\{\{ always\(\) && !cancelled\(\) \}\}$/m.test(g)||!/^    name: gate$/m.test(g)||!/gate\.mjs verdict/.test(g))out.push("gate job: "+g);
+if(!/^    if: \$\{\{ always\(\) && !cancelled\(\) && github\.event\.pull_request\.draft != true \}\}$/m.test(g)||!/^    name: .*\|\| 'gate' \}\}$/m.test(g)||!/gate\.mjs verdict/.test(g))out.push("gate job: "+g);
 for(const j of ["checks","test"]){const b=body(j);if(!/^    timeout-minutes: 30$/m.test(b))out.push(j+" timeout");if(j!=="checks"&&(!/needs: checks/.test(b)||!/if: needs\.checks\.outputs\.mode == .full./.test(b)))out.push(j+" not a tail job")}
 for(const [j,s] of [["test","run typecheck"],["test","run build"],["test","gate.mjs preview"],["test","gate.mjs e2e"],["test","gate.local.sh"],["checks","setup.sh --check"],["checks","gate.mjs instructions"],["checks","gate.mjs secrets"]])if(!body(j).includes(s))out.push(j+" lacks "+s);
 console.log(out.join("; ")||"ok")' "$WF")

@@ -12,7 +12,7 @@ const git = (...a) => { try { return execFileSync("git", ["--git-dir", origin, .
 const S = { pulls: [], issueComments: {}, reviewComments: {}, reviews: {}, checks: {} };
 let nextId = 1000;
 
-const pr = (x) => ({ ...x, html_url: `https://github.com/acme/demo/pull/${x.number}`, head: { ref: x.head, sha: git("rev-parse", `refs/heads/${x.head}`), repo: { full_name: "acme/demo" } }, base: { ref: x.base } });
+const pr = (x) => ({ ...x, node_id: `PR_${x.number}`, html_url: `https://github.com/acme/demo/pull/${x.number}`, head: { ref: x.head, sha: x.sha ?? git("rev-parse", `refs/heads/${x.head}`), repo: { full_name: "acme/demo" } }, base: { ref: x.base } });
 
 createServer((req, res) => {
   let raw = "";
@@ -47,6 +47,15 @@ createServer((req, res) => {
       return send(200, pr(x));
     }
     if ((m = p.match(/^\/repos\/acme\/demo\/commits\/([0-9a-f]{40})\/check-runs$/))) return send(200, { check_runs: S.checks[m[1]] ?? [] });
+    // draft toggles: S.gqlFail makes them error
+    if (p === "/graphql" && /convertPullRequestToDraft|markPullRequestReadyForReview/.test(body?.query ?? "")) {
+      if (S.gqlFail) return send(200, { errors: [{ message: "stub: not permitted" }] });
+      const x = S.pulls.find((y) => `PR_${y.number}` === body.variables.id);
+      if (!x) return send(200, { errors: [{ message: "stub: no such PR" }] });
+      x.draft = body.query.includes("convertPullRequestToDraft");
+      if (S.moveHead && !x.draft) x.sha = "f".repeat(40); // a push lands while the toggle runs
+      return send(200, { data: { pullRequest: { isDraft: x.draft } } });
+    }
     // review threads: S.threads (default none); S.threadsFail: the query errors
     if (p === "/graphql" && body?.query?.includes("resolveReviewThread")) {
       const t = (S.threads ?? []).find((x) => x.id === body.variables.t);
