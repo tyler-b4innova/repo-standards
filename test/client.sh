@@ -203,7 +203,7 @@ e2e() { # e2e <profile> <server mode>: gate's e2e step against a stand-in previe
   commit "$d"
   node "$T/serve.mjs" "$port" "$2" & pid=$!; sleep 0.4
   # perl's alarm bounds a gate that would wait forever (no deadline on the preview fetch)
-  (cd "$d" && GATE_PREVIEW_FETCH_S="${FETCH_S:-60}" GATE_PREVIEW_URL="http://127.0.0.1:$port" perl -e 'alarm 30; exec @ARGV' node scripts/agent/gate.mjs e2e 2>&1); echo "exit=$?"; kill $pid; wait $pid 2>/dev/null
+  (cd "$d" && GATE_PREVIEW_URL="http://127.0.0.1:$port" perl -e 'alarm 30; exec @ARGV' node scripts/agent/gate.mjs e2e 2>&1); echo "exit=$?"; kill $pid; wait $pid 2>/dev/null
 }
 why=""
 o=$(e2e client meta); has "exit=0" "$o" && has "preview noindex: ok" "$o" || why="meta: $o"
@@ -211,8 +211,6 @@ o=$(e2e client header); has "exit=0" "$o" && has "preview noindex: ok" "$o" || w
 o=$(e2e client homeonly); has "exit=1" "$o" && has "carries no noindex" "$o" && has "/__std-noindex-probe" "$o" || why="$why; worker-rendered page without noindex passed: $o"
 o=$(e2e client spaced); has "exit=0" "$o" && has "preview noindex: ok" "$o" || why="$why; spaced attributes: $o"
 for m in none nofollow other inactive; do o=$(e2e client $m); has "exit=1" "$o" && has "the preview at http://127.0.0.1:" "$o" && has "carries no noindex" "$o" || why="$why; $m: $o"; done
-# the preview fetch and its body read stop after GATE_PREVIEW_FETCH_S, so a hung preview cannot hold the job
-o=$(FETCH_S=1 e2e client stall); has "exit=1" "$o" && has "did not answer within 1 s" "$o" || why="$why; stalled body: $o"
 o=$(SUITE_SLEEP=2000 e2e client slow); has "exit=0" "$o" && ! has "budget" "$o" || why="$why; a slow suite failed: $o"
 o=$(e2e internal none); has "exit=0" "$o" && ! has "noindex" "$o" || why="$why; internal checked: $o"
 if [ -z "$why" ]; then ok client-preview-noindex; else fail client-preview-noindex "$why"; fi

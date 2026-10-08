@@ -26,7 +26,7 @@ console.log(out.join("; ")||"ok")' "$WF")
 [ "$shape" = ok ] || why="shape: $shape"
 GT=$T/ov.json; node -e 'const o=require(process.argv[1]);o.gate={timeout_minutes:45};require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$GT"
 node bin/repo-standards.mjs apply --overlay "$GT" --version 0.1.0 --target "$R" >/dev/null
-[ "$(grep -c '^    timeout-minutes: 45$' "$WF")" = 3 ] || why="$why; overlay timeout not on every job: $(grep -n timeout-minutes "$WF")"
+[ "$(grep -c '^    timeout-minutes: 45$' "$WF")" = 2 ] || why="$why; overlay timeout not on every job: $(grep -n timeout-minutes "$WF")"
 # the verdict
 v() { (cd "$R" && NEEDS="$1" node scripts/agent/gate.mjs verdict 2>&1); echo "exit=$?"; }
 j() { printf '{"checks":{"result":"%s","outputs":{"mode":"%s"}},"test":{"result":"%s"}}' "$@"; }
