@@ -525,8 +525,8 @@ if (cmd === "local") {
   // those projects; a config without projects runs as it is.
   const cfgFile = [...(rootPw ? ls(".") : []), ...(dir && !rootPw ? ls(dir).map((f) => `${dir}/${f}`) : [])].find((f) => /(^|\/)playwright\.config\.[cm]?[jt]s$/.test(f));
   const cfg = cfgFile ? rd(cfgFile, "utf8") : "", named = (b) => new RegExp(`name:\\s*['"\`]${b}['"\`]`).test(cfg);
-  // The release check, a push, the merge queue, a manual run and GATE_SELECT=full run every Playwright project with no file filter.
-  const everything = env.GATE_SELECT === "full" || (env.GITHUB_EVENT_NAME && env.GITHUB_EVENT_NAME !== "pull_request"), projects = !everything && /\bprojects\s*:/.test(cfg) ? browsers().filter(named).map((b) => `--project=${b}`) : [];
+  // Only GATE_SELECT=full (the release check) runs every Playwright project with no file filter; every gate run (pull request, merge queue, re-gate) is Chromium only.
+  const everything = env.GATE_SELECT === "full", projects = !everything && /\bprojects\s*:/.test(cfg) ? browsers().filter(named).map((b) => `--project=${b}`) : [];
   const pwBin = has("node_modules/.bin/playwright") ? ["node_modules/.bin/playwright", []] : ["npx", ["--no-install", "playwright"]];
   // A package script that runs `playwright test` gets the same project selection (npm needs `--` before it).
   const pwScript = script && /\bplaywright\s+test\b/.test(pkg.scripts[script]);
