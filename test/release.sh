@@ -23,7 +23,7 @@ node test/stubs/codex-github.mjs "$T/port" "$T/state.json" & STUB=$!
 for i in $(seq 50); do [ -s "$T/port" ] && break; sleep 0.1; done
 API="http://127.0.0.1:$(cat "$T/port")"
 put() { printf '%s' "$1" > "$T/state.json"; }
-rel() { jset "$T/state.json" "o.branchHeads={main:\"$SHA\"}"; (cd "$1" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_SHA=$SHA GATE_PREVIEW_WAIT_S=0 GITHUB_OUTPUT= node scripts/agent/gate.mjs release 2>&1); echo "exit=$?"; }
+rel() { (cd "$1" && GATE_CANCEL_WAIT_S=0 GATE_FORCE_WAIT_S=0 GATE_BUILD_GRACE_S=0 GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_SHA=$SHA GATE_PREVIEW_WAIT_S=0 GITHUB_OUTPUT= node scripts/agent/gate.mjs release 2>&1); echo "exit=$?"; }
 why=""
 
 O=$T/ov.json; node -e 'const o=require(process.argv[1]);o.e2e={release_browsers:["webkit"]};require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$O"
@@ -56,14 +56,14 @@ put '{"checks":[{"name":"Workers Builds: demo","status":"completed","conclusion"
 o=$(rel "$R"); has "exit=1" "$o" && has "Cloudflare build failed for eeeeeee" "$o" || why="$why; failed build: $o"
 put '{"checks":[{"name":"Workers Builds: demo","status":"in_progress"}]}'
 o=$(rel "$R"); has "exit=1" "$o" && has "still running" "$o" || why="$why; running build: $o"
-# no build on this commit or its parent: a repository without Workers Builds tests staging as it stands
+# no build on this commit or its parent: nothing deployed for it, so nothing to certify (cancelled, never green)
 P=$(git -C "$R" rev-parse HEAD); gc -C "$R" commit -q --allow-empty -m next; SHA=$(git -C "$R" rev-parse HEAD)
 put '{"checks":[]}'
-o=$(rel "$R"); has "exit=0" "$o" && has "no \"Workers Builds\" check" "$o" || why="$why; no builds: $o"
+o=$(rel "$R"); has "exit=1" "$o" && has "nothing to certify: no \"Workers Builds\" check" "$o" && grep -q cancelled "$T/state.json" || why="$why; no builds certified: $o"
 # the parent had a build, so this commit's check is waited for, even when it is created late; never "absent" early
 put "{\"checksBy\":{\"$P\":[{\"name\":\"Workers Builds: demo\",\"status\":\"completed\",\"conclusion\":\"success\"}]}}"
 o=$(rel "$R"); has "exit=1" "$o" && has "no \"Workers Builds\" check on ${SHA:0:7}" "$o" && has "though the repository has Workers Builds" "$o" || why="$why; missing build treated as absent: $o"
-( sleep 2; printf '%s' "{\"checksBy\":{\"$P\":[{\"name\":\"Workers Builds: demo\",\"status\":\"completed\",\"conclusion\":\"success\"}],\"$SHA\":[{\"name\":\"Workers Builds: demo\",\"status\":\"completed\",\"conclusion\":\"success\"}]},\"branchHeads\":{\"main\":\"$SHA\"}}" > "$T/state.json" ) & LATE=$!
+( sleep 2; printf '%s' "{\"checksBy\":{\"$P\":[{\"name\":\"Workers Builds: demo\",\"status\":\"completed\",\"conclusion\":\"success\"}],\"$SHA\":[{\"name\":\"Workers Builds: demo\",\"status\":\"completed\",\"conclusion\":\"success\"}]}}" > "$T/state.json" ) & LATE=$!
 o=$( (cd "$R" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_SHA=$SHA GATE_PREVIEW_WAIT_S=20 GATE_POLL_S=1 GITHUB_OUTPUT= node scripts/agent/gate.mjs release 2>&1); echo "exit=$?"); wait $LATE
 has "exit=0" "$o" && has "browsers=chromium,firefox,webkit" "$o" || why="$why; late check: $o"
 if [ -z "$why" ]; then ok release-browsers-on-main; else fail release-browsers-on-main "$why"; fi
@@ -76,7 +76,7 @@ pushed() { printf '{"before":"%s","after":"%s"}' "$1" "$SHA" >"$T/push.json"; }
 B0=$(git -C "$R" rev-parse HEAD)
 echo "notes" >"$R/README.md"; mkdir -p "$R/docs" && echo "guide" >"$R/docs/guide.md"; commit "$R" docs; SHA=$(git -C "$R" rev-parse HEAD); pushed "$B0"
 put '{"checks":[{"name":"Workers Builds: demo","status":"in_progress"}]}'
-o=$(GITHUB_EVENT_PATH=$T/push.json rel "$R"); has "exit=0" "$o" && has "skip=true" "$o" && has "only non-deployable paths changed (README.md, docs/guide.md)" "$o" && has "browsers=" "$o" || why="$why; docs push: $o"
+o=$(GITHUB_EVENT_PATH=$T/push.json rel "$R"); has "nothing to certify: only non-deployable paths changed (README.md, docs/guide.md)" "$o" && has "skip=true" "$o" && has "exit=1" "$o" && grep -q cancelled "$T/state.json" || why="$why; docs push: $o"
 o=$(rel "$R"); ! has "skip=true" "$o" || why="$why; skipped without a push range: $o"
 B1=$(git -C "$R" rev-parse HEAD)
 mkdir -p "$R/src" && echo "export {};" >"$R/src/index.ts" && echo "more" >>"$R/README.md"; commit "$R" code; SHA=$(git -C "$R" rev-parse HEAD); pushed "$B1"

@@ -73,27 +73,49 @@ out=$(check "$R"); ! has "without --tag" "$out" || why="$why; tagged upload warn
 grep -q 'WORKERS_CI_COMMIT_SHA || env.GITHUB_SHA' template/scripts/agent/release.mjs && grep -q '"--tag", sha' template/scripts/agent/release.mjs || why="$why; release.mjs does not tag with the commit"
 if [ -z "$why" ]; then ok release-version-tagged; else fail release-version-tagged "$why"; fi
 
-# staging is the latest main build's deployment: a newer deployable commit supersedes the run before or after the suite
-# (cancelled, not certified, not red); a newer docs-only commit does not
+# staging serves the newest build that deployed: any later commit on the default branch (each one, so a change and its
+# revert count) whose staging build is running or succeeded supersedes the run, before or after the suite. Superseded and
+# nothing-to-certify runs cancel (force-cancel next) and fail closed if the runner is never interrupted; they never pass.
 why=""
-SHA=$(git -C "$W" rev-parse HEAD); NEW=$(printf 'f%.0s' $(seq 40))
+SHA=$(git -C "$W" rev-parse HEAD); MID=$(printf 'a%.0s' $(seq 40)); REV=$(printf 'b%.0s' $(seq 40)); DOC=$(printf 'c%.0s' $(seq 40))
 st() { printf '%s' "$1" > "$T/state.json"; }
-verify() { (cd "$W" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_SHA=$SHA GITHUB_RUN_ID=77 GATE_CANCEL_WAIT_S=0 GITHUB_OUTPUT= node scripts/agent/gate.mjs "$@" 2>&1); echo "exit=$?"; }
-BUILD='{"name":"Workers Builds: demo","status":"completed","conclusion":"success"}'
-st "{\"checks\":[$BUILD],\"branchHeads\":{\"main\":\"$SHA\"}}"
-o=$(verify release-verify); has "exit=0" "$o" && has "still serves" "$o" && ! has superseded "$o" || why="current head: $o"
-st "{\"branchHeads\":{\"main\":\"$NEW\"},\"compareFiles\":[\"src/index.ts\"]}"
-o=$(verify release-verify); has "release check superseded" "$o" && grep -q '"cancelled":\[77\]' "$T/state.json" && has "exit=0" "$o" && ! has "still serves" "$o" || why="$why; newer deploy after the suite: $o"
-st "{\"checks\":[$BUILD],\"branchHeads\":{\"main\":\"$NEW\"},\"compareFiles\":[\"src/index.ts\"]}"
-o=$(verify release); has "release check superseded" "$o" && has "skip=true" "$o" && grep -q '"cancelled":\[77\]' "$T/state.json" && ! has "browsers=chromium" "$o" || why="$why; newer deploy before the suite: $o"
-st "{\"branchHeads\":{\"main\":\"$NEW\"},\"compareFiles\":[\"README.md\",\"docs/a.md\"]}"
-o=$(verify release-verify); has "still serves" "$o" && ! grep -q cancelled "$T/state.json" || why="$why; docs-only push superseded: $o"
-st "{\"branchHeads\":{\"main\":\"$NEW\"},\"compareFiles\":[\"src/index.ts\"],\"cancelFail\":true}"
-o=$(verify release-verify); has "exit=1" "$o" && has "could not cancel" "$o" || why="$why; failed cancel certified: $o"
-# the repo checks and the suite both see the staging URL; the job may cancel itself
+verify() { (cd "$W" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_SHA=$SHA GITHUB_RUN_ID=77 GATE_CANCEL_WAIT_S=0 GATE_FORCE_WAIT_S=0 GATE_BUILD_GRACE_S=0 GATE_PREVIEW_WAIT_S=${WAIT:-0} GITHUB_OUTPUT= node scripts/agent/gate.mjs "$@" 2>&1); echo "exit=$?"; }
+OKB='{"name":"Workers Builds: demo","status":"completed","conclusion":"success"}'
+RUNB='{"name":"Workers Builds: demo","status":"in_progress"}'
+SKIPB='{"name":"Workers Builds: demo","status":"completed","conclusion":"skipped"}'
+# the head is this commit: nothing after it
+st "{\"checks\":[$OKB]}"
+o=$(verify release-verify); has "exit=0" "$o" && ! grep -q cancelled "$T/state.json" || why="current: $o"
+# a change then its revert after this commit: the net diff is empty but each deploys (the revert's build is running)
+st "{\"compareCommits\":[\"$MID\",\"$REV\"],\"checksBy\":{\"$MID\":[$OKB],\"$REV\":[$RUNB]}}"
+o=$(verify release-verify); has "superseded during the suite: aaaaaaa" "$o" && grep -q '"cancelled":\[77\]' "$T/state.json" || why="$why; change then revert certified: $o"
+# the change's build was skipped by Cloudflare but the revert's build is running: the revert alone supersedes
+st "{\"compareCommits\":[\"$MID\",\"$REV\"],\"checksBy\":{\"$MID\":[$SKIPB],\"$REV\":[$RUNB]}}"
+o=$(verify release-verify); has "superseded during the suite: bbbbbbb" "$o" || why="$why; the revert's build did not supersede: $o"
+# the same history seen before the suite: this commit's own build is done, a later one is deploying
+st "{\"checksBy\":{\"$SHA\":[$OKB],\"$MID\":[$OKB]},\"compareCommits\":[\"$MID\"]}"
+o=$(verify release); has "superseded: aaaaaaa" "$o" && has "skip=true" "$o" && ! has "browsers=chromium" "$o" || why="$why; superseded before the suite: $o"
+# later commits whose builds Cloudflare skipped (docs) deploy nothing
+st "{\"compareCommits\":[\"$DOC\"],\"checksBy\":{\"$DOC\":[$SKIPB]}}"
+o=$(verify release-verify); has "exit=0" "$o" && ! grep -q cancelled "$T/state.json" || why="$why; a skipped later build superseded: $o"
+# cancel accepted but the runner is never interrupted: force-cancel, then fail closed, never green
+st "{\"compareCommits\":[\"$MID\"],\"checksBy\":{\"$MID\":[$OKB]}}"
+o=$(verify release-verify); has "exit=1" "$o" && has "not interrupted after cancel and force-cancel" "$o" && grep -q '"forced":\[77\]' "$T/state.json" || why="$why; uninterrupted cancel did not fail closed: $o"
+st "{\"compareCommits\":[\"$MID\"],\"checksBy\":{\"$MID\":[$OKB]},\"forceFail\":true}"
+o=$(verify release-verify); has "exit=1" "$o" && has "force-cancel failed" "$o" || why="$why; failed force-cancel passed: $o"
+st "{\"compareCommits\":[\"$MID\"],\"checksBy\":{\"$MID\":[$OKB]},\"cancelFail\":true}"
+o=$(verify release-verify); has "exit=1" "$o" && has "could not cancel" "$o" || why="$why; failed cancel passed: $o"
+# this commit's own build is missing or running: wait (no cap, no failure) until it completes, then test
+st "{\"checksBy\":{\"$SHA\":[$RUNB]}}"
+( sleep 2; st "{\"checksBy\":{\"$SHA\":[$OKB]}}" ) & LATER=$!
+WAIT= o=$( (cd "$W" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_SHA=$SHA GATE_POLL_S=1 GITHUB_OUTPUT= node scripts/agent/gate.mjs release 2>&1); echo "exit=$?"); wait $LATER
+has "exit=0" "$o" && has "browsers=chromium" "$o" || why="$why; did not wait for its own build: $o"
+# the post-suite step runs after a failing suite (a failure caused by a newer deploy cancels); never after a cancel
+yml=$(cat "$W/$WF"); has 'if: ${{ !cancelled() && steps.release.outputs.skip != '"'"'true'"'"' }}' "$yml" && has "gate.mjs release-verify" "$yml" || why="$why; still-staging step skipped after a failing suite"
+# the repo checks and the suite both see the staging URL
 blk=$(awk '/- name: repo checks/{f=1} f' "$W/$WF")
 for v in BASE_URL PLAYWRIGHT_BASE_URL GATE_PREVIEW_URL; do has "$v: \${{ steps.release.outputs.url }}" "$blk" || why="$why; repo checks lack $v"; done
-has "actions: write" "$(cat "$W/$WF")" && has "gate.mjs release-verify" "$(cat "$W/$WF")" || why="$why; no still-staging step"
+has "actions: write" "$yml" || why="$why; cannot cancel"
 if [ -z "$why" ]; then ok release-check-staging-superseded; else fail release-check-staging-superseded "$why"; fi
 
 # the @a11y contract: RELEASE_CHECK=1 reaches the suite only through the release check

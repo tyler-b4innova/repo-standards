@@ -11,7 +11,7 @@ on:
     branches: [main]
   workflow_dispatch:
 permissions:
-  actions: write # cancels the run when a newer commit replaces staging
+  actions: write # cancels the run when a newer commit replaces staging, or there is nothing to certify
   checks: read
   contents: read
 concurrency:
@@ -68,8 +68,9 @@ jobs:
         run: |
           if [ -f scripts/agent/gate.local.sh ]; then bash scripts/agent/gate.local.sh; else echo "notice: no scripts/agent/gate.local.sh"; fi
       - name: still staging
-        # the suite certifies this commit only if staging still served its deployment
-        if: steps.release.outputs.skip != 'true'
+        # runs after a failing suite too: a failure caused by a newer commit's deployment cancels the run (neither a pass nor a
+        # red failure for this commit), while a failure with this commit still current stays red
+        if: ${{ !cancelled() && steps.release.outputs.skip != 'true' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/agent/gate.mjs release-verify

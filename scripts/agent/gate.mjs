@@ -50,27 +50,37 @@ const ghApi = () => {
     return null;
   };
 };
-// A newer deployable commit on the default branch replaces staging, so a release check for this commit would test (and
-// certify) that one. Staging serves whatever the latest main build deployed; the default branch's history is the proof
-// of which commit that is. Superseded: the run cancels itself (neither a pass for this commit nor a red failure); the
-// newer commit's own release check covers staging.
-async function supersededBy(get, sha, nonDeploy) {
+// The Workers Builds check-runs of one commit: its staging deployment (and uploaded production version) is that build.
+const buildRuns = async (get, commit, name) => ((await get(`/commits/${commit}/check-runs?per_page=100`))?.check_runs ?? []).filter((x) => x.name?.startsWith(name));
+// Staging serves the newest build that deployed. Any commit after this one on the default branch (each one, never the net
+// diff: a change and its revert net to nothing but each deploys) whose build is running or succeeded replaces what this
+// commit's release check would test; builds that Cloudflare skipped (watch paths) deploy nothing and do not count.
+async function supersededBy(get, sha, name) {
   const branch = event.repository?.default_branch || "main";
-  const head = (await get(`/branches/${encodeURIComponent(branch)}`))?.commit?.sha;
-  if (!head || head === sha) return null;
-  const files = ((await get(`/compare/${sha}...${head}`))?.files ?? []).map((f) => f.filename);
-  const deployable = files.filter((f) => !nonDeploy.some((r) => r.test(f)));
-  return deployable.length ? head : null;
+  for (let page = 1; ; page++) {
+    const commits = ((await get(`/compare/${sha}...${encodeURIComponent(branch)}?per_page=100&page=${page}`))?.commits ?? []).map((c) => c.sha).filter((c) => c !== sha);
+    for (const c of commits) {
+      const live = (await buildRuns(get, c, name)).some((r) => r.status !== "completed" || r.conclusion === "success");
+      if (live) return c;
+    }
+    if (commits.length < 100) return null;
+  }
 }
-async function supersede(head, sha) {
-  console.log(`::notice::release check superseded: ${head.slice(0, 7)} on the default branch changes staging after ${sha.slice(0, 7)}; its release check covers it`);
+// Cancel this run and never return: neither a pass for a commit it cannot certify nor a red failure. The cancel is
+// asynchronous (GitHub documents up to five minutes): wait for the runner to be interrupted, then force-cancel, then fail closed.
+async function cancelRun(why) {
+  console.log(`::notice::release check cancelled: ${why}`);
   output("skip", "true"); output("browsers", ""); output("url", "");
-  const token = env.GH_TOKEN || env.GITHUB_TOKEN, run = env.GITHUB_RUN_ID || "0";
-  const r = await fetch(`${env.GITHUB_API_URL || "https://api.github.com"}/repos/${env.GITHUB_REPOSITORY}/actions/runs/${run}/cancel`, { method: "POST", headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" } });
-  if (!r.ok) fail(`could not cancel the superseded release check (${r.status})`, "grant the job actions: write; the newer commit's release check covers staging");
-  // the cancel ends this job (neither success nor failure); never fall through into certifying a different deployment
-  await new Promise((res) => setTimeout(res, Number(env.GATE_CANCEL_WAIT_S ?? 120) * 1000));
-  process.exit(0);
+  const base = `${env.GITHUB_API_URL || "https://api.github.com"}/repos/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID || "0"}`;
+  const post = (tail) => fetch(`${base}/${tail}`, { method: "POST", headers: { Authorization: `Bearer ${env.GH_TOKEN || env.GITHUB_TOKEN}`, Accept: "application/vnd.github+json" } });
+  const sleep = (sec) => new Promise((res) => setTimeout(res, sec * 1000));
+  let r = await post("cancel");
+  if (!r.ok) fail(`could not cancel the release check (${r.status}): ${why}`, "grant the job actions: write");
+  await sleep(Number(env.GATE_CANCEL_WAIT_S ?? 300));
+  r = await post("force-cancel");
+  if (!r.ok) fail(`the release check was not interrupted after cancel, and force-cancel failed (${r.status}): ${why}`, "cancel the run; it must not pass");
+  await sleep(Number(env.GATE_FORCE_WAIT_S ?? 60));
+  fail(`the release check was not interrupted after cancel and force-cancel: ${why}`, "cancel the run; it must not pass");
 }
 const playwrightBin = () => has("node_modules/.bin/playwright") ? ["node_modules/.bin/playwright", []] : ["npx", ["--no-install", "playwright"]];
 // True when the system packages for this run's browsers must be installed (Linux only; elsewhere Playwright has none).
@@ -446,40 +456,42 @@ if (cmd === "local") {
   const before = event.before && !/^0+$/.test(event.before) ? event.before : null;
   if (before) try { pushed = git("diff", "--name-only", "--no-renames", "-z", before, sha).split("\0").filter(Boolean); } catch {}
   const nd = (pack.non_deploy_paths ?? []).map(glob);
-  if (pushed?.length && pushed.every((f) => nd.some((r) => r.test(f)))) {
-    console.log(`::notice::release check skipped: only non-deployable paths changed (${pushed.join(", ")})`);
-    output("skip", "true"); output("browsers", ""); output("url", "");
-    process.exit(0);
-  }
   const name = pack.preview?.check_name ?? "Workers Builds";
-  const builds = async (c) => ((await get(`/commits/${c}/check-runs?per_page=100`))?.check_runs ?? []).filter((x) => x.name?.startsWith(name));
-  // The check can be created late: where the parent commit had a build, this commit's is waited for, not taken as absent.
+  if (pushed?.length && pushed.every((f) => nd.some((r) => r.test(f)))) await cancelRun(`nothing to certify: only non-deployable paths changed (${pushed.join(", ")})`);
+  const builds = (c) => buildRuns(get, c, name);
+  // This commit's own staging build must have completed successfully before the suite runs. The check can be created late:
+  // where the parent commit had a build it is waited for (no time cap; the job's timeout is the only backstop); with no
+  // build on either, a grace window for it to appear, then there is nothing to certify.
   let parent = null;
   try { parent = git("rev-parse", `${sha}^`).trim(); } catch {}
-  const hasBuilds = (await builds(sha)).length > 0 || (parent ? (await builds(parent)).length > 0 : false);
-  const wait = Number(env.GATE_PREVIEW_WAIT_S ?? 480) * 1000, poll = Number(env.GATE_POLL_S ?? 15) * 1000, start = Date.now();
-  if (!hasBuilds) console.log(`release: no "${name}" check on ${short} or its parent; testing staging as it stands`);
-  else for (;;) {
-    const runs = await builds(sha);
+  const parentBuilt = parent ? (await builds(parent)).length > 0 : false;
+  const wait = Number(env.GATE_PREVIEW_WAIT_S ?? Infinity) * 1000, grace = Number(env.GATE_BUILD_GRACE_S ?? 300) * 1000, poll = Number(env.GATE_POLL_S ?? 15) * 1000, start = Date.now();
+  let runs;
+  for (;;) {
+    runs = await builds(sha);
     const red = runs.find((c) => c.status === "completed" && !["success", "skipped"].includes(c.conclusion));
     if (red) fail(`Cloudflare build failed for ${short}: ${red.name} ${red.conclusion} (${red.details_url})`, "fix the Worker build on main; staging and the uploaded version come from it");
     if (runs.length && runs.every((c) => c.status === "completed")) break;
-    if (Date.now() - start >= wait)
+    const known = runs.length > 0 || parentBuilt;
+    if (Date.now() - start >= (known ? wait : Math.min(grace, wait))) {
+      if (!known) await cancelRun(`nothing to certify: no "${name}" check on ${short} or its parent, so no staging deployment for it`);
       fail(runs.length ? `the Cloudflare build for ${short} is still running after ${wait / 1000}s` : `no "${name}" check on ${short} after ${wait / 1000}s, though the repository has Workers Builds`, "re-run the release check once the build finishes");
+    }
     await new Promise((r) => setTimeout(r, poll));
   }
-  const sup = await supersededBy(get, sha, nd);
-  if (sup) await supersede(sup, sha);
+  if (runs.every((c) => c.conclusion === "skipped")) await cancelRun(`nothing to certify: Cloudflare skipped the build for ${short} (no deployable change)`);
+  const sup = await supersededBy(get, sha, name);
+  if (sup) await cancelRun(`superseded: ${sup.slice(0, 7)} on the default branch deploys staging after ${short}; its release check covers it`);
   const extra = [...new Set(["chromium", ...(e2eCfg.browsers ?? []), ...(pack.e2e_release_browsers ?? [])])]; // the full suite runs every configured browser
   console.log(`release: ${extra.join(", ")} against ${std.staging_url} (${short})`);
   output("browsers", extra.join(","));
   output("url", std.staging_url ?? "");
 } else if (cmd === "release-verify") {
-  // After the suite: staging must still be this commit's deployment, or the run certifies nothing.
+  // After the suite: a commit that deployed to staging meanwhile means the suite tested its deployment, not this commit's.
   const get = ghApi(), sha = env.GITHUB_SHA ?? git("rev-parse", "HEAD").trim();
-  const sup = await supersededBy(get, sha, (pack.non_deploy_paths ?? []).map(glob));
-  if (sup) await supersede(sup, sha);
-  console.log(`release: staging still serves ${sha.slice(0, 7)}'s deployment`);
+  const sup = await supersededBy(get, sha, pack.preview?.check_name ?? "Workers Builds");
+  if (sup) await cancelRun(`superseded during the suite: ${sup.slice(0, 7)} on the default branch deploys staging after ${sha.slice(0, 7)}; its release check covers it`);
+  console.log(`release: no later commit deployed staging during ${sha.slice(0, 7)}'s suite`);
 } else if (cmd === "classify") {
   // Codex cloud has no origin: fall back to a local default branch, then to HEAD itself (uncommitted and untracked
   // files only). Never the branch's upstream: that is usually the pushed feature head, which would hide its changes.
