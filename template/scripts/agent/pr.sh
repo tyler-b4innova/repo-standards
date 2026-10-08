@@ -7,7 +7,7 @@
 #   pr.sh feedback <pr>                   comments and reviews newer than the last push, with ids
 #   pr.sh reply <pr> <comment-id> "<text>"  reply on the review thread, else as a PR comment
 #   pr.sh resolve <pr> <comment-id>       resolve the review thread holding that comment (after fixing or answering it)
-#   pr.sh review-round <pr> ["<why>"]     convert a ready PR back to draft before fix-up pushes (cheap gate only) and record why; GraphQL
+#   pr.sh review-round <pr> ["<why>"]     convert a ready PR back to draft before fix-up pushes (drafts are not gated) and record why; GraphQL
 #   pr.sh ready <pr>                      mark the draft ready once: only when `gate.mjs local` passed on the pushed head, tree clean; GraphQL
 set -euo pipefail
 usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; }
@@ -221,7 +221,7 @@ review_round() {
   if [ "$(js 'String(!!d.draft)' <<<"$R")" = true ]; then echo "PR #$1 is already a draft; fix, run: node scripts/agent/gate.mjs local, push, then pr.sh ready $1"; return; fi
   sha=$(js 'd.head.sha' <<<"$R")
   gql_draft "$1" convertPullRequestToDraft true
-  req POST "issues/$1/comments" "$(node -e 'console.log(JSON.stringify({body:`<!-- std:review-round -->\nReview round: back to draft at ${process.argv[1].slice(0,7)} so fix pushes run only the cheap gate.\nWhy: ${process.argv[2]}\nNext: fix, run \`node scripts/agent/gate.mjs local\`, push, then \`scripts/agent/pr.sh ready ${process.argv[3]}\`.`}))' -- "$sha" "$why" "$1")"
+  req POST "issues/$1/comments" "$(node -e 'console.log(JSON.stringify({body:`<!-- std:review-round -->\nReview round: back to draft at ${process.argv[1].slice(0,7)} so no CI job runs on a fix push.\nWhy: ${process.argv[2]}\nNext: fix, run \`node scripts/agent/gate.mjs local\`, push, then \`scripts/agent/pr.sh ready ${process.argv[3]}\`.`}))' -- "$sha" "$why" "$1")"
   echo "PR #$1 is a draft again ($why); fix, run: node scripts/agent/gate.mjs local, push, then pr.sh ready $1"
 }
 
