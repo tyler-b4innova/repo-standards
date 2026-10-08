@@ -170,4 +170,38 @@ case "$tip" in *.evidence/*) why="$why; tip tracks .evidence/ after a failed pos
 mut "S.failComments=false"
 if [ -z "$why" ]; then ok no-evidence-on-main; else fail no-evidence-on-main "$why"; fi
 
+# review-round-drafts: review-round turns a ready PR back into a draft and records why (one marked comment naming the head and
+# the reason); ready turns it ready again only when `gate.mjs local` passed on the pushed, clean head. Failures change nothing.
+why=""
+git push -q origin HEAD 2>/dev/null
+HEAD_SHA=$(git rev-parse HEAD); GATE=$(git rev-parse --git-path std-local-gate)
+mut "S.pulls[0].draft=false;S.pulls[0].state='open';S.pulls[0].merged=false;S.gqlFail=false;S.issueComments[1]=[]"
+draft() { state 'S.pulls[0].draft'; }
+out=$("$PR" review-round 1 "codex: unchecked null in parse" 2>&1) || why="review-round exit $?: $out"
+[ "$(draft)" = true ] || why="$why; review-round left the PR ready"
+c=$(state "S.issueComments[1].filter(c=>c.body.includes('<!-- std:review-round -->')).map(c=>c.body).join('|')")
+case "$c" in *"${HEAD_SHA:0:7}"*"codex: unchecked null in parse"*) ;; *) why="$why; reason/head not recorded: $c" ;; esac
+n=$(lines); out=$("$PR" review-round 1 2>&1) || why="$why; second review-round exit $?"
+[ "$(state 'S.issueComments[1].length')" = 1 ] || why="$why; review-round on a draft posted again"
+# no passing gate: refused, still draft
+rm -f "$GATE"
+out=$("$PR" ready 1 2>&1) && why="$why; ready accepted with no local gate"
+case "$out" in *"node scripts/agent/gate.mjs local"*) ;; *) why="$why; refusal lacks the gate hint: $out" ;; esac
+echo stale >"$GATE"; out=$("$PR" ready 1 2>&1) && why="$why; ready accepted a gate pass for another head"
+[ "$(draft)" = true ] || why="$why; refused ready still flipped the PR"
+# a pass on this head, but the tree is dirty or the head is unpushed
+echo "$HEAD_SHA" >"$GATE"
+echo dirty >>x.txt; out=$("$PR" ready 1 2>&1) && why="$why; ready accepted a dirty tree"; git checkout -q x.txt
+g commit -q --allow-empty -m unpushed; out=$("$PR" ready 1 2>&1) && why="$why; ready accepted an unpushed head"; git reset -q --hard "$HEAD_SHA"
+[ "$(draft)" = true ] || why="$why; refused ready flipped the PR"
+# a pass on the pushed clean head flips it, once
+out=$("$PR" ready 1 2>&1) || why="$why; ready exit $?: $out"
+[ "$(draft)" = false ] || why="$why; ready did not mark the PR ready"
+m=$(count 'markPullRequestReadyForReview'); out=$("$PR" ready 1 2>&1) && [ "$(count 'markPullRequestReadyForReview')" = "$m" ] || why="$why; ready on a ready PR sent a mutation again"
+# GitHub refusing the toggle is an error, not a silent success
+mut "S.gqlFail=true"; out=$("$PR" review-round 1 2>&1) && why="$why; refused toggle reported success"
+mut "S.gqlFail=false"
+rm -f "$GATE"
+if [ -z "$why" ]; then ok review-round-drafts; else fail review-round-drafts "$why"; fi
+
 done_cases
