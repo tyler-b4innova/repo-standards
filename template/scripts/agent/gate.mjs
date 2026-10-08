@@ -11,7 +11,7 @@ import { createConnection } from "node:net";
 import { localConfig, localWorkerConfig } from "./local.mjs";
 import { scan } from "./jsscan.mjs";
 import { rollbackFindings } from "./rollback.mjs";
-import { verifyGeneratedBuild } from "./release-config.mjs";
+import { rootFile, verifyGeneratedBuild } from "./release-config.mjs";
 import { describe as describeSelection, listFor, plan as planSelection, summarize } from "./select.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
@@ -305,7 +305,11 @@ if (cmd === "local") {
     for (const step of ["typecheck", "build"]) await run(step, process.execPath, ["scripts/agent/gate.mjs", "run", step]);
     if (has("scripts/agent/gate.local.sh")) await run("gate.local.sh", "bash", ["scripts/agent/gate.local.sh"]);
     else { results.set("gate.local.sh", "SKIP (absent)"); console.log("local: gate.local.sh SKIP (absent)"); }
+    // No root Wrangler config and no release_workers: there is no Worker to start, whatever local defaults to. An explicit
+    // local setting is still honoured (and refused when there is no config to run it against).
+    const noWorker = std.local === undefined && !rootFile() && !(Array.isArray(std.release_workers) && std.release_workers.length);
     if (config === false) { results.set("worker", "SKIP (local: false)"); console.log("local: worker SKIP (local: false)"); }
+    else if (noWorker) { results.set("worker", "SKIP (no Worker)"); console.log("local: worker SKIP (no Worker)"); }
     else {
       results.set("worker", "FAIL");
       const wait = Number(env.GATE_LOCAL_WAIT_S ?? 60);

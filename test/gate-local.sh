@@ -198,5 +198,16 @@ printf '\nchanged instruction\n' >> "$R/AGENTS.md"
 NO_WORKER=1 run instructions; ic=$?
 if [ "$ic" -ne 0 ] && has 'instructions=FAIL; secrets=not run' instructions; then ok gate-local-runs-ci-steps
 else fail gate-local-runs-ci-steps "instruction edit=$ic"; cat "$T/instructions.log"; fi
+# A repository with no Worker (no root Wrangler config, no release_workers) needs no local setting: the worker step skips
+# and the pass record pr.sh ready reads (the head sha in the git dir's std-local-gate) is written
+N=$T/nowork; mkdir "$N"; git -C "$N" init -q -b main
+printf 'node_modules/\n.gate-order\n' >"$N/.gitignore"; printf '{"e2e":false}\n' >"$N/standards.json"
+node bin/repo-standards.mjs apply --target "$N" --overlay examples/overlay.json --version 0.7.11 >/dev/null
+printf '#!/usr/bin/env bash\nexit 0\n' >"$N/scripts/agent/gate.local.sh"
+git -C "$N" add -A && git -C "$N" commit -qm base; git -C "$N" checkout -q -b feature; printf 'docs\n' >"$N/note.txt"; git -C "$N" add note.txt && git -C "$N" commit -qm feature
+(cd "$N" && env HOME="$T/home" USERPROFILE="$T/home" node scripts/agent/gate.mjs local --base main) >"$T/nowork.log" 2>&1; nw=$?
+rec=$(git -C "$N" rev-parse --git-path std-local-gate); [ "${rec#/}" = "$rec" ] && rec=$N/$rec
+if [ "$nw" -eq 0 ] && grep -qF 'worker=SKIP (no Worker)' "$T/nowork.log" && [ "$(cat "$rec" 2>/dev/null)" = "$(git -C "$N" rev-parse HEAD)" ]; then ok gate-local-no-worker
+else fail gate-local-no-worker "exit=$nw"; tail -5 "$T/nowork.log"; fi
 printf '\nLocal gate evidence (real Worker):\n'; tail -1 "$T/default.log"; tail -1 "$T/failing.log"; tail -1 "$T/optout.log"
 done_cases
