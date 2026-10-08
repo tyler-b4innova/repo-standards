@@ -64,6 +64,21 @@ const pack = json("scripts/agent/pack.json");
 if (!pack) fail("scripts/agent/pack.json missing or invalid", "re-apply the pack from the org standards repository");
 else {
   const tracked = git("ls-files", "-z").split("\0").filter(Boolean);
+  // Test-quality offenders (warnings; the std-implement step 4 rules): flaky-by-design waits, retries and throttling.
+  const qualityTestFile = /(^|\/)(tests?|e2e)\/.*\.[cm]?[jt]sx?$|\.(spec|test)\.[cm]?[jt]sx?$/;
+  const offenders = [
+    [qualityTestFile, /\bsetCPUThrottlingRate\b/, "CPU throttling makes timing the assertion", "assert on an event or state, not on a slowed CPU"],
+    [qualityTestFile, /\bwaitForTimeout\b/, "waitForTimeout sleeps on the wall clock", "wait for an event or locator, or control time with page.clock"],
+    [qualityTestFile, /\btest\.(describe\.)?configure\s*\(\s*\{[^}]*\bretries\b|\btest\.retries\b/, "test.retries hides flaky tests", "remove retries and fix the cause"],
+    [/(^|\/)playwright[^/]*\.config\.[cm]?[jt]s$/, /\bretries\s*:/, "retries in a Playwright config hides flaky tests", "remove retries and fix the cause"],
+  ];
+  for (const f of tracked) {
+    if (!offenders.some(([where]) => where.test(f))) continue;
+    (read(f) ?? "").split("\n").forEach((line, i) => {
+      if (/^\s*(\/\/|\*|\/\*)/.test(line)) return;
+      for (const [where, re, what, fix] of offenders) if (where.test(f) && re.test(line)) warn(`${f}:${i + 1} ${what} | fix: ${fix}`);
+    });
+  }
   const pin = git("log", "-1", "--format=%h", "--", "standards.lock").trim() || "HEAD";
   const restore = (p) => `git checkout ${pin} -- ${p}`;
   const std = json("standards.json");

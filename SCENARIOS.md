@@ -24,6 +24,7 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 - **`evidence-document-pages`**: a PR whose UI paths are all documents (.docx, .pptx and similar) accepts before and after page images (`before-N`, `after-N`) with at least one page in both; a PR that also changes web UI needs the 400 and 1280px set and the pages.
 - **`ui-paths-repo-override`**: `standards.json` `ui_paths` replaces the default globs, and `{ "ignore": [...] }` keeps them while exempting paths (release notes generated upstream once tripped the evidence gate).
 - **`ui-paths-empty-warns`**: an explicit `ui_paths: []` turns the evidence gate off, and `--check` warns naming tracked files the defaults would cover.
+- **`test-quality-warns`**: `--check` warns, never fails, with file:line on `setCPUThrottlingRate`, `test.retries`, `retries:` in a Playwright config and `waitForTimeout` under tests; comments and non-test files stay silent; the managed block, `std-implement` and `std-autoreview` carry the rules and the reviewer rejects violations.
 - **`no-evidence-on-main`**: tracked `.evidence/` fails `--check` (gate's standards step); the PR helper leaves no `.evidence/` on the branch tip after posting.
 
 ### Review (the pull request's conversation: `scripts/agent/review.mjs`, exported as `repo-standards/review`)

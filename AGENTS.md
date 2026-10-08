@@ -9,7 +9,8 @@
 - Start each task in a new worktree from freshly fetched `origin/<default>`, unless you are building on an existing branch.
 - One concern per PR. Issues only for actionable defects or deliberate work, related work grouped in one.
 - Visual change (UI, .docx, .pptx): before/after captures you inspected (web 400/1280px, document pages), in chat and on the PR (`std-evidence`).
-- Tests: end-to-end through the real entry point; unit tests only for pure logic with a failure history. Never mock what you own; every test must be able to fail. Run the smallest proof; `gate` runs the rest.
+- Tests: end-to-end through the real entry point; unit tests only for pure logic with a failure history. Never mock what you own. Run the smallest proof; `gate` runs the rest.
+- Test quality (a reviewer rejects violations): one behaviour, one layer (Worker/integration tests prove rules; browser tests only what needs a browser). Seed through the API or SQL, never a UI replay. No test that only asserts a mock, a snapshot or a screenshot count. axe lives only in dedicated `@a11y` tests that run in `release-check`, one scan per distinct page or state; functional specs never call it. No CPU throttling, `test.retries`, `waitForTimeout` or wall-clock assertions: wait on events or use `page.clock`. Every test can fail for a real reason: show the mutation that breaks it. A new slow test states what it alone proves.
 - Answer every bot finding (fix it or reply why), then resolve the thread.
 - Never commit plans, notes, scratch, decision records, secrets, `.mcp.json`, `.env`, `.dev.vars`, `*.pem` or `.evidence/` on main.
 - Managed paths change only upstream (`setup.sh --check` names drift; `scripts/agent/gate.local.sh` is yours). Cloud setup calls `scripts/agent/setup.sh`; a missing path there breaks cloud tasks.
