@@ -51,38 +51,94 @@ node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split
 [ $rc -eq 0 ] && [ $ord -eq 0 ] || why="order (exit $rc, ordered=$ord): $out $(calls)"
 if [ -z "$why" ]; then ok release-supporting-workers-first; else fail release-supporting-workers-first "$why"; fi
 
-# ---- Durable Object migrations: the version records a new one; staging applies it through its normal deploy
+# ---- Durable Object lifecycle: Cloudflare cannot upload a version that changes it, so a commit that does (legacy `migrations`,
+# declarative `exports`, JSON or TOML) gets staging's normal deploy and NO production version; one that does not uploads as usual
 why=""
-repo do
-cp -R test/fixtures/release-plain/. "$R/"; mkdir -p "$R/node_modules/.bin" "$R/src"; touch "$R/node_modules/.bin/wrangler"; echo "export default {};" >"$R/src/index.js"; printf 'node_modules/\n.wrangler/\n' >>"$R/.gitignore"
-node -e 'const fs=require("fs"),t=fs.readFileSync("wrangler.jsonc","utf8");fs.writeFileSync("wrangler.jsonc",t.replace(/"name": "site",/,"\"name\": \"site\",\n  \"migrations\": [{ \"tag\": \"v1\", \"new_classes\": [\"Counter\"] }],"))' 2>/dev/null; (cd "$R" && node -e 'const fs=require("fs"),t=fs.readFileSync("wrangler.jsonc","utf8");fs.writeFileSync("wrangler.jsonc",t.replace(/"name": "site",/,"\"name\": \"site\",\n  \"migrations\": [{ \"tag\": \"v1\", \"new_classes\": [\"Counter\"] }],"))')
-commit one; S1=$(sha)
-out=$(cd "$R" && WORKERS_CI_COMMIT_SHA=$S1 node scripts/agent/release.mjs main 2>&1); rc=$?; c=$(calls)
-[ $rc -eq 0 ] && has "carries Durable Object migration v1" "$c" || why="first commit records its migration (exit $rc): $out $c"
-: >"$RELEASE_LOG"; echo "// change" >>"$R/src/index.js"; commit two; S2=$(sha)
-out=$(cd "$R" && WORKERS_CI_COMMIT_SHA=$S2 node scripts/agent/release.mjs main 2>&1); rc=$?; c=$(calls)
-[ $rc -eq 0 ] && ! has "Durable Object migration" "$c" && has "versions upload --tag $S2 --message main $S2 --var" "$c" || why="$why; a commit with no new migration was annotated (exit $rc): $out $c"
-: >"$RELEASE_LOG"; (cd "$R" && node -e 'const fs=require("fs"),t=fs.readFileSync("wrangler.jsonc","utf8");fs.writeFileSync("wrangler.jsonc",t.replace("[{ \"tag\": \"v1\", \"new_classes\": [\"Counter\"] }]","[{ \"tag\": \"v1\", \"new_classes\": [\"Counter\"] }, { \"tag\": \"v2\", \"new_sqlite_classes\": [\"Room\"] }]"))'); commit three; S3=$(sha)
-out=$(cd "$R" && WORKERS_CI_COMMIT_SHA=$S3 node scripts/agent/release.mjs main 2>&1); rc=$?; c=$(calls)
-[ $rc -eq 0 ] && has "carries Durable Object migration v2: go live with release.mjs promote $S3" "$c" && ! has "migration v1" "$c" && has "deploy --env staging" "$c" && has "goes live through" "$out" || why="$why; the new migration was not recorded (exit $rc): $out $c"
+mkdo() { # mkdo <name>: a repo with a Worker "site" (JSON) and a supporting Worker "extra" (TOML), nothing lifecycle yet
+  repo "$1"; mkdir -p "$R/node_modules/.bin" "$R/src" "$R/workers/extra"; touch "$R/node_modules/.bin/wrangler"; echo "export default {};" >"$R/src/index.js"
+  printf '{ "name": "site", "main": "src/index.js", %s }\n' "$STAGING" >"$R/wrangler.jsonc"
+  printf 'name = "extra"\nmain = "../../src/index.js"\n[env.staging]\nroutes = []\nworkers_dev = true\n' >"$R/workers/extra/wrangler.toml"
+  node -e 'const fs=require("fs"),o=JSON.parse(fs.readFileSync(process.argv[1]));o.release_workers=["workers/extra/wrangler.toml"];fs.writeFileSync(process.argv[1],JSON.stringify(o,null,2))' "$R/standards.json"
+  printf 'node_modules/\n.wrangler/\n' >>"$R/.gitignore"; commit base
+}
+mainrun() { : >"$RELEASE_LOG"; MAINOUT=$(cd "$R" && WORKERS_CI_COMMIT_SHA=$(sha) node scripts/agent/release.mjs main 2>&1); MAINRC=$?; }
+uploads() { calls | grep -c "^versions upload"; }
+mkdo do
+mainrun; [ $MAINRC -eq 0 ] && [ "$(uploads)" = 2 ] || why="a commit with no lifecycle change uploaded $(uploads) versions (exit $MAINRC): $MAINOUT"
+# legacy migrations array on the primary
+(cd "$R" && node -e 'const fs=require("fs"),t=fs.readFileSync("wrangler.jsonc","utf8");fs.writeFileSync("wrangler.jsonc",t.replace(/"name": "site",/,"\"name\": \"site\",\n  \"migrations\": [{ \"tag\": \"v1\", \"new_classes\": [\"Counter\"] }],"))'); commit migration; S1=$(sha)
+mainrun; c=$(calls)
+[ $MAINRC -eq 0 ] && [ "$(uploads)" = 1 ] && has "--name extra --tag" "$c" && ! has "versions upload --tag" "$c" && has "deploy --env staging" "$c" \
+  && has "NO production version is uploaded for $S1" "$MAINOUT" && has "release.mjs promote $S1" "$MAINOUT" && has "wrangler deploy of this exact commit" "$MAINOUT" || why="$why; migration commit (exit $MAINRC, uploads=$(uploads)): $MAINOUT"
+# the next commit adds nothing: uploads again
+echo "// change" >>"$R/src/index.js"; commit plain; mainrun
+[ $MAINRC -eq 0 ] && [ "$(uploads)" = 2 ] || why="$why; the commit after a migration did not upload ($(uploads))"
+# declarative exports on the primary (Durable Object entry)
+(cd "$R" && node -e 'const fs=require("fs"),t=fs.readFileSync("wrangler.jsonc","utf8");fs.writeFileSync("wrangler.jsonc",t.replace(/"name": "site",/,"\"name\": \"site\",\n  \"exports\": { \"Room\": { \"type\": \"durable-object\", \"storage\": \"sqlite\" } },"))'); commit exports; mainrun
+[ $MAINRC -eq 0 ] && [ "$(uploads)" = 1 ] && has "export Room sqlite created" "$MAINOUT" || why="$why; a DO entry in exports was not detected (exit $MAINRC, uploads=$(uploads)): $MAINOUT"
+# a TOML supporting Worker's migration
+printf '\n[[migrations]]\ntag = "v1"\nnew_classes = ["Jobs"]\n' >>"$R/workers/extra/wrangler.toml"; commit toml; mainrun; c=$(calls)
+[ $MAINRC -eq 0 ] && ! has "--name extra --tag" "$c" && has "migration v1" "$MAINOUT" || why="$why; a TOML migration was not detected (exit $MAINRC): $MAINOUT"
+# unreadable history for a Worker that has lifecycle entries is an error, never "none": a shallow clone that cannot fetch more
+SH=$T/shallow; git clone -q --depth 1 "file://$R" "$SH" 2>/dev/null; mkdir -p "$SH/node_modules/.bin"; touch "$SH/node_modules/.bin/wrangler"; git -C "$SH" remote remove origin
+: >"$RELEASE_LOG"; MAINOUT=$(cd "$SH" && WORKERS_CI_COMMIT_SHA=$(git -C "$SH" rev-parse HEAD) node scripts/agent/release.mjs main 2>&1); MAINRC=$?
+[ $MAINRC -ne 0 ] && has "cannot tell whether" "$MAINOUT" && [ "$(uploads)" = 0 ] || why="$why; shallow history was guessed (exit $MAINRC, uploads=$(uploads)): $MAINOUT"
 if [ -z "$why" ]; then ok release-do-migration; else fail release-do-migration "$why"; fi
 
-# ---- promote: a version deploy for an ordinary commit, a full deploy of that commit for one carrying a migration
+# ---- promote: preflight everything, then supporting Workers first and the primary last; a migrating Worker is deployed from a fresh
+# checkout of the approved commit, never the caller's working tree
 why=""
-: >"$RELEASE_LOG"
-VERS="[{\"id\":\"vid-2\",\"annotations\":{\"workers/tag\":\"$S2\"}},{\"id\":\"vid-3\",\"annotations\":{\"workers/tag\":\"$S3\"}}]"
-git -C "$R" checkout -q "$S2"
-out=$(cd "$R" && RELEASE_VERSIONS=$VERS node scripts/agent/release.mjs promote "$S2" 2>&1); rc=$?; c=$(calls)
-[ $rc -eq 0 ] && has "versions deploy --name site vid-2@100%" "$c" && ! has "deploy --tag" "$c" || why="ordinary promote (exit $rc): $out $c"
-: >"$RELEASE_LOG"; out=$(cd "$R" && RELEASE_VERSIONS='[]' node scripts/agent/release.mjs promote "$S2" 2>&1); rc=$?
-[ $rc -ne 0 ] && has "no uploaded version is tagged" "$out" && ! has "versions deploy" "$(calls)" || why="$why; a missing version was promoted: $out"
-: >"$RELEASE_LOG"; out=$(cd "$R" && RELEASE_VERSIONS=$VERS node scripts/agent/release.mjs promote "$S3" 2>&1); rc=$?
-[ $rc -ne 0 ] && has "check out $S3" "$out" && ! has "versions deploy" "$(calls)" || why="$why; a migrating version was promoted from another checkout: $out"
-git -C "$R" checkout -q "$S3"; : >"$RELEASE_LOG"
-out=$(cd "$R" && RELEASE_VERSIONS=$VERS node scripts/agent/release.mjs promote "$S3" 2>&1); rc=$?; c=$(calls)
-[ $rc -eq 0 ] && has "deploy --name site --tag $S3 --message promote $S3" "$c" && ! has "versions deploy" "$c" && ! has "--env staging" "$c" || why="$why; migrating promote (exit $rc): $out $c"
-out=$(cd "$R" && node scripts/agent/release.mjs promote abc 2>&1); [ $? -ne 0 ] && has "40-character" "$out" || why="$why; a short sha was accepted"
+mkdo pr
+cat >"$R/probe.mjs" <<'JS'
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
+appendFileSync(process.env.RELEASE_LOG, JSON.stringify({ probe: { cwd: process.cwd(), extra: existsSync("EXTRA.txt"), src: readFileSync("src/index.js", "utf8").trim() } }) + "\n");
+JS
+node -e 'const fs=require("fs"),o=JSON.parse(fs.readFileSync(process.argv[1]));o.build="node probe.mjs";fs.writeFileSync(process.argv[1],JSON.stringify(o,null,2))' "$R/standards.json"
+commit probe
+(cd "$R" && node -e 'const fs=require("fs"),t=fs.readFileSync("wrangler.jsonc","utf8");fs.writeFileSync("wrangler.jsonc",t.replace(/"name": "site",/,"\"name\": \"site\",\n  \"migrations\": [{ \"tag\": \"v1\", \"new_classes\": [\"Counter\"] }],"))'); echo "// approved" >>"$R/src/index.js"; commit migration; SM=$(sha)
+echo "// ordinary" >>"$R/src/index.js"; commit ordinary; SO=$(sha)
+VERS="[{\"id\":\"vid-o\",\"annotations\":{\"workers/tag\":\"$SO\"}}]"
+promote() { : >"$RELEASE_LOG"; PROUT=$(cd "$R" && RELEASE_VERSIONS=$VERS node scripts/agent/release.mjs promote "$@" 2>&1); PRRC=$?; }
+remote_changes() { calls | grep -cE "^(deploy|versions deploy)"; }
+# an ordinary commit: version deploys, supporting Worker first, primary last
+promote "$SO"; c=$(calls)
+[ $PRRC -eq 0 ] && [ "$(printf '%s\n' "$c" | grep '^versions deploy' | sed 's/ vid.*//')" = "$(printf 'versions deploy --name extra\nversions deploy --name site')" ] || why="ordinary promote (exit $PRRC): $PROUT $c"
+# the migrating commit, with a dirty and an extra file in the caller's checkout (and the caller on another commit): the approved SHA is deployed
+echo "// UNAPPROVED local edit" >>"$R/src/index.js"; echo x >"$R/EXTRA.txt"
+VERS="[{\"id\":\"vid-m\",\"annotations\":{\"workers/tag\":\"$SM\"}}]"
+promote "$SM"; c=$(calls)
+node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n").map(JSON.parse).filter(x=>x.probe);process.exit(l.length>=1&&l.every(x=>!x.probe.extra&&x.probe.src.endsWith("// approved")&&!x.probe.src.includes("UNAPPROVED")&&!x.probe.cwd.includes("/pr/")||(!x.probe.cwd.startsWith(process.argv[2])))?0:1)' "$RELEASE_LOG" "$R"; probed=$?
+[ $PRRC -eq 0 ] && [ $probed -eq 0 ] && has "deploy --name site --tag $SM --message promote $SM" "$c" && has "versions deploy --name extra" "$c" && ! has "versions deploy --name site" "$c" || why="$why; migrating promote used the caller's tree or failed (exit $PRRC, probed=$probed): $PROUT $c"
+git -C "$R" worktree prune; [ "$(git -C "$R" worktree list --porcelain | grep -c "^worktree ")" = 1 ] || why="$why; the promote checkout was left registered"
+git -C "$R" checkout -q -- src/index.js; rm -f "$R/EXTRA.txt"
+# preflight: a Worker without an uploaded version stops everything before any remote change
+VERS='[]'; promote "$SM"
+[ $PRRC -ne 0 ] && has "no uploaded version is tagged" "$PROUT" && [ "$(remote_changes)" = 0 ] || why="$why; a preflight failure still deployed ($(remote_changes)): $PROUT"
+# preflight: the supporting Worker migrates, the primary is ordinary, and the primary's version is missing: nothing is deployed
+VERS='[]'; promote "$SO"
+[ $PRRC -ne 0 ] && [ "$(remote_changes)" = 0 ] || why="$why; nothing may be deployed after a failed preflight"
+# an unreadable sha, a short sha, a commit whose config cannot be read
+promote "$(printf '7%.0s' $(seq 40))"; [ $PRRC -ne 0 ] && has "not readable" "$PROUT" && [ -z "$(calls)" ] || why="$why; an unreadable sha was not refused: $PROUT"
+promote abc; [ $PRRC -ne 0 ] && has "40-character" "$PROUT" || why="$why; a short sha was accepted"
+EMPTY=$(git -C "$R" commit-tree "$(git -C "$R" hash-object -t tree /dev/null)" -m empty)
+promote "$EMPTY"; [ $PRRC -ne 0 ] && has "no Wrangler config" "$PROUT" && [ "$(remote_changes)" = 0 ] || why="$why; a commit with no config was not refused: $PROUT"
 if [ -z "$why" ]; then ok release-promote; else fail release-promote "$why"; fi
+
+# ---- the fresh checkout installs with the frozen lockfile (a stub npm records it)
+why=""
+mkdo lock
+export NPMLOG=$T/npm.log; : >"$NPMLOG"
+printf '#!/bin/sh\necho "npm $*" >>"$NPMLOG"\nmkdir -p node_modules\n' >"$T/bin/npm"; chmod +x "$T/bin/npm"
+printf '{ "name": "x", "private": true, "dependencies": { "left-pad": "1.3.0" } }\n' >"$R/package.json"; printf '{ "name": "x", "lockfileVersion": 3, "packages": {} }\n' >"$R/package-lock.json"; commit lock
+(cd "$R" && node -e 'const fs=require("fs"),t=fs.readFileSync("wrangler.jsonc","utf8");fs.writeFileSync("wrangler.jsonc",t.replace(/"name": "site",/,"\"name\": \"site\",\n  \"migrations\": [{ \"tag\": \"v1\", \"new_classes\": [\"Counter\"] }],"))'); commit migration; SM=$(sha)
+VERS="[{\"id\":\"v\",\"annotations\":{\"workers/tag\":\"$SM\"}}]"
+promote "$SM"; c=$(calls); lg=$(cat "$NPMLOG")
+[ $PRRC -eq 0 ] && has "npm ci" "$lg" || why="no frozen install (exit $PRRC): $PROUT $lg"
+rm -f "$R/package-lock.json"; commit nolock; SN=$(sha)
+(cd "$R" && node -e 'const fs=require("fs"),t=fs.readFileSync("wrangler.jsonc","utf8");fs.writeFileSync("wrangler.jsonc",t.replace("{ \"tag\": \"v1\", \"new_classes\": [\"Counter\"] }","{ \"tag\": \"v1\", \"new_classes\": [\"Counter\"] }, { \"tag\": \"v2\", \"new_classes\": [\"Room\"] }"))'); commit v2; SN=$(sha)
+VERS="[{\"id\":\"v\",\"annotations\":{\"workers/tag\":\"$SN\"}}]"; promote "$SN"
+[ $PRRC -ne 0 ] && has "no lockfile" "$PROUT" && [ "$(remote_changes)" = 0 ] || why="$why; an install without a lockfile was allowed (exit $PRRC): $PROUT"
+if [ -z "$why" ]; then ok release-promote-isolated; else fail release-promote-isolated "$why"; fi
 
 # ---- Sentry: skipped with one notice without SENTRY_AUTH_TOKEN; a release for the commit with it and the DSN sentry-setup commits
 why=""

@@ -24,7 +24,7 @@ cfg.secrets = {required: ['API_KEY']};
 cfg.env.staging.secrets = cfg.secrets;
 fs.writeFileSync(file, JSON.stringify(cfg));
 JS
-release() { (cd "$R" && node scripts/agent/release.mjs main) > "$T/out" 2>&1; }
+release() { snapshot "$R"; (cd "$R" && node scripts/agent/release.mjs main) > "$T/out" 2>&1; }
 proof() { node --input-type=module - "$RELEASE_LOG" "$1" <<'JS'
 import {readFileSync} from 'node:fs';
 import assert from 'node:assert/strict';

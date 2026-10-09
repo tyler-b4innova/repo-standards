@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse, findings as stagingFindings, resourceFindings } from "./staging.mjs";
-import { build, rootFile, readConfig, effectiveConfig, assertStaging, assertReleaseAccounts, workerFiles, buildProductionConfigs } from "./release-config.mjs";
+import { build, installBuildDependencies, parseConfigText, rootFile, readConfig, effectiveConfig, assertStaging, assertReleaseAccounts, workerFiles, buildProductionConfigs } from "./release-config.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
 const SUBS = ["main", "preview", "slug", "cleanup", "verify-release-check", "promote"];
@@ -112,18 +112,43 @@ const wrangler = (a, { capture = false } = {}) => {
 };
 const must = (a) => { const r = wrangler(a); if (r.status) process.exit(r.status); };
 
-// Durable Object migrations: a commit carries one when its config's `migrations` hold a tag that the commit before it did
-// not. `versions upload` cannot apply a migration; staging's normal deploy does, and the production version records it.
-const migrationTags = (text) => { try { const c = parse(text); return (Array.isArray(c?.migrations) ? c.migrations : []).map((m) => m?.tag).filter((t) => typeof t === "string" && t); } catch { return []; } };
-function newMigrationTags(file, rev = "HEAD") {
-  if (file.endsWith(".toml")) return [];
-  const rel = relative(top, resolve(file)).split(sep).join("/"), show = (r) => { try { return execFileSync("git", ["show", `${r}:${rel}`], { encoding: "utf8", stdio: "pipe", cwd: top }); } catch { return null; } };
-  const now = show(rev) ?? (rev === "HEAD" ? readFileSync(file, "utf8") : null);
-  if (now === null) return [];
-  const before = migrationTags(show(`${rev}^`) ?? "");
-  return migrationTags(now).filter((t) => !before.includes(t));
+// Durable Object lifecycle. A commit changes it when its Worker config's `migrations` tags or the Durable Object entries of the
+// declarative `exports` field differ from the commit before it. Cloudflare cannot upload such a version (`versions upload`
+// fails); only a full `wrangler deploy` applies it. So the main release does not upload a production version for a Worker whose
+// commit changes it (staging, which deploys normally, applies it), and `promote` deploys that exact commit. What a commit
+// carries is read from git, never assumed: an unreadable commit or config is an error, not "no migration".
+const topGit = (...a) => execFileSync("git", a, { encoding: "utf8", stdio: "pipe", cwd: top });
+const showAt = (rev, path) => { try { return topGit("show", `${rev}:${path}`); } catch { return null; } };
+const hasCommit = (rev) => { try { topGit("cat-file", "-e", `${rev}^{commit}`); return true; } catch { return false; } };
+function lifecycleEntries(text, path) {
+  const cfg = parseConfigText(text, path.endsWith(".toml"), path), out = new Set();
+  for (const m of Array.isArray(cfg.migrations) ? cfg.migrations : []) if (typeof m?.tag === "string" && m.tag) out.add(`migration ${m.tag}`);
+  for (const [name, e] of Object.entries(cfg.exports && typeof cfg.exports === "object" ? cfg.exports : {}))
+    if (e?.type === "durable-object") out.add(`export ${name} ${e.storage ?? ""} ${e.state ?? "created"}`);
+  return out;
 }
-const migrationNote = (tags, sha) => tags.length ? `; carries Durable Object migration ${tags.join(",")}: go live with release.mjs promote ${sha} (a full wrangler deploy of this commit)` : "";
+// The labels that differ between the config at `path` in `rev` and in its first parent; throws when that cannot be established.
+function lifecycleChange(path, rev) {
+  if (!hasCommit(rev)) throw new Error(`commit ${rev.slice(0, 7)} is not readable here`);
+  let now = showAt(rev, path), untracked = false;
+  // The build's own checkout can hold a config git does not track (generated): it can be read, but not compared with a previous one.
+  if (now === null && rev === "HEAD" && existsSync(resolve(top, path))) { now = readFileSync(resolve(top, path), "utf8"); untracked = true; }
+  if (now === null) throw new Error(`${path} is not readable at ${rev.slice(0, 7)}`);
+  const cur = lifecycleEntries(now, path);
+  if (untracked) { if (cur.size) throw new Error(`${path} is not tracked by git, so what it changes cannot be established`); return []; }
+  // A shallow clone's boundary commit lists no parents, which is not the same as having none.
+  const boundary = (r) => { try { return topGit("rev-parse", "--is-shallow-repository").trim() === "true" && readFileSync(resolve(top, topGit("rev-parse", "--git-path", "shallow").trim()), "utf8").split("\n").includes(topGit("rev-parse", r).trim()); } catch { return false; } };
+  if (boundary(rev)) { try { topGit("fetch", "--quiet", "--deepen=1"); } catch {} }
+  const parents = topGit("rev-list", "--parents", "-n", "1", rev).trim().split(" ").slice(1);
+  let before = new Set();
+  if (boundary(rev)) { if (cur.size) throw new Error(`${rev.slice(0, 7)} is a shallow-clone boundary, so what ${path} changes cannot be established`); }
+  else if (parents.length) {
+    if (!hasCommit(parents[0])) { try { topGit("fetch", "--quiet", "--deepen=1"); } catch {} }
+    if (hasCommit(parents[0])) { const prev = showAt(parents[0], path); before = prev === null ? new Set() : lifecycleEntries(prev, path); }
+    else if (cur.size) throw new Error(`the parent of ${rev.slice(0, 7)} is not readable here (shallow clone?), so what ${path} changes cannot be established`);
+  }
+  return [...cur].filter((t) => !before.has(t)).concat([...before].filter((t) => !cur.has(t)));
+}
 
 // Sentry: when the build has the SENTRY_AUTH_TOKEN secret and the repo was set up with sentry-setup (the public DSN it commits
 // is in the Worker config), create the release for the commit and upload source maps. Org comes from pack.json, the project from
@@ -303,46 +328,109 @@ async function deploy() {
     // release-check) through the tag. Workers Builds sets WORKERS_CI_COMMIT_SHA (a CI run, GITHUB_SHA).
     const sha = env.WORKERS_CI_COMMIT_SHA || env.GITHUB_SHA;
     if (!sha) console.log("::warning::no WORKERS_CI_COMMIT_SHA: this production version is untagged, so the portal cannot tie it to its release-check");
-    const tagsFor = (file) => { const mig = newMigrationTags(file); if (mig.length) console.log(`::notice::${file} carries Durable Object migration ${mig.join(",")}: staging applied it with its normal deploy; this production version is uploaded only and goes live through \`release.mjs promote ${sha ?? "<sha>"}\` (a full wrangler deploy of this commit), not a version deploy`);
-      return sha ? ["--tag", sha, "--message", `main ${sha}${migrationNote(mig, sha)}`, "--var", `SENTRY_RELEASE:${sha}`] : []; };
+    // A Worker whose commit changes Durable Object lifecycle gets no production version: Cloudflare cannot upload one.
+    const uploadTags = sha ? ["--tag", sha, "--message", `main ${sha}`, "--var", `SENTRY_RELEASE:${sha}`] : [];
+    const migrating = (file) => {
+      let change;
+      try { change = lifecycleChange(relative(top, resolve(file)).split(sep).join("/"), "HEAD"); }
+      catch (e) { fail(`cannot tell whether ${file} changes Durable Object lifecycle: ${e.message}`, "fetch more history (git fetch --deepen=1) or re-run; the release will not guess"); }
+      if (change.length) console.log(`::notice::${file} changes Durable Object lifecycle (${change.join("; ")}): staging applied it with its normal deploy; NO production version is uploaded for ${sha ?? "this commit"}. Production goes live only through \`release.mjs promote ${sha ?? "<sha>"}\`, which runs wrangler deploy of this exact commit.`);
+      return change.length > 0;
+    };
     for (const worker of extras) {
-      must(["versions", "upload", "-c", worker.file, "--name", worker.cfg.name, ...tagsFor(worker.file)]);
+      if (!migrating(worker.file)) must(["versions", "upload", "-c", worker.file, "--name", worker.cfg.name, ...uploadTags]);
       const names = [...new Set((Array.isArray(worker.cfg.secrets?.required) ? worker.cfg.secrets.required : []).filter((name) => typeof name === "string" && name))];
       secretCheck("the production Worker", ["secret", "list", "--config", worker.file, "--name", worker.cfg.name, "--format", "json"], names);
     }
-    must(["versions", "upload", ...tagsFor(configFile)]);
+    if (!migrating(configFile)) must(["versions", "upload", ...uploadTags]);
     secretCheck("the production Worker", ["secret", "list", "--name", productionName, "--format", "json"]);
     if (sha) await sentryRelease(sha, configFile);
   }
 }
 
-// promote <sha>: make the uploaded version of that commit live, the right way for what it carries. A version that carries no
-// Durable Object migration goes live by a version deploy; one that carries a migration goes live through a full wrangler
-// deploy of that exact commit (checked out, built), because a version deploy cannot apply a migration. The approved
-// promotion path calls this; it does not verify the release-check (verify-release-check does).
+// promote <sha>: make that commit's production release live, the right way for what each Worker carries. A Worker whose commit
+// changes Durable Object lifecycle goes live through a full `wrangler deploy` of that exact commit, built in a fresh isolated
+// checkout of it (never the caller's working tree); any other Worker goes live by a version deploy of its uploaded version.
+// Everything is resolved and checked before any remote change; supporting Workers (release_workers) go first in listed order,
+// the primary last, as in the release. It does not verify the release-check (verify-release-check does).
 async function promote() {
   const sha = args[0] ?? "";
   if (!/^[0-9a-f]{40}$/.test(sha)) fail(`promote needs the version's full 40-character lowercase hex commit sha (got ${JSON.stringify(sha)})`, "release.mjs promote <sha>");
-  const cfg = config(), workers = [{ file: configFile, cfg, primary: true }, ...workerFiles(std, configFile).map((file) => ({ file, cfg: readConfig(file) }))];
-  const head = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", stdio: "pipe" }).trim();
-  for (const w of workers) {
-    const name = w.primary ? (env.WRANGLER_CI_OVERRIDE_NAME || w.cfg.name) : w.cfg.name, configArgs = w.primary ? [] : ["--config", w.file];
-    const mig = newMigrationTags(w.file, sha);
-    if (mig.length) {
-      if (head !== sha) fail(`${name}: ${sha.slice(0, 7)} carries Durable Object migration ${mig.join(",")}, which goes live through a full wrangler deploy of that exact commit`, `check out ${sha} and run release.mjs promote ${sha} from there`);
-      build(std, pkg);
-      console.log(`release: ${name}: full deploy of ${sha.slice(0, 7)} (carries Durable Object migration ${mig.join(",")})`);
-      must(["deploy", ...configArgs, "--name", name, "--tag", sha, "--message", `promote ${sha}${migrationNote(mig, sha)}`]);
-    } else {
-      const listed = wrangler(["versions", "list", ...configArgs, "--name", name, "--json"], { capture: true });
-      if (listed.status) { process.stdout.write(listed.out); fail(`could not list the versions of ${name}`, "re-run; the promotion changed nothing"); }
-      let versions = null;
-      const end = listed.out.lastIndexOf("]") + 1;
-      for (let i = listed.out.indexOf("["); i >= 0 && !versions; i = listed.out.indexOf("[", i + 1)) { try { const v = JSON.parse(listed.out.slice(i, end)); if (Array.isArray(v)) versions = v; } catch {} }
-      const found = (versions ?? []).filter((v) => Object.entries(v.annotations ?? {}).some(([k, val]) => /tag$/.test(k) && val === sha));
-      if (found.length !== 1) fail(`${name}: ${found.length ? "more than one" : "no"} uploaded version is tagged ${sha.slice(0, 7)}`, "the main release uploads one version per commit; check the Worker's versions");
-      must(["versions", "deploy", ...configArgs, "--name", name, `${found[0].id}@100%`, "--message", `promote ${sha}`, "--yes"]);
+  const refuse = (what) => fail(`cannot promote ${sha.slice(0, 7)}: ${what}`, "nothing was changed; fix it and run promote again");
+  if (!hasCommit(sha)) refuse("the commit is not readable here (git fetch origin " + sha + ")");
+  const rel = relative(top, process.cwd()).split(sep).join("/"), at = (p) => (rel ? `${rel}/${p}` : p);
+  const primaryPath = ["wrangler.json", "wrangler.jsonc", "wrangler.toml"].map(at).find((p) => showAt(sha, p) !== null);
+  if (!primaryPath) refuse(`no Wrangler config in ${rel || "the repository root"} at that commit`);
+  let stdAt = {};
+  const stdText = showAt(sha, "standards.json");
+  if (stdText !== null) { try { stdAt = JSON.parse(stdText); } catch { refuse("standards.json at that commit is not valid JSON"); } }
+  const listed = stdAt.release_workers === undefined ? [] : stdAt.release_workers;
+  if (!Array.isArray(listed) || listed.some((f) => typeof f !== "string" || !f || f.startsWith("/") || f.split(/[\\/]/).includes("..") || !/\.(jsonc?|toml)$/.test(f))) refuse("standards.json release_workers at that commit is not a list of relative config paths");
+  const plan = [...listed.map((f) => ({ path: at(f).replace(/\/\.\//g, "/"), primary: false })), { path: primaryPath, primary: true }];
+  for (const w of plan) {
+    const text = showAt(sha, w.path);
+    if (text === null) refuse(`${w.path} is not readable at that commit`);
+    try { w.cfg = parseConfigText(text, w.path.endsWith(".toml"), w.path); w.change = lifecycleChange(w.path, sha); } catch (e) { refuse(e.message); }
+    if (typeof w.cfg.name !== "string" || !w.cfg.name) refuse(`${w.path} names no Worker`);
+    w.name = w.primary ? (env.WRANGLER_CI_OVERRIDE_NAME || w.cfg.name) : w.cfg.name;
+    w.local = relative(rel || ".", w.path).split("/").join(sep); // the config as seen from the trigger's root directory
+  }
+  // ordinary Workers: exactly one uploaded version tagged with the commit
+  for (const w of plan.filter((x) => !x.change.length)) {
+    const listedVersions = wrangler(["versions", "list", "--name", w.name, "--json"], { capture: true });
+    if (listedVersions.status) { process.stdout.write(listedVersions.out); refuse(`could not list the versions of ${w.name}`); }
+    let versions = null;
+    const end = listedVersions.out.lastIndexOf("]") + 1;
+    for (let i = listedVersions.out.indexOf("["); i >= 0 && !versions; i = listedVersions.out.indexOf("[", i + 1)) { try { const v = JSON.parse(listedVersions.out.slice(i, end)); if (Array.isArray(v)) versions = v; } catch {} }
+    const found = (versions ?? []).filter((v) => Object.entries(v.annotations ?? {}).some(([k, val]) => /tag$/.test(k) && val === sha));
+    if (found.length !== 1) refuse(`${w.name}: ${found.length ? "more than one" : "no"} uploaded version is tagged ${sha.slice(0, 7)}`);
+    w.versionId = found[0].id;
+  }
+  // migrating Workers: a fresh checkout of the commit, clean, with a frozen install, built and its target verified before anything is deployed
+  const migrating = plan.filter((x) => x.change.length);
+  let wt = null;
+  if (migrating.length) {
+    const base = mkdtempSync(join(tmpdir(), "release-promote-"));
+    wt = join(base, "checkout");
+    process.on("exit", () => { try { topGit("worktree", "remove", "--force", wt); } catch {} rmSync(base, { recursive: true, force: true }); });
+    try { topGit("worktree", "add", "--detach", wt, sha); } catch (e) { refuse(`could not check out the commit: ${String(e.message).split("\n")[0]}`); }
+    const dirty = execFileSync("git", ["-C", wt, "status", "--porcelain", "--untracked-files=all"], { encoding: "utf8" }).trim();
+    if (dirty || execFileSync("git", ["-C", wt, "rev-parse", "HEAD"], { encoding: "utf8" }).trim() !== sha) refuse("the fresh checkout is not clean at that commit");
+    const root = join(wt, rel);
+    const stdWt = json(join(wt, "standards.json")) ?? {};
+    // install once, where the lockfile is (the trigger's directory, else the repository root)
+    const lockDir = [root, wt].find((d) => ["pnpm-lock.yaml", "yarn.lock", "package-lock.json", "npm-shrinkwrap.json"].some((f) => existsSync(join(d, f))));
+    const pkgDir = [root, wt].find((d) => existsSync(join(d, "package.json")));
+    const wantsDeps = (p) => Object.keys({ ...p?.dependencies, ...p?.devDependencies, ...p?.optionalDependencies }).length > 0;
+    if (!lockDir && pkgDir && wantsDeps(json(join(pkgDir, "package.json")))) refuse("the commit has dependencies but no lockfile, so a frozen install is impossible");
+    const here0 = process.cwd();
+    if (lockDir) { process.chdir(lockDir); try { installBuildDependencies(json("package.json") ?? {}, {}); } catch (e) { process.chdir(here0); refuse(e.message); } process.chdir(here0); }
+    // dry build and target check for every migrating Worker (the deploy repeats the build right before it)
+    const verify = (w) => {
+      process.chdir(root);
+      try {
+        build(stdWt, json("package.json"));
+        const eff = effectiveConfig(w.local, false, { redirect: w.primary });
+        if (eff.cfg.name !== w.cfg.name) refuse(`${w.local} builds a Worker named ${eff.cfg.name}, not ${w.cfg.name}`);
+        if (env.CLOUDFLARE_ENV) refuse("CLOUDFLARE_ENV is set; a production deploy must not select an environment");
+      } finally { process.chdir(here0); }
+    };
+    for (const w of migrating) verify(w);
+    plan.stdWt = stdWt; plan.root = root;
+  }
+  // every check passed: only now change anything, supporting Workers first, the primary last
+  const here1 = process.cwd();
+  for (const w of plan) {
+    if (!w.change.length) {
+      must(["versions", "deploy", "--name", w.name, `${w.versionId}@100%`, "--message", `promote ${sha}`, "--yes"]);
+      continue;
     }
+    console.log(`release: ${w.name}: full wrangler deploy of ${sha.slice(0, 7)} from a fresh checkout (changes Durable Object lifecycle: ${w.change.join("; ")})`);
+    process.chdir(plan.root);
+    try {
+      build(plan.stdWt, json("package.json"));
+      must(["deploy", ...(w.primary ? [] : ["--config", w.local]), "--name", w.name, "--tag", sha, "--message", `promote ${sha}`]);
+    } finally { process.chdir(here1); }
   }
   console.log(`release: promoted ${sha.slice(0, 7)}`);
 }

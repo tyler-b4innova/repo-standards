@@ -22,7 +22,7 @@ repo() {
   git -C "$R" add -A && git -C "$R" commit -qm fixture
   export RELEASE_LOG=$T/$1.log
 }
-release() { (cd "$R" && node scripts/agent/release.mjs main) > "$T/out" 2>&1; }
+release() { snapshot "$R"; (cd "$R" && node scripts/agent/release.mjs main) > "$T/out" 2>&1; }
 proof() { node --input-type=module - "$RELEASE_LOG" "$1" <<'JS'
 import { existsSync, readFileSync } from "node:fs";
 import assert from "node:assert/strict";

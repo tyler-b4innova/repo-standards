@@ -9,3 +9,6 @@ done_cases() { [ "$FAILS" -eq 0 ]; }
 export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
 # Hermetic: a CI runner exports the commit and run it is on; no case may depend on them. A case that needs one sets it itself.
 unset GITHUB_REF GITHUB_SHA WORKERS_CI_COMMIT_SHA RELEASE_SHA RELEASE_CHECK RELEASE_JOB_STATUS GITHUB_RUN_ID CLOUDFLARE_ACCOUNT_ID CLOUDFLARE_API_TOKEN CLOUDFLARE_API_KEY CLOUDFLARE_EMAIL
+# snapshot <repo>: commit the working tree and then an empty commit, so the release sees every config as tracked and unchanged
+# since the commit before it (what a build of an ordinary later commit sees)
+snapshot() { git -C "$1" add -A && git -C "$1" -c user.name=t -c user.email=t@t commit -q --allow-empty -m snapshot && git -C "$1" -c user.name=t -c user.email=t@t commit -q --allow-empty -m next; }
