@@ -29,7 +29,7 @@ extra() {
   cp -R test/fixtures/release-secondary/. "$R/"
   node -e 'const fs=require("fs"),f=process.argv[1]+"/standards.json",cfg=JSON.parse(fs.readFileSync(f));cfg.release_workers=["workers/runtime/wrangler.jsonc"];fs.writeFileSync(f,JSON.stringify(cfg))' "$R"
 }
-release() { snapshot "$R"; (cd "$R" && node scripts/agent/release.mjs main) > "$T/out" 2>&1; }
+release() { (cd "$R" && node scripts/agent/release.mjs main) > "$T/out" 2>&1; }
 no_remote() {
   node --input-type=module - "$RELEASE_LOG" <<'JS'
 import { existsSync, readFileSync } from "node:fs";

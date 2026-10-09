@@ -13,7 +13,7 @@ chmod +x "$T/bin/npx"
 export PATH="$T/bin:$PATH" RELEASE_STUB="$ENGINE/test/stubs/release-wrangler.mjs"
 export RELEASE_SECRET_LIST=$T/secrets.json
 printf '%s\n' '{"runtime-staging":["RUNTIME_KEY"],"runtime":["RUNTIME_KEY"]}' > "$RELEASE_SECRET_LIST"
-release() { snapshot "$R"; (cd "$R" && node scripts/agent/release.mjs main) > "$T/out" 2>&1; }
+release() { (cd "$R" && node scripts/agent/release.mjs main) > "$T/out" 2>&1; }
 no_remote() { node --input-type=module - "$RELEASE_LOG" <<'JS'
 import {existsSync, readFileSync} from 'node:fs';
 import assert from 'node:assert/strict';

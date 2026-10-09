@@ -26,9 +26,7 @@ if (!explicitConfig && existsSync(".wrangler/deploy/config.json")) {
   const redirect = ".wrangler/deploy/config.json";
   file = resolve(dirname(redirect), JSON.parse(readFileSync(redirect, "utf8")).configPath);
 }
-let cfg = file.endsWith(".toml")
-  ? JSON.parse(spawnSync("python3", ["-c", "import json,sys,tomllib; print(json.dumps(tomllib.load(open(sys.argv[1], 'rb'))))", file], { encoding: "utf8" }).stdout)
-  : parse(readFileSync(file, "utf8"));
+let cfg = parse(readFileSync(file, "utf8"));
 const stage = option("--env");
 // Wrangler rejects generated-only legacy_env metadata if redirect discovery was bypassed.
 if ("legacy_env" in cfg && !redirected) { console.error("The legacy_env field is no longer supported"); process.exit(1); }
@@ -62,8 +60,6 @@ if (args[0] === "deploy") {
   console.log(`Uploaded ${process.env.WRONG_OUTPUT ? "site" : name} (1.0 sec)`);
   console.log(`Deployed ${process.env.WRONG_OUTPUT ? "site" : name} triggers (1.0 sec)`);
 }
-
-if (args[0] === "versions" && args[1] === "list") console.log(process.env.RELEASE_VERSIONS ?? "[]");
 
 if (args[0] === "secret" && args[1] === "list") {
   const listed = process.env.RELEASE_SECRET_LIST ? JSON.parse(readFileSync(process.env.RELEASE_SECRET_LIST, "utf8"))[name] ?? [] : [];

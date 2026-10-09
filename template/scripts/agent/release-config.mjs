@@ -11,18 +11,15 @@ const read = (file) => readFileSync(file, "utf8");
 
 // TOML is parsed by the standard-library parser, not by regexes that could miss a route or a quoted env table.
 // Fail closed if the build image cannot parse it; JSONC needs no extra runtime.
-export function parseConfigText(text, toml, label = "config") {
-  let cfg;
-  if (toml) {
-    const r = spawnSync("python3", ["-c", "import json,sys,tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())))"], { input: text, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] });
-    if (r.status !== 0) throw new Error(`${label}: cannot safely parse TOML; install Python 3.11+ or convert to wrangler.jsonc`);
-    cfg = parse(r.stdout);
-  } else cfg = parse(text);
-  if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) throw new Error(`${label}: invalid Wrangler config`);
-  return cfg;
-}
 export function readConfig(file) {
-  return parseConfigText(read(file), file.endsWith(".toml"), file);
+  let cfg;
+  if (file.endsWith(".toml")) {
+    const r = spawnSync("python3", ["-c", "import json,sys,tomllib; print(json.dumps(tomllib.load(open(sys.argv[1], 'rb'))))", file], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    if (r.status !== 0) throw new Error(`${file}: cannot safely parse TOML; install Python 3.11+ or convert to wrangler.jsonc`);
+    cfg = parse(r.stdout);
+  } else cfg = parse(read(file));
+  if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) throw new Error(`${file}: invalid Wrangler config`);
+  return cfg;
 }
 
 export function effectiveConfig(root, staging = false, { redirect = true } = {}) {
