@@ -2,6 +2,7 @@
 // Workers Builds deploy commands and PR Preview clean-up (the Worker's trigger settings call these):
 //   main      production trigger: deploy the staging Worker (wrangler deploy --env staging), upload the production version
 //   preview   preview trigger: deploy this branch's Preview (wrangler preview --name <slug>)
+//   promote <sha>                          make that commit's uploaded version live (a version deploy, or a full deploy for a Durable Object migration)
 //   slug <branch>                          the Preview name for a branch
 //   cleanup --pr-branch <branch> | --sweep  delete a closed pull request's Preview (std-preview-cleanup.yml)
 // Secrets (standards.json "secrets": {"required": [...], "store": "1password" | "secrets_store"}) are re-supplied on every
@@ -11,14 +12,15 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parse, findings as stagingFindings, resourceFindings } from "./staging.mjs";
 import { build, rootFile, readConfig, effectiveConfig, assertStaging, assertReleaseAccounts, workerFiles, buildProductionConfigs } from "./release-config.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
-const SUBS = ["main", "preview", "slug", "cleanup", "verify-release-check"];
+const SUBS = ["main", "preview", "slug", "cleanup", "verify-release-check", "promote"];
 if (!SUBS.includes(cmd) || args.includes("--help")) {
-  console.log(readFileSync(new URL(import.meta.url), "utf8").split("\n").slice(1, 6).map((l) => l.slice(3)).join("\n"));
+  console.log(readFileSync(new URL(import.meta.url), "utf8").split("\n").slice(1, 7).map((l) => l.slice(3)).join("\n"));
   process.exit(SUBS.includes(cmd) || cmd === "--help" ? 0 : 2);
 }
 const fail = (msg, fix) => { console.log(`::error::${msg}\nfix: ${fix}`); process.exit(1); };
@@ -67,8 +69,13 @@ if (cmd === "verify-release-check") {
   fail(`no verified release-check for ${sha.slice(0, 7)}${wrong.length ? `: ${wrong.join("; ")}` : " (none succeeded)"}`, "dispatch std-release-check for the version's commit on the default branch and wait for it to succeed");
 }
 
-try { process.chdir(execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: "pipe" }).trim()); } catch {}
-const std = json("standards.json") ?? {};
+// A Workers Builds trigger runs from its root directory. A Worker that keeps its own config there (workers/<name>/wrangler.jsonc)
+// is released from that directory; anywhere else the repository root is used, as before. standards.json is the repository's.
+const here = process.cwd();
+let top = here;
+try { top = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: "pipe" }).trim(); } catch {}
+if (!rootFile() && top !== here) process.chdir(top);
+const std = json(join(top, "standards.json")) ?? {};
 const configFile = rootFile();
 function config() {
   if (!configFile) fail("no wrangler config (wrangler.jsonc, wrangler.json or wrangler.toml)", "run this from a Worker repository");
@@ -104,6 +111,43 @@ const wrangler = (a, { capture = false } = {}) => {
   return { status: r.status ?? 1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
 };
 const must = (a) => { const r = wrangler(a); if (r.status) process.exit(r.status); };
+
+// Durable Object migrations: a commit carries one when its config's `migrations` hold a tag that the commit before it did
+// not. `versions upload` cannot apply a migration; staging's normal deploy does, and the production version records it.
+const migrationTags = (text) => { try { const c = parse(text); return (Array.isArray(c?.migrations) ? c.migrations : []).map((m) => m?.tag).filter((t) => typeof t === "string" && t); } catch { return []; } };
+function newMigrationTags(file, rev = "HEAD") {
+  if (file.endsWith(".toml")) return [];
+  const rel = relative(top, resolve(file)).split(sep).join("/"), show = (r) => { try { return execFileSync("git", ["show", `${r}:${rel}`], { encoding: "utf8", stdio: "pipe", cwd: top }); } catch { return null; } };
+  const now = show(rev) ?? (rev === "HEAD" ? readFileSync(file, "utf8") : null);
+  if (now === null) return [];
+  const before = migrationTags(show(`${rev}^`) ?? "");
+  return migrationTags(now).filter((t) => !before.includes(t));
+}
+const migrationNote = (tags, sha) => tags.length ? `; carries Durable Object migration ${tags.join(",")}: go live with release.mjs promote ${sha} (a full wrangler deploy of this commit)` : "";
+
+// Sentry: when the build has the SENTRY_AUTH_TOKEN secret and the repo was set up with sentry-setup (the public DSN it commits
+// is in the Worker config), create the release for the commit and upload source maps. Org comes from pack.json, the project from
+// the DSN's project id. Without the token this is one notice; a failure is a warning (the version is already uploaded).
+async function sentryRelease(sha, file) {
+  const token = env.SENTRY_AUTH_TOKEN;
+  if (!token) { console.log("release: Sentry skipped: no SENTRY_AUTH_TOKEN build secret (set it once on the Builds trigger to create Sentry releases)"); return; }
+  const et = json(fileURLToPath(new URL("pack.json", import.meta.url)))?.modules?.error_tracker;
+  const dsn = (() => { try { const v = parse(readFileSync(file, "utf8"))?.vars?.SENTRY_DSN; return typeof v === "string" && /^https:\/\/[^/]+\/\d+$/.test(v) ? v : null; } catch { return null; } })();
+  if (et?.kind !== "sentry" || !et.org || !dsn) { console.log("release: Sentry skipped: this repository is not set up for Sentry (scripts/agent/sentry-setup commits the DSN)"); return; }
+  const base = String(et.api_base ?? "https://sentry.io").replace(/\/$/, ""), headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+  try {
+    const projectId = dsn.split("/").pop(), pr = await fetch(`${base}/api/0/projects/${et.org}/${projectId}/`, { headers });
+    if (!pr.ok) throw new Error(`project ${projectId}: ${pr.status}`);
+    const project = (await pr.json()).slug;
+    const rel = await fetch(`${base}/api/0/organizations/${et.org}/releases/`, { method: "POST", headers, body: JSON.stringify({ version: sha, projects: [project] }) });
+    if (!rel.ok && rel.status !== 208) throw new Error(`create release: ${rel.status}`);
+    console.log(`release: Sentry release ${sha.slice(0, 7)} created for ${et.org}/${project}`);
+    const cli = ["node_modules/.bin/sentry-cli"].find(existsSync), dirs = ["dist", ".svelte-kit/cloudflare", ".svelte-kit/output", ".open-next", "build"].filter((d) => existsSync(d));
+    if (!cli || !dirs.length) { console.log("release: Sentry: no sentry-cli in node_modules or no build output directory; source maps not uploaded"); return; }
+    const r = spawnSync(cli, ["sourcemaps", "upload", "--org", et.org, "--project", project, "--release", sha, ...dirs], { stdio: "inherit", env: { ...env, SENTRY_URL: base } });
+    console.log(r.status === 0 ? "release: Sentry source maps uploaded" : `::warning::Sentry source map upload failed (exit ${r.status ?? 1}); the release exists without them`);
+  } catch (e) { console.log(`::warning::Sentry release skipped: ${e.message}`); }
+}
 
 const secrets = std.secrets && typeof std.secrets === "object" ? std.secrets : {};
 // Required: standards.json secrets.required and the wrangler config's own secrets.required.
@@ -214,7 +258,9 @@ async function deploy() {
     if (staged) build(std, pkg, true);
     // Validate every staging target before deploying any of them. Secondary explicit configs
     // bypass the primary adapter redirect, exactly as Wrangler -c does.
-    const targets = [...(staged ? [{ file: configFile, cfg, primary: true }] : []), ...extras].map((worker) => {
+    // Supporting Workers (release_workers) go first, in their listed order, then the primary: the primary binds Durable Objects and
+    // Workflows that live on them, so a new class must exist there before the primary's deploy needs it.
+    const targets = [...extras, ...(staged ? [{ file: configFile, cfg, primary: true }] : [])].map((worker) => {
       const resolved = effectiveConfig(worker.file, true, { redirect: Boolean(worker.primary) });
       const name = assertStaging(worker.cfg, resolved, productionConfigs);
       const configArgs = resolved.redirected ? [] : ["--config", resolved.file];
@@ -257,15 +303,48 @@ async function deploy() {
     // release-check) through the tag. Workers Builds sets WORKERS_CI_COMMIT_SHA (a CI run, GITHUB_SHA).
     const sha = env.WORKERS_CI_COMMIT_SHA || env.GITHUB_SHA;
     if (!sha) console.log("::warning::no WORKERS_CI_COMMIT_SHA: this production version is untagged, so the portal cannot tie it to its release-check");
-    const tags = sha ? ["--tag", sha, "--message", `main ${sha}`, "--var", `SENTRY_RELEASE:${sha}`] : [];
-    must(["versions", "upload", ...tags]);
-    secretCheck("the production Worker", ["secret", "list", "--name", productionName, "--format", "json"]);
+    const tagsFor = (file) => { const mig = newMigrationTags(file); if (mig.length) console.log(`::notice::${file} carries Durable Object migration ${mig.join(",")}: staging applied it with its normal deploy; this production version is uploaded only and goes live through \`release.mjs promote ${sha ?? "<sha>"}\` (a full wrangler deploy of this commit), not a version deploy`);
+      return sha ? ["--tag", sha, "--message", `main ${sha}${migrationNote(mig, sha)}`, "--var", `SENTRY_RELEASE:${sha}`] : []; };
     for (const worker of extras) {
-      must(["versions", "upload", "-c", worker.file, "--name", worker.cfg.name, ...tags]);
+      must(["versions", "upload", "-c", worker.file, "--name", worker.cfg.name, ...tagsFor(worker.file)]);
       const names = [...new Set((Array.isArray(worker.cfg.secrets?.required) ? worker.cfg.secrets.required : []).filter((name) => typeof name === "string" && name))];
       secretCheck("the production Worker", ["secret", "list", "--config", worker.file, "--name", worker.cfg.name, "--format", "json"], names);
     }
+    must(["versions", "upload", ...tagsFor(configFile)]);
+    secretCheck("the production Worker", ["secret", "list", "--name", productionName, "--format", "json"]);
+    if (sha) await sentryRelease(sha, configFile);
   }
+}
+
+// promote <sha>: make the uploaded version of that commit live, the right way for what it carries. A version that carries no
+// Durable Object migration goes live by a version deploy; one that carries a migration goes live through a full wrangler
+// deploy of that exact commit (checked out, built), because a version deploy cannot apply a migration. The approved
+// promotion path calls this; it does not verify the release-check (verify-release-check does).
+async function promote() {
+  const sha = args[0] ?? "";
+  if (!/^[0-9a-f]{40}$/.test(sha)) fail(`promote needs the version's full 40-character lowercase hex commit sha (got ${JSON.stringify(sha)})`, "release.mjs promote <sha>");
+  const cfg = config(), workers = [{ file: configFile, cfg, primary: true }, ...workerFiles(std, configFile).map((file) => ({ file, cfg: readConfig(file) }))];
+  const head = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", stdio: "pipe" }).trim();
+  for (const w of workers) {
+    const name = w.primary ? (env.WRANGLER_CI_OVERRIDE_NAME || w.cfg.name) : w.cfg.name, configArgs = w.primary ? [] : ["--config", w.file];
+    const mig = newMigrationTags(w.file, sha);
+    if (mig.length) {
+      if (head !== sha) fail(`${name}: ${sha.slice(0, 7)} carries Durable Object migration ${mig.join(",")}, which goes live through a full wrangler deploy of that exact commit`, `check out ${sha} and run release.mjs promote ${sha} from there`);
+      build(std, pkg);
+      console.log(`release: ${name}: full deploy of ${sha.slice(0, 7)} (carries Durable Object migration ${mig.join(",")})`);
+      must(["deploy", ...configArgs, "--name", name, "--tag", sha, "--message", `promote ${sha}${migrationNote(mig, sha)}`]);
+    } else {
+      const listed = wrangler(["versions", "list", ...configArgs, "--name", name, "--json"], { capture: true });
+      if (listed.status) { process.stdout.write(listed.out); fail(`could not list the versions of ${name}`, "re-run; the promotion changed nothing"); }
+      let versions = null;
+      const end = listed.out.lastIndexOf("]") + 1;
+      for (let i = listed.out.indexOf("["); i >= 0 && !versions; i = listed.out.indexOf("[", i + 1)) { try { const v = JSON.parse(listed.out.slice(i, end)); if (Array.isArray(v)) versions = v; } catch {} }
+      const found = (versions ?? []).filter((v) => Object.entries(v.annotations ?? {}).some(([k, val]) => /tag$/.test(k) && val === sha));
+      if (found.length !== 1) fail(`${name}: ${found.length ? "more than one" : "no"} uploaded version is tagged ${sha.slice(0, 7)}`, "the main release uploads one version per commit; check the Worker's versions");
+      must(["versions", "deploy", ...configArgs, "--name", name, `${found[0].id}@100%`, "--message", `promote ${sha}`, "--yes"]);
+    }
+  }
+  console.log(`release: promoted ${sha.slice(0, 7)}`);
 }
 
 // Delete Previews whose pull request closed: one branch's (--pr-branch), or every pull request closed in the last 30
@@ -307,5 +386,5 @@ async function cleanup() {
   console.log(`cleanup: ${names.size ? "done" : "no closed pull requests"}`);
 }
 
-try { await (cmd === "cleanup" ? cleanup() : deploy()); }
+try { await (cmd === "cleanup" ? cleanup() : cmd === "promote" ? promote() : deploy()); }
 catch (e) { fail(e.message, "fix the build/config before retrying; staging must target only <production name>-staging with no production routes or custom domains"); }

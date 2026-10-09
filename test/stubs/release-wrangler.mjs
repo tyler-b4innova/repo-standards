@@ -61,6 +61,8 @@ if (args[0] === "deploy") {
   console.log(`Deployed ${process.env.WRONG_OUTPUT ? "site" : name} triggers (1.0 sec)`);
 }
 
+if (args[0] === "versions" && args[1] === "list") console.log(process.env.RELEASE_VERSIONS ?? "[]");
+
 if (args[0] === "secret" && args[1] === "list") {
   const listed = process.env.RELEASE_SECRET_LIST ? JSON.parse(readFileSync(process.env.RELEASE_SECRET_LIST, "utf8"))[name] ?? [] : [];
   console.log(JSON.stringify(listed.map((name) => ({ name }))));
