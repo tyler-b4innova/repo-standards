@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
@@ -20,13 +20,15 @@ for (const [key, value] of Object.entries(loaded)) if (process.env[key] === unde
 const controlledEmpty = Boolean(controlled && existsSync(controlled) && readFileSync(controlled, "utf8") === "");
 let redirected = false;
 const explicitConfig = option("--config") ?? option("-c");
-let file = explicitConfig ?? "wrangler.jsonc";
+let file = explicitConfig ?? (!existsSync("wrangler.jsonc") && existsSync("wrangler.toml") ? "wrangler.toml" : "wrangler.jsonc");
 if (!explicitConfig && existsSync(".wrangler/deploy/config.json")) {
   redirected = true;
   const redirect = ".wrangler/deploy/config.json";
   file = resolve(dirname(redirect), JSON.parse(readFileSync(redirect, "utf8")).configPath);
 }
-let cfg = parse(readFileSync(file, "utf8"));
+let cfg = file.endsWith(".toml")
+  ? JSON.parse(spawnSync("python3", ["-c", "import json,sys,tomllib; print(json.dumps(tomllib.load(open(sys.argv[1], 'rb'))))", file], { encoding: "utf8" }).stdout)
+  : parse(readFileSync(file, "utf8"));
 const stage = option("--env");
 // Wrangler rejects generated-only legacy_env metadata if redirect discovery was bypassed.
 if ("legacy_env" in cfg && !redirected) { console.error("The legacy_env field is no longer supported"); process.exit(1); }
@@ -47,6 +49,13 @@ if (process.env.REAL_WRANGLER && process.env.MALICIOUS_DOTENV && ["deploy", "ver
   name = deployed.worker_name;
 }
 appendFileSync(process.env.RELEASE_LOG, JSON.stringify({ args, controlledEmpty, account: process.env.CLOUDFLARE_ACCOUNT_ID ?? null, name, configName: cfg.name, env: process.env.CLOUDFLARE_ENV ?? null, overrideName: process.env.WRANGLER_CI_OVERRIDE_NAME ?? null, matchTag: process.env.WRANGLER_CI_MATCH_TAG ?? null, routes: cfg.routes }) + "\n");
+if (args[0] === "deploy" && process.env.FAIL_DEPLOY === name) { console.error("simulated deploy failure"); process.exit(1); }
+if (args[0] === "versions" && args[1] === "upload") {
+  if (process.env.FAIL_UPLOAD === name) { console.error("simulated upload failure"); process.exit(1); }
+  const out = option("--outdir");
+  if (out) { mkdirSync(out, { recursive: true }); writeFileSync(`${out}/index.js`, "// bundle\n"); if (args.includes("--upload-source-maps")) writeFileSync(`${out}/index.js.map`, "{}"); }
+  console.log(`Worker Version ID: ver-${name}`);
+}
 if (args[0] === "deploy") {
   if (process.env.MISSING_STAGING && !option("--secrets-file") && cfg.secrets?.required?.length) {
     console.error("required secrets have not been set");
