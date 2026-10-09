@@ -94,16 +94,16 @@ if [ -z "$why" ]; then ok release-sentry-toml; else fail release-sentry-toml "$w
 why=""
 : >"$SLOG"; out=$(cd "$R" && FAIL_UPLOAD=site SENTRY_AUTH_TOKEN=tok WORKERS_CI_COMMIT_SHA=$S node scripts/agent/release.mjs main 2>&1); rc=$?
 [ $rc -ne 0 ] && [ ! -s "$SLOG" ] || why="a failed Worker upload still created a Sentry release (exit $rc)"
-# the limit is a fixed 60-second hang guard (no setting): both stalls run at once, each past it, from two copies of the repository
+# RELEASE_SENTRY_TIMEOUT_S=1 shortens the hang guard: both stalls run at once, each past it, from two copies of the repository
 R2=$T/sentrybounded2; cp -R "$R" "$R2"; printf '#!/bin/sh\nexec sleep 300\n' >"$R2/node_modules/.bin/sentry-cli"; start=$SECONDS
-(cd "$R" && SENTRY_AUTH_TOKEN=stall WORKERS_CI_COMMIT_SHA=$S node scripts/agent/release.mjs main >"$T/stall-api.out" 2>&1; echo $? >"$T/stall-api.rc") &
+(cd "$R" && RELEASE_SENTRY_TIMEOUT_S=1 SENTRY_AUTH_TOKEN=stall WORKERS_CI_COMMIT_SHA=$S node scripts/agent/release.mjs main >"$T/stall-api.out" 2>&1; echo $? >"$T/stall-api.rc") &
 P1=$!
-(cd "$R2" && SENTRY_AUTH_TOKEN=tok WORKERS_CI_COMMIT_SHA=$S node scripts/agent/release.mjs main >"$T/stall-cli.out" 2>&1; echo $? >"$T/stall-cli.rc") &
+(cd "$R2" && RELEASE_SENTRY_TIMEOUT_S=1 SENTRY_AUTH_TOKEN=tok WORKERS_CI_COMMIT_SHA=$S node scripts/agent/release.mjs main >"$T/stall-cli.out" 2>&1; echo $? >"$T/stall-cli.rc") &
 P2=$!
 wait $P1 $P2; took=$((SECONDS - start))
-[ "$(cat "$T/stall-api.rc")" = 0 ] && grep -q "::warning::Sentry release skipped: timed out after 60s" "$T/stall-api.out" || why="$why; a stalled Sentry API did not end in a warning and exit 0: $(cat "$T/stall-api.rc") $(cat "$T/stall-api.out")"
-[ "$(cat "$T/stall-cli.rc")" = 0 ] && grep -q "::warning::Sentry source map upload timed out after 60s" "$T/stall-cli.out" || why="$why; a stalled sentry-cli did not end in a warning and exit 0: $(cat "$T/stall-cli.rc") $(cat "$T/stall-cli.out")"
-[ $took -ge 55 ] && [ $took -lt 100 ] || why="$why; the hang guard fired after ${took}s, not at its fixed 60s"
+[ "$(cat "$T/stall-api.rc")" = 0 ] && grep -q "::warning::Sentry release skipped: timed out after 1s" "$T/stall-api.out" || why="$why; a stalled Sentry API did not end in a warning and exit 0: $(cat "$T/stall-api.rc") $(cat "$T/stall-api.out")"
+[ "$(cat "$T/stall-cli.rc")" = 0 ] && grep -q "::warning::Sentry source map upload timed out after 1s" "$T/stall-cli.out" || why="$why; a stalled sentry-cli did not end in a warning and exit 0: $(cat "$T/stall-cli.rc") $(cat "$T/stall-cli.out")"
+[ $took -lt 25 ] || why="$why; the stalls ended after ${took}s, not at the 1s limit"
 if [ -z "$why" ]; then ok release-sentry-bounded; else fail release-sentry-bounded "$why"; fi
 
 # ---- a failure part-way through leaves a mixed state: the report says which Workers were updated or uploaded, which were not, and
