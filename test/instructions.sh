@@ -78,7 +78,6 @@ o=$( (cd "$R" && GITHUB_EVENT_PATH= node scripts/agent/gate.mjs instructions) 2>
 blk=$(awk '/- name: instructions/{f=1} f&&/- name: secrets/{exit} f' "$R/.github/workflows/std-gate.yml")
 has "gate.mjs instructions" "$blk" && ! has "if:" "$blk" && grep -B 4 -- '- name: instructions' "$R/.github/workflows/std-gate.yml" | grep -q 'setup.sh --check' || why="$why; workflow step: $blk"
 if [ -z "$why" ]; then ok gate-instructions-exempt-sync-retro; else fail gate-instructions-exempt-sync-retro "$why"; fi
-
 # A change to AGENTS.md is allowed only when it is exactly what the pack's apply generates at the PR's head (the template
 # under review rendered over the base file); the same rule in every repository that carries the engine and names its overlay.
 why=""
@@ -101,6 +100,10 @@ variant 0 "regenerated block" "$RENDER"
 variant 1 "a fake renderer" "printf 'process.argv.includes(\"apply\")&&require(\"fs\").writeFileSync(process.argv[process.argv.indexOf(\"--target\")+1]+\"/AGENTS.md\",require(\"fs\").readFileSync(\"AGENTS.md\",\"utf8\"));\n' > bin/repo-standards.mjs && echo '- crafted' >> AGENTS.md"
 variant 1 "a changed overlay" "node -e 'const fs=require(\"fs\"),o=JSON.parse(fs.readFileSync(\"examples/overlay.json\"));o.profiles.internal.block_lines=[\"- crafted by the overlay\"];fs.writeFileSync(\"examples/overlay.json\",JSON.stringify(o,null,2))' && node bin/repo-standards.mjs apply --target . --overlay examples/overlay.json --version 0.1.0 >/dev/null"
 variant 1 "a redirected overlay" "node -e 'const fs=require(\"fs\"),o=JSON.parse(fs.readFileSync(\"examples/overlay.json\"));o.profiles.internal.block_lines=[\"- crafted\"];fs.writeFileSync(\"evil.json\",JSON.stringify(o));const s=JSON.parse(fs.readFileSync(\"standards.json\"));s.overlay=\"evil.json\";fs.writeFileSync(\"standards.json\",JSON.stringify(s))' && node bin/repo-standards.mjs apply --target . --overlay evil.json --version 0.1.0 >/dev/null"
+# only template/AGENTS.block.md is taken from the pull request, as text: JavaScript of its own never runs
+variant 0 "top-level code in the PR's template scripts is inert" "for f in template/scripts/agent/pins.mjs template/scripts/agent/staging.mjs; do printf 'process.exit(7);\n' | cat - \$f > \$f.new && mv \$f.new \$f; done; $RENDER"
+variant 1 "AGENTS.md replaced by a symlink" "$RENDER && cp AGENTS.md ../AGENTS.target.\$\$ && rm AGENTS.md && ln -s ../AGENTS.target.\$\$ AGENTS.md"
+variant 1 "the block file replaced by a symlink" "cp template/AGENTS.block.md block.real && echo '- via a symlink' >> block.real && rm template/AGENTS.block.md && ln -s ../block.real template/AGENTS.block.md && node bin/repo-standards.mjs apply --target . --overlay examples/overlay.json --version 0.1.0 >/dev/null"
 variant 1 "regenerated block plus a hand line" "$RENDER && echo '- extra' >> AGENTS.md"
 variant 1 "hand edit inside the block" "sed -i.bak 's/^- Silo:/- Silo (edited):/' AGENTS.md && rm AGENTS.md.bak"
 variant 1 "hand edit outside the block" "echo '- outside' >> AGENTS.md"
