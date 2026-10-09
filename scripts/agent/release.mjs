@@ -16,7 +16,7 @@ import { parse, findings as stagingFindings, resourceFindings } from "./staging.
 import { build, rootFile, readConfig, effectiveConfig, assertStaging, assertReleaseAccounts, workerFiles, buildProductionConfigs } from "./release-config.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
-const SUBS = ["main", "preview", "slug", "cleanup"];
+const SUBS = ["main", "preview", "slug", "cleanup", "verify-release-check"];
 if (!SUBS.includes(cmd) || args.includes("--help")) {
   console.log(readFileSync(new URL(import.meta.url), "utf8").split("\n").slice(1, 6).map((l) => l.slice(3)).join("\n"));
   process.exit(SUBS.includes(cmd) || cmd === "--help" ? 0 : 2);
@@ -32,6 +32,39 @@ if (cmd === "slug") {
   if (!args[0]) fail("no branch named", "release.mjs slug <branch>");
   console.log(slug(args[0]));
   process.exit(0);
+}
+
+// verify-release-check <sha>: the one rule a promotion applies before accepting a `release-check` for a version's commit
+// (the agent deploy path and the portal use it): a successful check-run named release-check on that commit, created by
+// GitHub Actions, whose external_id is the id of a workflow run of .github/workflows/std-release-check.yml, completed
+// successfully, that ran for the default branch (head_branch), on a workflow_dispatch, titled `release-check <sha>`.
+// Anything else (another workflow, a fork or feature-branch run, a push, a lookalike check) is refused. Exit 0 or 1.
+if (cmd === "verify-release-check") {
+  const sha = args[0] ?? "";
+  if (!/^[0-9a-f]{40}$/.test(sha)) fail(`verify-release-check needs the version's full 40-character lowercase hex commit sha (got ${JSON.stringify(sha)})`, "release.mjs verify-release-check <sha>");
+  const base = `${env.GITHUB_API_URL || "https://api.github.com"}/repos/${env.GITHUB_REPOSITORY}`;
+  const headers = { Authorization: `Bearer ${env.GH_TOKEN || env.GITHUB_TOKEN}`, Accept: "application/vnd.github+json" };
+  const get = async (path) => { const r = await fetch(`${base}${path}`, { headers }); if (!r.ok) fail(`GET ${path || "/"}: ${r.status}`, "check the token can read checks and actions"); return r.json(); };
+  const def = (await get("")).default_branch;
+  const checks = [];
+  for (let page = 1; ; page++) {
+    const batch = (await get(`/commits/${sha}/check-runs?per_page=100&page=${page}`)).check_runs ?? [];
+    checks.push(...batch);
+    if (batch.length < 100) break;
+  }
+  const wrong = [];
+  for (const c of checks.filter((x) => x.name === "release-check" && x.status === "completed" && x.conclusion === "success")
+    .sort((a, b) => String(b.completed_at).localeCompare(String(a.completed_at)))) {
+    const id = /^\d+$/.test(c.external_id ?? "") ? c.external_id : null;
+    if (c.app?.slug !== "github-actions" || !id) { wrong.push(`check-run ${c.id} has no workflow run id (external_id) or is not GitHub Actions'`); continue; }
+    const run = await get(`/actions/runs/${id}`);
+    const why = run.path !== ".github/workflows/std-release-check.yml" ? `run ${id} is workflow ${run.path}` : run.event !== "workflow_dispatch" ? `run ${id} was a ${run.event}, not a workflow_dispatch`
+      : run.head_branch !== def ? `run ${id} ran for ${run.head_branch}, not the default branch (${def})` : run.status !== "completed" || run.conclusion !== "success" ? `run ${id} did not complete successfully`
+      : run.display_title !== `release-check ${sha}` ? `run ${id} was for another commit (${run.display_title})` : "";
+    if (!why) { console.log(`release-check verified for ${sha.slice(0, 7)}: workflow run ${id} on ${def}`); process.exit(0); }
+    wrong.push(why);
+  }
+  fail(`no verified release-check for ${sha.slice(0, 7)}${wrong.length ? `: ${wrong.join("; ")}` : " (none succeeded)"}`, "dispatch std-release-check for the version's commit on the default branch and wait for it to succeed");
 }
 
 try { process.chdir(execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: "pipe" }).trim()); } catch {}
