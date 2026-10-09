@@ -38,15 +38,16 @@ if [ -z "$why" ]; then ok release-supporting-workers-first; else fail release-su
 why=""
 cat >"$T/sentry.mjs" <<'JS'
 import { createServer } from "node:http";
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 const [portFile, log] = process.argv.slice(2);
 createServer((req, res) => { let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => {
+  if (existsSync(process.env.SENTRY_STALL)) return; // a stalled Sentry: the request is never answered
   appendFileSync(log, JSON.stringify({ method: req.method, path: req.url, auth: req.headers.authorization, body: b }) + "\n");
   if (req.url === "/api/0/projects/acme/42/") { res.writeHead(200, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ slug: "site" })); }
   res.writeHead(201, { "Content-Type": "application/json" }); res.end("{}"); }); })
   .listen(0, "127.0.0.1", function () { writeFileSync(portFile, String(this.address().port)); });
 JS
-SLOG=$T/sentry-http.log; : >"$SLOG"; node "$T/sentry.mjs" "$T/sentry.port" "$SLOG" & SENTRY_PID=$!
+export SENTRY_STALL=$T/stall; SLOG=$T/sentry-http.log; : >"$SLOG"; node "$T/sentry.mjs" "$T/sentry.port" "$SLOG" & SENTRY_PID=$!
 for i in $(seq 50); do [ -s "$T/sentry.port" ] && break; sleep 0.1; done
 node -e 'const o=require(process.argv[1]);Object.assign(o,{org:"acme",modules:{error_tracker:true,deploy:true}});o.accounts.error_tracker={kind:"sentry",org:"acme",api_base:"http://127.0.0.1:"+process.argv[3],filer_repo:"acme/filer",alert_workflow:"issues bridge",credential_item:"Tracker token"};require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$ENGINE/examples/overlay.json" "$T/ov-sentry.json" "$(cat "$T/sentry.port")"
 repo sentry "$T/ov-sentry.json"
@@ -79,8 +80,44 @@ echo "sentry-cli $*" >>"$SENTRY_CLI_LOG"
 SH
 chmod +x "$R/node_modules/.bin/sentry-cli"; export SENTRY_CLI_LOG=$T/cli.log; : >"$SENTRY_CLI_LOG"; : >"$SLOG"
 out=$(cd "$R" && SENTRY_AUTH_TOKEN=tok WORKERS_CI_COMMIT_SHA=$S node scripts/agent/release.mjs main 2>&1); rc=$?
-[ $rc -eq 0 ] && has "Sentry release ${S:0:7} created for acme/site" "$out" && has "Sentry source maps uploaded" "$out" && grep -q "sourcemaps upload --org acme --project site --release $S dist" "$SENTRY_CLI_LOG" || why="TOML release (exit $rc): $out"
+[ $rc -eq 0 ] && has "Sentry release ${S:0:7} created for acme/site" "$out" && has "Sentry source maps uploaded" "$out" && grep -q "sourcemaps upload --org acme --project site --release $S " "$SENTRY_CLI_LOG" || why="TOML release (exit $rc): $out"
+# the maps come from Wrangler's final bundle: the primary's versions upload wrote them to a clean --outdir, which is what is uploaded (never dist/)
+OUTDIR=$(node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n").map(JSON.parse).filter(x=>x.args&&x.args[0]==="versions");const a=l[l.length-1].args;console.log(a[a.indexOf("--outdir")+1])' "$RELEASE_LOG")
+UPLOADED=$(sed -n 's/.*--release [0-9a-f]* //p' "$SENTRY_CLI_LOG" | head -1)
+[ -n "$OUTDIR" ] && [ "$UPLOADED" = "$OUTDIR" ] && has "--upload-source-maps" "$(calls)" && ! grep -q " dist" "$SENTRY_CLI_LOG" || why="$why; the uploaded maps are not from Wrangler's outdir (outdir=$OUTDIR uploaded=$UPLOADED)"
 : >"$SENTRY_CLI_LOG"; out=$(cd "$R" && SENTRY_CLI_FAIL=1 SENTRY_AUTH_TOKEN=tok WORKERS_CI_COMMIT_SHA=$S node scripts/agent/release.mjs main 2>&1); rc=$?
 [ $rc -eq 0 ] && has "::warning::Sentry source map upload failed (exit 1); the release exists without them" "$out" && has "versions upload" "$out" || why="$why; a failed source map upload failed the release or was silent (exit $rc): $out"
 if [ -z "$why" ]; then ok release-sentry-toml; else fail release-sentry-toml "$why"; fi
+
+# ---- Sentry work is bounded and comes after the Worker uploads: a stalled Sentry (API or sentry-cli) ends in a warning and exit 0; a failed
+# Worker upload creates no Sentry release
+why=""
+: >"$SLOG"; out=$(cd "$R" && FAIL_UPLOAD=site SENTRY_AUTH_TOKEN=tok WORKERS_CI_COMMIT_SHA=$S node scripts/agent/release.mjs main 2>&1); rc=$?
+[ $rc -ne 0 ] && [ ! -s "$SLOG" ] || why="a failed Worker upload still created a Sentry release (exit $rc)"
+touch "$SENTRY_STALL"; start=$SECONDS
+out=$(cd "$R" && RELEASE_SENTRY_TIMEOUT_S=1 SENTRY_AUTH_TOKEN=tok WORKERS_CI_COMMIT_SHA=$S node scripts/agent/release.mjs main 2>&1); rc=$?
+[ $rc -eq 0 ] && has "::warning::Sentry release skipped: timed out after 1s" "$out" && [ $((SECONDS - start)) -lt 25 ] || why="$why; a stalled Sentry API did not end in a warning and exit 0 (exit $rc, $((SECONDS - start))s): $out"
+rm -f "$SENTRY_STALL"
+printf '#!/bin/sh\nexec sleep 30\n' >"$R/node_modules/.bin/sentry-cli"; start=$SECONDS
+out=$(cd "$R" && RELEASE_SENTRY_TIMEOUT_S=1 SENTRY_AUTH_TOKEN=tok WORKERS_CI_COMMIT_SHA=$S node scripts/agent/release.mjs main 2>&1); rc=$?
+[ $rc -eq 0 ] && has "::warning::Sentry source map upload timed out after 1s" "$out" && [ $((SECONDS - start)) -lt 25 ] || why="$why; a stalled sentry-cli did not end in a warning and exit 0 (exit $rc, $((SECONDS - start))s): $out"
+if [ -z "$why" ]; then ok release-sentry-bounded; else fail release-sentry-bounded "$why"; fi
+
+# ---- a failure part-way through leaves a mixed state: the report says which Workers were updated or uploaded, which were not, and
+# that a re-run does it all again (nothing is restored)
+why=""
+repo mixed
+mkdir -p "$R/node_modules/.bin" "$R/workers/runtime" "$R/workers/jobs" "$R/src"; touch "$R/node_modules/.bin/wrangler"; echo "export default {};" >"$R/src/index.js"
+printf '{ "name": "app", "main": "src/index.js", %s }\n' "$STAGING" >"$R/wrangler.jsonc"
+for w in runtime jobs; do printf '{ "name": "%s", "main": "../../src/index.js", %s }\n' "$w" "$STAGING" >"$R/workers/$w/wrangler.jsonc"; done
+node -e 'const fs=require("fs"),o=JSON.parse(fs.readFileSync(process.argv[1]));o.release_workers=["workers/runtime/wrangler.jsonc","workers/jobs/wrangler.jsonc"];fs.writeFileSync(process.argv[1],JSON.stringify(o,null,2))' "$R/standards.json"
+printf 'node_modules/\n.wrangler/\n' >>"$R/.gitignore"; commit fixture; S=$(sha)
+out=$(cd "$R" && FAIL_DEPLOY=jobs-staging WORKERS_CI_COMMIT_SHA=$S node scripts/agent/release.mjs main 2>&1); rc=$?
+[ $rc -ne 0 ] && has "release incomplete: Workers are in a mixed state" "$out" && has "staging updated: runtime-staging" "$out" && has "staging not updated: jobs-staging, app-staging" "$out" \
+  && has "production uploaded: none" "$out" && has "re-running the build deploys and uploads all of them again" "$(printf '%s' "$out" | tr 'A-Z' 'a-z')" && has "nothing was restored or rolled back" "$out" || why="staging failure report (exit $rc): $out"
+out=$(cd "$R" && FAIL_UPLOAD=jobs WORKERS_CI_COMMIT_SHA=$S node scripts/agent/release.mjs main 2>&1); rc=$?
+[ $rc -ne 0 ] && has "staging updated: runtime-staging, jobs-staging, app-staging" "$out" && has "production uploaded: runtime (version ver-runtime)" "$out" && has "production not uploaded: jobs, app" "$out" || why="$why; production failure report (exit $rc): $out"
+out=$(cd "$R" && WORKERS_CI_COMMIT_SHA=$S node scripts/agent/release.mjs main 2>&1); rc=$?
+[ $rc -eq 0 ] && ! has "mixed state" "$out" || why="$why; a complete release printed a mixed-state report (exit $rc)"
+if [ -z "$why" ]; then ok release-partial-failure; else fail release-partial-failure "$why"; fi
 done_cases

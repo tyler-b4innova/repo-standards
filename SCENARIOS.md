@@ -186,6 +186,10 @@ Retired in 0.6.0 with the staged flow: `promote-no-ui-auto`, `promote-ui-needs-h
 
 - **`release-sentry-toml`**: the DSN is found in a `wrangler.toml` Worker as in JSON; the Sentry release is created and source maps uploaded, and a failing source map upload is a warning, never a failed release.
 
+- **`release-partial-failure`**: when a later Worker fails during the main release, the build log reports the mixed state (which Workers' staging deploys and production uploads, with version ids, completed and which did not) and that re-running the build does them all again; nothing is restored or rolled back automatically; a complete release prints no such report.
+
+- **`release-sentry-bounded`**: Sentry work comes after the Worker uploads (a failed upload creates no Sentry release) and is bounded: a stalled Sentry API or sentry-cli ends in a warning and the finished release exits 0.
+
 - **`release-sentry`**: with the SENTRY_AUTH_TOKEN build secret and the DSN `sentry-setup` commits in the Worker config, the main release creates the Sentry release for the commit (org from pack.json, project from the DSN's project id) and uploads source maps when sentry-cli and a build output directory exist; without the token it logs one notice; a repository without the DSN is skipped; none of these is an error.
 
 - **`sync-includes-standards-repo`**: sync applies the pack to the overlay's own standards repository like every other repository (only `fleet.exclude` leaves a repository out); a pin pull request there changes only the overlay, and the sync App lands the repository's managed files. Stated rule: no per-repo exceptions.
