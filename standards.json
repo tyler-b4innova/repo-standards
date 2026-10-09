@@ -4,5 +4,6 @@
   "profile": "internal",
   "dispatch": "manual",
   "sensitive": false,
-  "local": false
+  "local": false,
+  "overlay": "examples/overlay.json"
 }

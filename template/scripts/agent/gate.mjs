@@ -380,6 +380,24 @@ if (cmd === "local") {
   if (files && args.includes("--local")) files.push(...git("diff", "--name-only", "--no-renames", "HEAD").trim().split("\n").filter(Boolean), ...git("ls-files", "--others", "--exclude-standard").trim().split("\n").filter(Boolean));
   if (!files) fail("instructions: the pull request's base commit is not in this checkout", "check out with fetch-depth: 0 (std-gate.yml does)");
   const bad = new Set(files.filter((f) => INSTRUCTION.some((r) => r.test(f))));
+  // The one change an author may make to AGENTS.md: exactly what the pack's apply generates at this head. The engine (the
+  // checkout's own bin/repo-standards.mjs, so the template under review) renders the managed block over the base file
+  // (only the block when the overlay says block-only); anything that differs from that rendering stays refused. A
+  // repository that does not carry the engine (standards.json "overlay" names the overlay apply uses) has no renderer.
+  if (bad.has("AGENTS.md") && typeof std.overlay === "string" && has("bin/repo-standards.mjs") && has(std.overlay)) {
+    const base = prBase();
+    let baseText = null;
+    if (base) try { baseText = git("show", `${base}:AGENTS.md`); } catch {}
+    if (baseText !== null) {
+      const dir = mkdtempSync(`${tmpdir()}/agents-render-`);
+      try {
+        spawnSync("git", ["init", "-q", dir]);
+        writeFileSync(`${dir}/AGENTS.md`, baseText); writeFileSync(`${dir}/standards.json`, rd("standards.json", "utf8"));
+        const r = spawnSync(process.execPath, ["bin/repo-standards.mjs", "apply", "--target", dir, "--overlay", std.overlay, "--version", std.version], { encoding: "utf8" });
+        if (r.status === 0 && rd(`${dir}/AGENTS.md`, "utf8") === rd("AGENTS.md", "utf8")) bad.delete("AGENTS.md");
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    }
+  }
   if (files.some((f) => CODEOWNERS.includes(f))) {
     const [before, after] = [ownersBlock(prBase()), ownersBlock("HEAD")];
     if (before.block !== after.block) bad.add(`${after.path ?? before.path} (managed std block${after.path !== before.path ? `, now read from ${after.path ?? "no CODEOWNERS"}` : ""})`);
