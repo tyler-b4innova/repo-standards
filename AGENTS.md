@@ -16,6 +16,7 @@
 - Add a line only for a failure that happened.
 - No per-repo exceptions, and no new rules, gates or numbers to fix a symptom: use the one org-wide pattern or remove something. Never present an inference as the founder's decision; his decisions are his own words in the issue, commit or PR they concern.
 - Cloudflare deploys: Workers Builds in the account that owns the Worker runs `scripts/agent/release.mjs`. Nothing is deployed by hand, and no Cloudflare tokens in GitHub.
+- Deploys run from the org's CI builds, never from a personal token.
 ## Review guidelines
 
 - Skip pack-managed paths (`scripts/agent/`, `.claude/`, `.codex/`, `std-*`); they change in repo-standards.

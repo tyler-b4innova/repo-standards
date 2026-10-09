@@ -97,6 +97,10 @@ variant() { # variant <want exit> <label> <changes>
 }
 RENDER='echo "- A rule added to the template under review." >> template/AGENTS.block.md && node bin/repo-standards.mjs apply --target . --overlay examples/overlay.json --version 0.1.0 >/dev/null'
 variant 0 "regenerated block" "$RENDER"
+# nothing the pull request controls may render: a changed renderer, or a changed or redirected overlay, authorises nothing
+variant 1 "a fake renderer" "printf 'process.argv.includes(\"apply\")&&require(\"fs\").writeFileSync(process.argv[process.argv.indexOf(\"--target\")+1]+\"/AGENTS.md\",require(\"fs\").readFileSync(\"AGENTS.md\",\"utf8\"));\n' > bin/repo-standards.mjs && echo '- crafted' >> AGENTS.md"
+variant 1 "a changed overlay" "node -e 'const fs=require(\"fs\"),o=JSON.parse(fs.readFileSync(\"examples/overlay.json\"));o.profiles.internal.block_lines=[\"- crafted by the overlay\"];fs.writeFileSync(\"examples/overlay.json\",JSON.stringify(o,null,2))' && node bin/repo-standards.mjs apply --target . --overlay examples/overlay.json --version 0.1.0 >/dev/null"
+variant 1 "a redirected overlay" "node -e 'const fs=require(\"fs\"),o=JSON.parse(fs.readFileSync(\"examples/overlay.json\"));o.profiles.internal.block_lines=[\"- crafted\"];fs.writeFileSync(\"evil.json\",JSON.stringify(o));const s=JSON.parse(fs.readFileSync(\"standards.json\"));s.overlay=\"evil.json\";fs.writeFileSync(\"standards.json\",JSON.stringify(s))' && node bin/repo-standards.mjs apply --target . --overlay evil.json --version 0.1.0 >/dev/null"
 variant 1 "regenerated block plus a hand line" "$RENDER && echo '- extra' >> AGENTS.md"
 variant 1 "hand edit inside the block" "sed -i.bak 's/^- Silo:/- Silo (edited):/' AGENTS.md && rm AGENTS.md.bak"
 variant 1 "hand edit outside the block" "echo '- outside' >> AGENTS.md"

@@ -45,7 +45,9 @@
   "permissions_allow": [],
   "profiles": {
     "internal": {
-      "block_lines": [],
+      "block_lines": [
+        "- Deploys run from the org's CI builds, never from a personal token."
+      ],
       "forbid_paths": [],
       "forbid_patterns": [],
       "pr_body_model_line": true

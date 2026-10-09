@@ -125,10 +125,10 @@ o=$(verify release-verify); has "exit=1" "$o" && has "force-cancel failed" "$o" 
 st "{\"compareCommits\":[\"$MID\"],\"checksBy\":{\"$MID\":[$OKB]},\"cancelFail\":true}"
 o=$(verify release-verify); has "exit=1" "$o" && has "could not cancel" "$o" || why="$why; failed cancel passed: $o"
 # the post-suite step runs after a failing suite (a failure caused by a newer deploy cancels); never after a cancel
-yml=$(cat "$W/$WF"); has 'if: ${{ !cancelled() && steps.start.outcome == '"'"'success'"'"' && steps.release.outputs.skip != '"'"'true'"'"' }}' "$yml" && has "gate.mjs release-verify" "$yml" || why="$why; still-staging step skipped after a failing suite"
+yml=$(cat "$W/$WF"); has "if: \${{ needs.suite.result == 'success' || needs.suite.result == 'failure' }}" "$yml" && has "gate.mjs release-verify" "$yml" || why="$why; still-staging step skipped after a failing suite"
 # the repo checks and the suite both see the staging URL
 blk=$(awk '/- name: repo checks/{f=1} f' "$W/$WF")
-for v in BASE_URL PLAYWRIGHT_BASE_URL GATE_PREVIEW_URL; do has "$v: \${{ steps.release.outputs.url }}" "$blk" || why="$why; repo checks lack $v"; done
+for v in BASE_URL PLAYWRIGHT_BASE_URL GATE_PREVIEW_URL; do has "$v: \${{ needs.pre.outputs.url }}" "$blk" || why="$why; repo checks lack $v"; done
 has "actions: write" "$yml" && has "checks: write" "$yml" || why="$why; cannot cancel or post"
 if [ -z "$why" ]; then ok release-check-staging-superseded; else fail release-check-staging-superseded "$why"; fi
 
@@ -142,9 +142,9 @@ o=$(verify release); has "exit=0" "$o" && has "browsers=chromium" "$o" && has "(
 # start only when something promoting a version dispatches it with that version's commit
 trigger=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");console.log(y.slice(y.indexOf("\non:"),y.indexOf("\npermissions:")))' "$W/$WF")
 has "workflow_dispatch:" "$trigger" && has "sha:" "$trigger" && has "required: true" "$trigger" && ! has check_run "$trigger" && ! has "push:" "$trigger" && ! has pull_request "$trigger" && ! has schedule "$trigger" || why="$why; triggers: $trigger"
-! grep -qE '^    if:' "$W/$WF" || why="$why; a job condition remains"
+python3 -c 'import sys,yaml; j=yaml.safe_load(open(sys.argv[1]))["jobs"]; sys.exit(1 if "if" in j["pre"] else 0)' "$W/$WF" || why="$why; the pre job has a condition"
 # one run per commit: a second dispatch for the same commit cancels the first
-has 'group: std-release-check-${{ inputs.sha }}' "$yml" && has "cancel-in-progress: true" "$yml" && grep -qE '^    concurrency:' "$W/$WF" && ! grep -qE '^concurrency:' "$W/$WF" || why="$why; concurrency is not per commit at job level"
+has 'group: std-release-check-${{ inputs.sha }}' "$yml" && has "cancel-in-progress: true" "$yml" && grep -qE '^concurrency:' "$W/$WF" || why="$why; concurrency is not per commit"
 ! grep -q GATE_BUILD_GRACE_S template/scripts/agent/gate.mjs || why="$why; a runtime grace remains"
 if [ -z "$why" ]; then ok release-check-trigger; else fail release-check-trigger "$why"; fi
 
@@ -181,6 +181,45 @@ o=$( (cd "$W" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t 
 cdo 1 success release-report >/dev/null; [ "$(run0)" = "release-check $SHA completed neutral" ] || why="$why; a neutral verdict was overwritten: $(run0)"
 if [ -z "$why" ]; then ok release-check-dispatch-contract; else fail release-check-dispatch-contract "$why"; fi
 
+# the verdict is written only by trusted steps: no code from the dispatched commit holds a write token. pre and post run
+# the default branch's workflow and scripts; the suite job (the only one that checks out the sha) holds contents: read only,
+# and the sha is shown to be on the default branch in plain shell before it is ever checked out
+why=""
+cat >"$T/wfcheck.py" <<'PY'
+import sys, yaml
+y = yaml.safe_load(open(sys.argv[1])); jobs = y["jobs"]; bad = []
+if set(jobs) != {"pre", "suite", "post"}: bad.append("jobs " + ",".join(jobs))
+if y["permissions"] != {"contents": "read"}: bad.append("workflow permissions are not contents: read")
+if jobs["suite"]["permissions"] != {"contents": "read"}: bad.append("the suite job holds more than contents: read")
+for n in ("pre", "post"):
+    p = jobs[n]["permissions"]
+    if p.get("checks") != "write": bad.append(n + " cannot write the verdict")
+steps = jobs["suite"]["steps"]
+text = yaml.safe_dump(steps)
+for needle in ("github.token", "GITHUB_TOKEN", "secrets.", "checks: write", "actions: write"):
+    if needle in text: bad.append("suite step mentions " + needle)
+sha_checkout = lambda st: str(st.get("with", {}).get("ref", "")).startswith("${{ env.RELEASE_SHA")
+if not sha_checkout(steps[0]): bad.append("the suite does not check out exactly the sha first")
+for n in ("pre", "post"):
+    if any(sha_checkout(st) for st in jobs[n]["steps"]): bad.append(n + " checks out the sha")
+    co = [st for st in jobs[n]["steps"] if "checkout" in str(st.get("uses", ""))]
+    if not co or "default_branch" not in str(co[0]["with"]["ref"]): bad.append(n + " does not check out the default branch")
+pre = jobs["pre"]["steps"]; names = [st.get("name", st.get("uses", "")) for st in pre]
+ancestry = [i for i, st in enumerate(pre) if "merge-base --is-ancestor" in str(st.get("run", ""))]
+node_runs = [i for i, st in enumerate(pre) if "node scripts/agent" in str(st.get("run", ""))]
+if not ancestry or not node_runs or ancestry[0] > min(node_runs): bad.append("the default-branch check does not come before any script")
+if bad: print("; ".join(bad)); sys.exit(1)
+PY
+out=$(python3 "$T/wfcheck.py" "$W/$WF" 2>&1) || why="$why; workflow structure: $out"
+# an off-main sha is refused by that shell step alone, before any code of the sha runs
+anc=$(python3 -c 'import sys,yaml; print([s["run"] for s in yaml.safe_load(open(sys.argv[1]))["jobs"]["pre"]["steps"] if "merge-base" in str(s.get("run",""))][0])' "$W/$WF")
+G=$T/anc; git init -q -b main "$G"; gc -C "$G" commit -q --allow-empty -m main1; MAIN=$(git -C "$G" rev-parse HEAD)
+gc -C "$G" checkout -q -b side; gc -C "$G" commit -q --allow-empty -m side; OFF=$(git -C "$G" rev-parse HEAD); gc -C "$G" checkout -q main
+git -C "$G" update-ref refs/remotes/origin/main main
+out=$(cd "$G" && RELEASE_SHA=$OFF DEFAULT_BRANCH=main bash -c "$anc" 2>&1) && why="$why; an off-main sha passed the shell check" || has "is not on the default branch" "$out" || why="$why; off-main: [$out]"
+(cd "$G" && RELEASE_SHA=$MAIN DEFAULT_BRANCH=main bash -c "$anc" >/dev/null 2>&1) || why="$why; a main sha was refused by the shell check"
+if [ -z "$why" ]; then ok release-check-trusted-steps; else fail release-check-trusted-steps "$why"; fi
+
 # the @a11y contract: RELEASE_CHECK=1 reaches the suite only through the release check
 why=""
 R=$T/a11y; cp -R "$W" "$R"; echo '{"scripts":{"test:e2e":"[ \"$RELEASE_CHECK\" != 1 ]"}}' >"$R/package.json"; commit "$R" a11y
@@ -189,7 +228,7 @@ E2E_ARGS=(e2e --release); o=$(e2e RELEASE_CHECK=1); has "exit=1" "$o" || why="a 
 E2E_ARGS=(e2e); o=$(e2e RELEASE_CHECK=1); has "exit=0" "$o" || why="$why; the PR gate ran @a11y tests: $o"
 E2E_ARGS=(e2e --release); o=$(e2e); has "exit=0" "$o" || why="$why; release run without the flag still set it: $o"
 for f in "$W/$WF"; do blk=$(awk '/- name: e2e/{f=1} f' "$f"); has 'RELEASE_CHECK: "1"' "$blk" && has "gate.mjs e2e --release" "$blk" || why="$why; release e2e step lacks the contract"; done
-rc=$(awk '/- name: repo checks/{f=1} /- name: still staging/{f=0} f' "$W/$WF"); has 'RELEASE_CHECK: "1"' "$rc" || why="$why; repo checks lack RELEASE_CHECK"
+rc=$(awk '/- name: repo checks/{f=1} /^  post:/{f=0} f' "$W/$WF"); has 'RELEASE_CHECK: "1"' "$rc" || why="$why; repo checks lack RELEASE_CHECK"
 grep -q "env -u RELEASE_CHECK bash scripts/agent/gate.local.sh" "$W/.github/workflows/std-gate.yml" || why="$why; PR gate repo checks do not clear RELEASE_CHECK"
 if [ -z "$why" ]; then ok release-check-a11y-contract; else fail release-check-a11y-contract "$why"; fi
 

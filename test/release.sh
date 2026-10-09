@@ -48,7 +48,7 @@ trig=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");conso
 has "workflow_dispatch:" "$trig" && has "sha:" "$trig" && ! has "check_run" "$trig" && ! has pull_request "$trig" && ! has "push:" "$trig" && ! has "schedule" "$trig" || why="$why; triggers: $trig"
 grep -q 'fetch-depth: 0' "$R/$WF" || why="$why; checkout too shallow to read the parent and the later commits"
 grep -q 'ref: ${{ env.RELEASE_SHA }}' "$R/$WF" && grep -q 'RELEASE_SHA: ${{ inputs.sha }}' "$R/$WF" || why="$why; the suite does not test the built commit"
-grep -q 'GATE_BROWSERS: ${{ steps.release.outputs.browsers }}' "$R/$WF" && grep -q 'GATE_PREVIEW_URL: ${{ steps.release.outputs.url }}' "$R/$WF" || why="$why; e2e not wired to the release step"
+grep -q 'GATE_BROWSERS: ${{ needs.pre.outputs.browsers }}' "$R/$WF" && grep -q 'GATE_PREVIEW_URL: ${{ needs.pre.outputs.url }}' "$R/$WF" || why="$why; e2e not wired to the release step"
 
 # gate.mjs release: waits for this commit's Workers Builds, then names the extra browsers and the staging URL
 put '{"checks":[{"name":"Workers Builds: demo","status":"completed","conclusion":"success"}]}'
@@ -78,9 +78,7 @@ o=$(rel "$R"); has "nothing to certify: Cloudflare deployed nothing" "$o" && has
 mkdir -p "$R/src" && echo "export {};" >"$R/src/index.ts"; commit "$R" code; echo "more" >>"$R/README.md"; commit "$R" docs-last; SHA=$(git -C "$R" rev-parse HEAD)
 put '{"checks":[{"name":"Workers Builds: demo","status":"completed","conclusion":"success"}]}'
 o=$(rel "$R"); has "exit=0" "$o" && ! has "skip=true" "$o" && has "browsers=chromium,firefox,webkit" "$o" || why="$why; source-then-docs push with a successful build: $o"
-for step in install e2e; do
-  blk=$(awk -v s="- name: $step" 'index($0,s){f=1;next} f&&/- name:/{exit} f' "$R/$WF")
-  has "if: steps.release.outputs.skip != 'true'" "$blk" || why="$why; $step step not skipped: $blk"
-done
+# the suite job (install, e2e, repo checks) is skipped as a whole when the release step found nothing to certify
+has "if: \${{ needs.pre.result == 'success' && needs.pre.outputs.skip != 'true' }}" "$(cat "$R/$WF")" || why="$why; the suite job is not skipped when there is nothing to certify"
 if [ -z "$why" ]; then ok release-check-skips-docs; else fail release-check-skips-docs "$why"; fi
 done_cases
