@@ -172,6 +172,8 @@ else {
   else {
     const n = (agents.match(/<!-- std:begin [a-z0-9-]+ -->/g) ?? []).length, m = agents.split(end).length - 1;
     if (n !== 1 || m !== 1) fail(`AGENTS.md has ${n} std:begin and ${m} std:end markers (need one each)`, "delete the duplicate block");
+    else if (pack.agents_md === "block-only" && !(agents.trim().startsWith(begin) && agents.trim().endsWith(end)))
+      fail("AGENTS.md has content outside the managed block (this organization's AGENTS.md is the standards block only)", "delete everything before the std:begin line and after the std:end line; repo rules belong in the org standards");
   }
 
   // Agent config

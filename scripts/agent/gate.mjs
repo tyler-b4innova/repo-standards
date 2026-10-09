@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // Steps of the `gate` job (std-gate.yml), also runnable locally:
-//   local [--base <ref>] | plan | release-verify | release-report | classify [base] | install [--no-browsers|--browsers-only] | playwright | run <script>... | preview | release | e2e | secrets | syntax | instructions | verdict
+//   local [--base <ref>] | plan | release-start | release-verify | release-report | classify [base] | install [--no-browsers|--browsers-only] | playwright | run <script>... | preview | release | e2e | secrets | syntax | instructions | verdict
 // UI paths: pack.json defaults; standards.json "ui_paths" as a list replaces the include globs,
 // as {include, ignore} replaces include and adds ignore. e2e: none fails unless "e2e": false.
 import { execFileSync as ex, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync as has, mkdtempSync, readdirSync as ls, readFileSync as rd, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync as has, mkdtempSync, readdirSync as ls, readFileSync as rd, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { createConnection } from "node:net";
 import { localConfig, localWorkerConfig } from "./local.mjs";
@@ -15,7 +15,7 @@ import { rootFile, verifyGeneratedBuild } from "./release-config.mjs";
 import { describe as describeSelection, listFor, plan as planSelection, summarize } from "./select.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
-const SUBS = ["local", "verdict", "plan", "classify", "install", "playwright", "run", "preview", "release", "release-verify", "release-report", "e2e", "secrets", "syntax", "instructions"], ok = SUBS.includes(cmd);
+const SUBS = ["local", "verdict", "plan", "classify", "install", "playwright", "run", "preview", "release", "release-start", "release-verify", "release-report", "e2e", "secrets", "syntax", "instructions"], ok = SUBS.includes(cmd);
 if (!ok || args.includes("--help")) {
   console.log(rd(new URL(import.meta.url), "utf8").split("\n").slice(1, 6).map((l) => l.slice(3)).join("\n"));
   process.exit(ok || cmd === "--help" ? 0 : 2);
@@ -78,11 +78,23 @@ async function supersededBy(get, sha, name) {
     if (commits.length < 100) return null;
   }
 }
+// The verdict is the check-run `release-check` on the dispatched commit (the job's own check lands on the ref's tip).
+// Created in_progress when the job starts (RELEASE_CHECK_ID), completed exactly once: by the report step
+// (success, failure, cancelled), or earlier as neutral with the reason when the run is superseded or has nothing to certify.
+const checksWrite = (method, path, body) => fetch(`${env.GITHUB_API_URL || "https://api.github.com"}/repos/${env.GITHUB_REPOSITORY}${path}`, { method,
+  headers: { Authorization: `Bearer ${env.GH_TOKEN || env.GITHUB_TOKEN}`, Accept: "application/vnd.github+json", "Content-Type": "application/json" }, body: body && JSON.stringify(body) });
+const runUrl = () => `${env.GITHUB_SERVER_URL || "https://github.com"}/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`;
+async function completeCheck(conclusion, title, summary) {
+  if (!env.RELEASE_CHECK_ID) return;
+  const r = await checksWrite("PATCH", `/check-runs/${env.RELEASE_CHECK_ID}`, { status: "completed", conclusion, completed_at: new Date().toISOString(), details_url: runUrl(), output: { title, summary } });
+  if (!r.ok) fail(`could not complete release-check (${r.status})`, "grant the job checks: write");
+}
 // Cancel this run and never return: neither a pass for a commit it cannot certify nor a red failure. The cancel is
 // asynchronous (GitHub documents up to five minutes): wait for the runner to be interrupted, then force-cancel, then fail closed.
 async function cancelRun(why) {
   console.log(`::notice::release check cancelled: ${why}`);
   output("skip", "true"); output("browsers", ""); output("url", "");
+  await completeCheck("neutral", "release-check: nothing certified", `No verdict for this commit: ${why}. This is not a pass.`);
   const base = `${env.GITHUB_API_URL || "https://api.github.com"}/repos/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID || "0"}`;
   const post = (tail) => fetch(`${base}/${tail}`, { method: "POST", headers: { Authorization: `Bearer ${env.GH_TOKEN || env.GITHUB_TOKEN}`, Accept: "application/vnd.github+json" } });
   const sleep = (sec) => new Promise((res) => setTimeout(res, sec * 1000));
@@ -472,19 +484,18 @@ if (cmd === "local") {
   console.log(`preview: ${url} (${short})`);
   output("url", url);
 } else if (cmd === "release") {
-  // The release check (std-release-check.yml): started by a Workers Builds completion on the default branch. The commit under
-  // test is RELEASE_SHA (the check-run's head_sha, or a manual run's input), never GITHUB_SHA, which on a check_run event
-  // is the default branch's tip. Wait for every Workers Builds check on that commit, then name every configured browser
+  // The release check (std-release-check.yml): dispatched before a production promotion. The commit under test is
+  // RELEASE_SHA (the dispatch's sha input), never GITHUB_SHA (the ref's tip). Wait for every Workers Builds check on that commit, then name every configured browser
   // (Chromium and the extras) and the staging URL for the install, e2e and repo-check steps.
   const get = ghApi(), sha = env.RELEASE_SHA || git("rev-parse", "HEAD").trim(), short = sha.slice(0, 7);
   const name = pack.preview?.check_name ?? "Workers Builds";
   // Every Workers Builds check on the commit (one per Worker) must have completed successfully before the suite runs (no
-  // time cap; the job's timeout is the only backstop). The run was started by one of them, so none at all is an error.
+  // time cap; the job's timeout is the only backstop). None at all is an error: staging is not deployed by Workers Builds.
   const wait = Number(env.GATE_PREVIEW_WAIT_S ?? Infinity) * 1000, poll = Number(env.GATE_POLL_S ?? 15) * 1000, start = Date.now();
   let runs;
   for (;;) {
     runs = await buildRuns(get, sha, name);
-    if (!runs.length) fail(`no "${name}" check on ${short}`, "release-check starts from a completed Workers Builds check on the default branch; for a manual run, pass the sha of a commit that has one");
+    if (!runs.length) fail(`no "${name}" check on ${short}`, "release-check is dispatched for a version's commit that has a Workers Builds check; pass the sha of one that does");
     const red = runs.find((c) => c.status === "completed" && !["success", "skipped"].includes(c.conclusion));
     if (red) fail(`Cloudflare build failed for ${short}: ${red.name} ${red.conclusion} (${red.details_url})`, "fix the Worker build on main; staging and the uploaded version come from it");
     if (runs.every((c) => c.status === "completed")) break;
@@ -505,16 +516,32 @@ if (cmd === "local") {
   const sup = await supersededBy(get, sha, pack.preview?.check_name ?? "Workers Builds");
   if (sup) await cancelRun(`superseded during the suite: ${sup.slice(0, 7)} on the default branch deploys staging after ${sha.slice(0, 7)}; its release check covers it`);
   console.log(`release: no later commit deployed staging during ${sha.slice(0, 7)}'s suite`);
+} else if (cmd === "release-start") {
+  // First step after checkout: the dispatched sha must be the exact 40-hex commit and reachable from the default branch (a
+  // version only ever comes from there); then the verdict check-run exists, in_progress, until the report step completes it.
+  const sha = env.RELEASE_SHA ?? "", repo = event.repository?.default_branch || "main";
+  if (!/^[0-9a-f]{40}$/.test(sha)) fail(`release-check needs the version's full 40-character commit sha (got ${JSON.stringify(sha)})`, "dispatch with sha set to the commit's full lowercase hex sha");
+  let reachable = false;
+  try { git("merge-base", "--is-ancestor", sha, `origin/${repo}`); reachable = true; } catch {}
+  if (!reachable) fail(`${sha.slice(0, 7)} is not on the default branch (${repo}); a release-check certifies only a commit that main contains`, "dispatch with the sha of a commit on the default branch");
+  const r = await checksWrite("POST", "/check-runs", { name: "release-check", head_sha: sha, status: "in_progress", started_at: new Date().toISOString(), details_url: runUrl(),
+    output: { title: "release-check running", summary: `The full suite is running against staging for ${sha}.` } });
+  if (!r.ok) fail(`could not create release-check on ${sha.slice(0, 7)} (${r.status})`, "grant the job checks: write");
+  const id = (await r.json()).id;
+  output("check_id", String(id));
+  if (env.GITHUB_ENV) appendFileSync(env.GITHUB_ENV, `RELEASE_CHECK_ID=${id}\n`);
+  console.log(`release-check ${id} in progress on ${sha.slice(0, 7)}`);
 } else if (cmd === "release-report") {
-  // The verdict: the check-run `release-check` on the commit that was built (the workflow's own job check lands on the default branch's tip).
-  const sha = env.RELEASE_SHA || git("rev-parse", "HEAD").trim(), ok = env.RELEASE_JOB_STATUS === "success";
-  const r = await fetch(`${env.GITHUB_API_URL || "https://api.github.com"}/repos/${env.GITHUB_REPOSITORY}/check-runs`, { method: "POST",
-    headers: { Authorization: `Bearer ${env.GH_TOKEN || env.GITHUB_TOKEN}`, Accept: "application/vnd.github+json", "Content-Type": "application/json" },
-    body: JSON.stringify({ name: "release-check", head_sha: sha, status: "completed", conclusion: ok ? "success" : "failure",
-      details_url: `${env.GITHUB_SERVER_URL || "https://github.com"}/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`,
-      output: { title: ok ? "release-check passed" : "release-check failed", summary: `The full suite ${ok ? "passed" : "failed"} against staging for ${sha}.` } }) });
-  if (!r.ok) fail(`could not post release-check on ${sha.slice(0, 7)} (${r.status})`, "grant the job checks: write");
-  console.log(`release-check ${ok ? "success" : "failure"} posted on ${sha.slice(0, 7)}`);
+  // Completes the verdict exactly once: success or failure from the job, cancelled when the job was cancelled. A run that
+  // already completed it as neutral (superseded, nothing to certify) is left as it is.
+  const sha = env.RELEASE_SHA ?? "", s = env.RELEASE_JOB_STATUS;
+  if (!env.RELEASE_CHECK_ID) fail("no release-check to complete", "release-start creates it");
+  const cur = await (await checksWrite("GET", `/check-runs/${env.RELEASE_CHECK_ID}`)).json();
+  if (cur.status === "completed") { console.log(`release-check already ${cur.conclusion} on ${sha.slice(0, 7)}`); process.exit(0); }
+  const conclusion = s === "success" ? "success" : s === "cancelled" ? "cancelled" : "failure";
+  const say = { success: "passed", failure: "failed", cancelled: "was cancelled" }[conclusion];
+  await completeCheck(conclusion, `release-check ${say}`, `The full suite ${say} against staging for ${sha}.${conclusion === "cancelled" ? " This is not a pass." : ""}`);
+  console.log(`release-check ${conclusion} on ${sha.slice(0, 7)}`);
 } else if (cmd === "classify") {
   // Codex cloud has no origin: fall back to a local default branch, then to HEAD itself (uncommitted and untracked
   // files only). Never the branch's upstream: that is usually the pushed feature head, which would hide its changes.

@@ -45,10 +45,9 @@ out=$(OVERLAY=$O apply "$T/x" 2>&1) && why="$why; promotion_browsers accepted"; 
 
 # the workflow: Workers Builds completions on the default branch and manual runs only; install and e2e take the release step's browsers and URL
 trig=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");console.log(y.slice(y.indexOf("\non:"),y.indexOf("\npermissions:")))' "$R/$WF")
-has "check_run:" "$trig" && has "types: [completed]" "$trig" && has "workflow_dispatch" "$trig" && ! has pull_request "$trig" && ! has "push:" "$trig" && ! has "schedule" "$trig" || why="$why; triggers: $trig"
+has "workflow_dispatch:" "$trig" && has "sha:" "$trig" && ! has "check_run" "$trig" && ! has pull_request "$trig" && ! has "push:" "$trig" && ! has "schedule" "$trig" || why="$why; triggers: $trig"
 grep -q 'fetch-depth: 0' "$R/$WF" || why="$why; checkout too shallow to read the parent and the later commits"
-grep -q 'ref: ${{ env.RELEASE_SHA }}' "$R/$WF" && grep -q 'RELEASE_SHA: ${{ github.event.check_run.head_sha || inputs.sha }}' "$R/$WF" || why="$why; the suite does not test the built commit"
-grep -q "github.event.check_run.check_suite.app.slug == 'cloudflare-workers-and-pages' && startsWith(github.event.check_run.name, 'Workers Builds') && github.event.check_run.check_suite.head_branch == github.event.repository.default_branch" "$R/$WF" || why="$why; job not limited to default-branch Workers Builds completions"
+grep -q 'ref: ${{ env.RELEASE_SHA }}' "$R/$WF" && grep -q 'RELEASE_SHA: ${{ inputs.sha }}' "$R/$WF" || why="$why; the suite does not test the built commit"
 grep -q 'GATE_BROWSERS: ${{ steps.release.outputs.browsers }}' "$R/$WF" && grep -q 'GATE_PREVIEW_URL: ${{ steps.release.outputs.url }}' "$R/$WF" || why="$why; e2e not wired to the release step"
 
 # gate.mjs release: waits for this commit's Workers Builds, then names the extra browsers and the staging URL

@@ -1,20 +1,19 @@
 # Managed by the standards pack, shipped to every repository with a Worker and a standards.json staging_url (and to
 # one that names extra browsers). Pull requests run the affected tests in Chromium against their preview; a merge to
-# main deploys the staging Preview and uploads the production version, and the completion of that deploy's Workers
-# Builds check-run (on the default branch) starts this: the repo's FULL suite (e2e and scripts/agent/gate.local.sh),
-# every configured browser, against staging (standards.json staging_url), once per commit, posted as the check-run
-# `release-check` on the commit that was built. The production deploy waits for that check to succeed. A repository
-# whose staging is not deployed by Workers Builds never starts it. The commit under test is the check-run's head_sha,
-# not GITHUB_SHA (the default branch's tip on a check_run event). Never scheduled; the timeout is runaway protection
+# main deploys the staging Preview and uploads the production version. This runs only before a production promotion,
+# the same for every repository: whatever promotes a version (the portal's Releases approval, or the agent deploy) starts
+# it with `workflow_dispatch` and that version's commit as `sha`, and waits for the check-run `release-check` on that
+# commit. It waits for the commit's Workers Builds, then runs the repo's FULL suite (e2e and scripts/agent/gate.local.sh),
+# every configured browser, against staging (standards.json staging_url), and posts the verdict as the check-run
+# `release-check` on that commit. Never started by a push, a check-run or a schedule; the timeout is runaway protection
 # only, not a quality signal. Not a required check.
 name: std-release-check
+run-name: release-check ${{ inputs.sha }}
 on:
-  check_run:
-    types: [completed]
   workflow_dispatch:
     inputs:
       sha:
-        description: "Commit to release-check (a manual rerun)"
+        description: "The version's commit to release-check: its full 40-character lowercase hex sha, reachable from the default branch"
         required: true
 permissions:
   actions: write # cancels the run when a newer commit replaces staging, or there is nothing to certify
@@ -23,24 +22,31 @@ permissions:
 jobs:
   release:
     name: release
-    # only the Cloudflare App's Workers Builds completions on the default branch: any other check-run (or another App's check
-    # of the same name) starts no job (no runner, nothing billed)
-    if: ${{ github.event_name == 'workflow_dispatch' || (github.event.check_run.check_suite.app.slug == '{check_app}' && startsWith(github.event.check_run.name, '{check_name}') && github.event.check_run.check_suite.head_branch == github.event.repository.default_branch) }}
-    # one run per commit: with several Workers the last build completion wins and earlier runs cancel. A job-level group is
-    # taken only by a job that runs, so unrelated check-runs on the same commit cancel nothing.
+    # one run per commit: a second dispatch for the same commit cancels the first
     concurrency:
-      group: std-release-check-${{ github.event.check_run.head_sha || inputs.sha }}
+      group: std-release-check-${{ inputs.sha }}
       cancel-in-progress: true
     env:
-      RELEASE_SHA: ${{ github.event.check_run.head_sha || inputs.sha }}
+      RELEASE_SHA: ${{ inputs.sha }}
     runs-on: ${{ vars.STD_GATE_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 90
     steps:
+      - name: sha
+        # fail fast and plainly before anything is checked out or created
+        run: |
+          case "$RELEASE_SHA" in *[!0123456789abcdef]* | "") bad=1 ;; *) [ "${#RELEASE_SHA}" -eq 40 ] || bad=1 ;; esac
+          if [ -n "${bad:-}" ]; then echo "::error::release-check needs the version's full 40-character lowercase hex commit sha (got '$RELEASE_SHA')"; exit 1; fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.RELEASE_SHA }} # the commit that was built, not the default branch's tip
           fetch-depth: 0 # the parent (what the commit changed) and the later commits (whether one superseded it)
           persist-credentials: false
+      - name: start
+        id: start
+        # the sha must be on the default branch; then the verdict check-run exists, in_progress, on that sha
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/agent/gate.mjs release-start
       - name: package manager
         id: pm
         # the lockfile's package manager caches (pnpm and yarn run through corepack; no cache if that fails)
@@ -84,14 +90,16 @@ jobs:
       - name: still staging
         # runs after a failing suite too: a failure caused by a newer commit's deployment cancels the run (neither a pass nor a
         # red failure for this commit), while a failure with this commit still current stays red
-        if: ${{ !cancelled() && steps.release.outputs.skip != 'true' }}
+        if: ${{ !cancelled() && steps.start.outcome == 'success' && steps.release.outputs.skip != 'true' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/agent/gate.mjs release-verify
       - name: report
-        # the job's own check-run lands on the default branch's tip, so the verdict is posted on the commit that was built
-        if: ${{ !cancelled() && steps.release.outputs.skip != 'true' }}
+        # completes the verdict exactly once (the job's own check lands on the ref's tip): success or failure from the job,
+        # cancelled when the job was cancelled; a run already completed as neutral (superseded, nothing to certify) is left as is
+        if: ${{ always() && steps.start.outputs.check_id != '' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
           RELEASE_JOB_STATUS: ${{ job.status }}
+          RELEASE_CHECK_ID: ${{ steps.start.outputs.check_id }}
         run: node scripts/agent/gate.mjs release-report
