@@ -112,9 +112,9 @@ const must = (a) => { const r = wrangler(a); if (r.status) process.exit(r.status
 // --upload-source-maps (https://developers.cloudflare.com/workers/wrangler/commands/workers/: "--outdir: Output directory for
 // the bundled Worker", "--upload-source-maps: Include source maps when uploading this Worker"), never framework build directories.
 // Org comes from pack.json, the project from the DSN's project id. Without the token this is one notice. Every Sentry request and
-// the sentry-cli run are bounded (RELEASE_SENTRY_TIMEOUT_S, default 120): an expiry or any failure is a warning, and the
-// already-finished release exits 0.
-const SENTRY_MS = Number(env.RELEASE_SENTRY_TIMEOUT_S ?? 120) * 1000;
+// the sentry-cli run are bounded: an expiry or any failure is a warning, and the already-finished release exits 0.
+// The limit is a hang guard only, like the jobs' timeouts: not a setting and not a quality signal.
+const SENTRY_MS = 60_000;
 function sentryPlan(file) {
   const token = env.SENTRY_AUTH_TOKEN;
   if (!token) { console.log("release: Sentry skipped: no SENTRY_AUTH_TOKEN build secret (set it once on the Builds trigger to create Sentry releases)"); return null; }

@@ -38,16 +38,16 @@ if [ -z "$why" ]; then ok release-supporting-workers-first; else fail release-su
 why=""
 cat >"$T/sentry.mjs" <<'JS'
 import { createServer } from "node:http";
-import { appendFileSync, existsSync, writeFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 const [portFile, log] = process.argv.slice(2);
 createServer((req, res) => { let b = ""; req.on("data", (d) => (b += d)); req.on("end", () => {
-  if (existsSync(process.env.SENTRY_STALL)) return; // a stalled Sentry: the request is never answered
+  if (req.headers.authorization === "Bearer stall") return; // a stalled Sentry: the request is never answered
   appendFileSync(log, JSON.stringify({ method: req.method, path: req.url, auth: req.headers.authorization, body: b }) + "\n");
   if (req.url === "/api/0/projects/acme/42/") { res.writeHead(200, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ slug: "site" })); }
   res.writeHead(201, { "Content-Type": "application/json" }); res.end("{}"); }); })
   .listen(0, "127.0.0.1", function () { writeFileSync(portFile, String(this.address().port)); });
 JS
-export SENTRY_STALL=$T/stall; SLOG=$T/sentry-http.log; : >"$SLOG"; node "$T/sentry.mjs" "$T/sentry.port" "$SLOG" & SENTRY_PID=$!
+SLOG=$T/sentry-http.log; : >"$SLOG"; node "$T/sentry.mjs" "$T/sentry.port" "$SLOG" & SENTRY_PID=$!
 for i in $(seq 50); do [ -s "$T/sentry.port" ] && break; sleep 0.1; done
 node -e 'const o=require(process.argv[1]);Object.assign(o,{org:"acme",modules:{error_tracker:true,deploy:true}});o.accounts.error_tracker={kind:"sentry",org:"acme",api_base:"http://127.0.0.1:"+process.argv[3],filer_repo:"acme/filer",alert_workflow:"issues bridge",credential_item:"Tracker token"};require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$ENGINE/examples/overlay.json" "$T/ov-sentry.json" "$(cat "$T/sentry.port")"
 repo sentry "$T/ov-sentry.json"
@@ -94,13 +94,16 @@ if [ -z "$why" ]; then ok release-sentry-toml; else fail release-sentry-toml "$w
 why=""
 : >"$SLOG"; out=$(cd "$R" && FAIL_UPLOAD=site SENTRY_AUTH_TOKEN=tok WORKERS_CI_COMMIT_SHA=$S node scripts/agent/release.mjs main 2>&1); rc=$?
 [ $rc -ne 0 ] && [ ! -s "$SLOG" ] || why="a failed Worker upload still created a Sentry release (exit $rc)"
-touch "$SENTRY_STALL"; start=$SECONDS
-out=$(cd "$R" && RELEASE_SENTRY_TIMEOUT_S=1 SENTRY_AUTH_TOKEN=tok WORKERS_CI_COMMIT_SHA=$S node scripts/agent/release.mjs main 2>&1); rc=$?
-[ $rc -eq 0 ] && has "::warning::Sentry release skipped: timed out after 1s" "$out" && [ $((SECONDS - start)) -lt 25 ] || why="$why; a stalled Sentry API did not end in a warning and exit 0 (exit $rc, $((SECONDS - start))s): $out"
-rm -f "$SENTRY_STALL"
-printf '#!/bin/sh\nexec sleep 30\n' >"$R/node_modules/.bin/sentry-cli"; start=$SECONDS
-out=$(cd "$R" && RELEASE_SENTRY_TIMEOUT_S=1 SENTRY_AUTH_TOKEN=tok WORKERS_CI_COMMIT_SHA=$S node scripts/agent/release.mjs main 2>&1); rc=$?
-[ $rc -eq 0 ] && has "::warning::Sentry source map upload timed out after 1s" "$out" && [ $((SECONDS - start)) -lt 25 ] || why="$why; a stalled sentry-cli did not end in a warning and exit 0 (exit $rc, $((SECONDS - start))s): $out"
+# the limit is a fixed 60-second hang guard (no setting): both stalls run at once, each past it, from two copies of the repository
+R2=$T/sentrybounded2; cp -R "$R" "$R2"; printf '#!/bin/sh\nexec sleep 300\n' >"$R2/node_modules/.bin/sentry-cli"; start=$SECONDS
+(cd "$R" && SENTRY_AUTH_TOKEN=stall WORKERS_CI_COMMIT_SHA=$S node scripts/agent/release.mjs main >"$T/stall-api.out" 2>&1; echo $? >"$T/stall-api.rc") &
+P1=$!
+(cd "$R2" && SENTRY_AUTH_TOKEN=tok WORKERS_CI_COMMIT_SHA=$S node scripts/agent/release.mjs main >"$T/stall-cli.out" 2>&1; echo $? >"$T/stall-cli.rc") &
+P2=$!
+wait $P1 $P2; took=$((SECONDS - start))
+[ "$(cat "$T/stall-api.rc")" = 0 ] && grep -q "::warning::Sentry release skipped: timed out after 60s" "$T/stall-api.out" || why="$why; a stalled Sentry API did not end in a warning and exit 0: $(cat "$T/stall-api.rc") $(cat "$T/stall-api.out")"
+[ "$(cat "$T/stall-cli.rc")" = 0 ] && grep -q "::warning::Sentry source map upload timed out after 60s" "$T/stall-cli.out" || why="$why; a stalled sentry-cli did not end in a warning and exit 0: $(cat "$T/stall-cli.rc") $(cat "$T/stall-cli.out")"
+[ $took -ge 55 ] && [ $took -lt 100 ] || why="$why; the hang guard fired after ${took}s, not at its fixed 60s"
 if [ -z "$why" ]; then ok release-sentry-bounded; else fail release-sentry-bounded "$why"; fi
 
 # ---- a failure part-way through leaves a mixed state: the report says which Workers were updated or uploaded, which were not, and
