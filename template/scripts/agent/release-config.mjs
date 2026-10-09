@@ -182,3 +182,22 @@ export function workerFiles(std, primary = rootFile()) {
     return path;
   });
 }
+
+// The Worker a repository releases and its supporting Workers, resolved the way release.mjs does: from the directory of the
+// primary config, which is the repository root when it has a config there, else a subdirectory Worker (a Workers Builds
+// trigger rooted at workers/<name>). The standards checks use this same resolver. Without release_workers, only a root
+// config is a primary (nothing to resolve); with them, the first directory whose primary resolves every listed config.
+export function releaseContext(std, tracked, top = process.cwd()) {
+  const listed = Array.isArray(std.release_workers) && std.release_workers.length > 0;
+  const configs = (dir) => ["wrangler.json", "wrangler.jsonc", "wrangler.toml"].map((f) => join(dir, f)).find(existsSync) ?? null;
+  if (!listed) { const primary = configs(top); return { dir: top, primary, extras: workerFiles(std, primary) }; }
+  const dirs = [...new Set(tracked.filter((f) => /(^|\/)wrangler\.(jsonc?|toml)$/.test(f) && !/(^|\/)(node_modules|\.wrangler)\//.test(f)).map((f) => resolve(top, dirname(f))))]
+    .sort((a, b) => (a === top ? -1 : b === top ? 1 : a.localeCompare(b)));
+  let first = null;
+  for (const dir of dirs) {
+    const primary = configs(dir);
+    process.chdir(dir);
+    try { return { dir, primary, extras: workerFiles(std, primary) }; } catch (e) { first ??= e; } finally { process.chdir(top); }
+  }
+  throw first ?? new Error("release_workers requires a primary Wrangler config (at the repository root, or in a Worker directory such as workers/<name>)");
+}

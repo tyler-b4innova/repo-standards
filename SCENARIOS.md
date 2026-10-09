@@ -186,6 +186,10 @@ Retired in 0.6.0 with the staged flow: `promote-no-ui-auto`, `promote-ui-needs-h
 
 - **`release-supporting-workers-first`**: `release_workers` deploy before the primary, in their listed order, for the staging deploy and the production upload (the primary binds Durable Objects and Workflows that live on them, so a new class must exist before the primary's deploy needs it).
 
+- **`release-rootless-standards`**: a repository with no root Wrangler config and Workers under `workers/<name>` gets `std-release-check.yml` (with a `staging_url`) and the preview clean-up from apply; `setup.sh --check` and `release.mjs` resolve `release_workers` the same way, from the primary's directory (a subdirectory primary with trigger-relative supporting configs passes the check and releases supporting Worker first); a listed config that does not resolve fails the check.
+
+- **`release-sentry-toml`**: the DSN is found in a `wrangler.toml` Worker as in JSON; the Sentry release is created and source maps uploaded, and a failing source map upload is a warning, never a failed release.
+
 - **`release-sentry`**: with the SENTRY_AUTH_TOKEN build secret and the DSN `sentry-setup` commits in the Worker config, the main release creates the Sentry release for the commit (org from pack.json, project from the DSN's project id) and uploads source maps when sentry-cli and a build output directory exist; without the token it logs one notice; a repository without the DSN is skipped; none of these is an error.
 
 - **`sync-includes-standards-repo`**: sync applies the pack to the overlay's own standards repository like every other repository (only `fleet.exclude` leaves a repository out); a pin pull request there changes only the overlay, and the sync App lands the repository's managed files. Stated rule: no per-repo exceptions.

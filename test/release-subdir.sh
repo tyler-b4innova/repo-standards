@@ -50,6 +50,29 @@ node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split
 [ $rc -eq 0 ] && [ $ord -eq 0 ] || why="order (exit $rc, ordered=$ord): $out $(calls)"
 if [ -z "$why" ]; then ok release-supporting-workers-first; else fail release-supporting-workers-first "$why"; fi
 
+# ---- a rootless repository (no root Wrangler config; Workers under workers/<name>): apply ships the release check, and the standards
+# check and the release resolve the supporting Workers the same way, from the primary's directory
+why=""
+repo rootless
+mkdir -p "$R/workers/api/support" "$R/workers/api/node_modules/.bin" "$R/workers/api/src"; touch "$R/workers/api/node_modules/.bin/wrangler"; echo "export default {};" >"$R/workers/api/src/index.js"
+printf '{ "name": "api", "main": "src/index.js", %s }\n' "$STAGING" >"$R/workers/api/wrangler.jsonc"
+printf '{ "name": "api-support", "main": "../src/index.js", "previews": {}, %s }\n' "$STAGING" >"$R/workers/api/support/wrangler.jsonc"
+node -e 'const fs=require("fs"),o=JSON.parse(fs.readFileSync(process.argv[1]));o.release_workers=["support/wrangler.jsonc"];o.staging_url="https://api-staging.preview.example.com/";fs.writeFileSync(process.argv[1],JSON.stringify(o,null,2))' "$R/standards.json"
+printf 'node_modules/\n.wrangler/\n' >>"$R/.gitignore"
+node bin/repo-standards.mjs apply --target "$R" --overlay "$ENGINE/examples/overlay.json" --version 0.8.4 >/dev/null
+[ -f "$R/.github/workflows/std-release-check.yml" ] && grep -q "  .github/workflows/std-release-check.yml$" "$R/standards.lock" || why="a rootless repo with staging_url did not ship the release check"
+[ -f "$R/.github/workflows/std-preview-cleanup.yml" ] || why="$why; a rootless repo did not ship the preview clean-up"
+commit fixture; S=$(sha)
+out=$(cd "$R" && scripts/agent/setup.sh --check 2>&1); rc=$?
+[ $rc -eq 0 ] || why="$why; setup --check failed for a subdirectory primary with trigger-relative supporting Workers: $out"
+out=$(cd "$R/workers/api" && WORKERS_CI_COMMIT_SHA=$S node ../../scripts/agent/release.mjs main 2>&1); rc=$?
+node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n").map(JSON.parse).filter(x=>x.args);const d=l.filter(x=>x.args[0]==="deploy").map(x=>x.name),u=l.filter(x=>x.args[0]==="versions").map(x=>x.name);process.exit(JSON.stringify(d)===JSON.stringify(["api-support-staging","api-staging"])&&JSON.stringify(u)===JSON.stringify(["api-support","api"])?0:1)' "$RELEASE_LOG"; ord=$?
+[ $rc -eq 0 ] && [ $ord -eq 0 ] || why="$why; the same configuration did not release (exit $rc, ordered=$ord): $out"
+# a listed supporting config that does not resolve from the primary's directory fails the check
+node -e 'const fs=require("fs"),o=JSON.parse(fs.readFileSync(process.argv[1]));o.release_workers=["missing/wrangler.jsonc"];fs.writeFileSync(process.argv[1],JSON.stringify(o,null,2))' "$R/standards.json"; commit broken
+out=$(cd "$R" && scripts/agent/setup.sh --check 2>&1) && why="$why; an unresolvable release_workers entry passed the check"
+if [ -z "$why" ]; then ok release-rootless-standards; else fail release-rootless-standards "$why"; fi
+
 # ---- Sentry: skipped with one notice without SENTRY_AUTH_TOKEN; a release for the commit with it and the DSN sentry-setup commits
 why=""
 cat >"$T/sentry.mjs" <<'JS'
@@ -80,4 +103,23 @@ has "no sentry-cli" "$out" || why="$why; source maps not mentioned: $out"
 out=$(cd "$R" && SENTRY_AUTH_TOKEN=tok WORKERS_CI_COMMIT_SHA=$S node scripts/agent/release.mjs main 2>&1); rc=$?
 [ $rc -eq 0 ] && has "not set up for Sentry" "$out" && [ ! -s "$SLOG" ] || why="$why; a repo without the DSN was not skipped (exit $rc): $out"
 if [ -z "$why" ]; then ok release-sentry; else fail release-sentry "$why"; fi
+
+# ---- a wrangler.toml Worker (the DSN sentry-setup writes there is found too): release created, source maps uploaded or, when the
+# upload fails, a warning and a successful release
+why=""
+repo sentrytoml "$T/ov-sentry.json"
+mkdir -p "$R/node_modules/.bin" "$R/src" "$R/dist"; touch "$R/node_modules/.bin/wrangler"; echo "export default {};" >"$R/src/index.js"; echo '{}' >"$R/dist/app.js.map"
+printf 'name = "site"\nmain = "src/index.js"\n[vars]\nSENTRY_DSN = "https://abc@o1.ingest.sentry.io/42"\n[env.staging]\nroutes = []\nworkers_dev = true\n' >"$R/wrangler.toml"
+printf 'node_modules/\ndist/\n.wrangler/\n' >>"$R/.gitignore"; commit toml; S=$(sha)
+cat >"$R/node_modules/.bin/sentry-cli" <<'SH'
+#!/bin/sh
+echo "sentry-cli $*" >>"$SENTRY_CLI_LOG"
+[ -z "${SENTRY_CLI_FAIL:-}" ]
+SH
+chmod +x "$R/node_modules/.bin/sentry-cli"; export SENTRY_CLI_LOG=$T/cli.log; : >"$SENTRY_CLI_LOG"; : >"$SLOG"
+out=$(cd "$R" && SENTRY_AUTH_TOKEN=tok WORKERS_CI_COMMIT_SHA=$S node scripts/agent/release.mjs main 2>&1); rc=$?
+[ $rc -eq 0 ] && has "Sentry release ${S:0:7} created for acme/site" "$out" && has "Sentry source maps uploaded" "$out" && grep -q "sourcemaps upload --org acme --project site --release $S dist" "$SENTRY_CLI_LOG" || why="TOML release (exit $rc): $out"
+: >"$SENTRY_CLI_LOG"; out=$(cd "$R" && SENTRY_CLI_FAIL=1 SENTRY_AUTH_TOKEN=tok WORKERS_CI_COMMIT_SHA=$S node scripts/agent/release.mjs main 2>&1); rc=$?
+[ $rc -eq 0 ] && has "::warning::Sentry source map upload failed (exit 1); the release exists without them" "$out" && has "versions upload" "$out" || why="$why; a failed source map upload failed the release or was silent (exit $rc): $out"
+if [ -z "$why" ]; then ok release-sentry-toml; else fail release-sentry-toml "$why"; fi
 done_cases

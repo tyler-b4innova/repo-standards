@@ -118,7 +118,7 @@ async function sentryRelease(sha, file) {
   const token = env.SENTRY_AUTH_TOKEN;
   if (!token) { console.log("release: Sentry skipped: no SENTRY_AUTH_TOKEN build secret (set it once on the Builds trigger to create Sentry releases)"); return; }
   const et = json(fileURLToPath(new URL("pack.json", import.meta.url)))?.modules?.error_tracker;
-  const dsn = (() => { try { const v = parse(readFileSync(file, "utf8"))?.vars?.SENTRY_DSN; return typeof v === "string" && /^https:\/\/[^/]+\/\d+$/.test(v) ? v : null; } catch { return null; } })();
+  const dsn = (() => { try { const v = readConfig(file)?.vars?.SENTRY_DSN; return typeof v === "string" && /^https:\/\/[^/]+\/\d+$/.test(v) ? v : null; } catch { return null; } })();
   if (et?.kind !== "sentry" || !et.org || !dsn) { console.log("release: Sentry skipped: this repository is not set up for Sentry (scripts/agent/sentry-setup commits the DSN)"); return; }
   const base = String(et.api_base ?? "https://sentry.io").replace(/\/$/, ""), headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
   try {

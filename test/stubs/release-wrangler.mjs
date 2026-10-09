@@ -20,13 +20,15 @@ for (const [key, value] of Object.entries(loaded)) if (process.env[key] === unde
 const controlledEmpty = Boolean(controlled && existsSync(controlled) && readFileSync(controlled, "utf8") === "");
 let redirected = false;
 const explicitConfig = option("--config") ?? option("-c");
-let file = explicitConfig ?? "wrangler.jsonc";
+let file = explicitConfig ?? (!existsSync("wrangler.jsonc") && existsSync("wrangler.toml") ? "wrangler.toml" : "wrangler.jsonc");
 if (!explicitConfig && existsSync(".wrangler/deploy/config.json")) {
   redirected = true;
   const redirect = ".wrangler/deploy/config.json";
   file = resolve(dirname(redirect), JSON.parse(readFileSync(redirect, "utf8")).configPath);
 }
-let cfg = parse(readFileSync(file, "utf8"));
+let cfg = file.endsWith(".toml")
+  ? JSON.parse(spawnSync("python3", ["-c", "import json,sys,tomllib; print(json.dumps(tomllib.load(open(sys.argv[1], 'rb'))))", file], { encoding: "utf8" }).stdout)
+  : parse(readFileSync(file, "utf8"));
 const stage = option("--env");
 // Wrangler rejects generated-only legacy_env metadata if redirect discovery was bypassed.
 if ("legacy_env" in cfg && !redirected) { console.error("The legacy_env field is no longer supported"); process.exit(1); }
