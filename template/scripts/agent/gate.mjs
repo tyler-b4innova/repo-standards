@@ -20,6 +20,7 @@ if (!ok || args.includes("--help")) {
   console.log(rd(new URL(import.meta.url), "utf8").split("\n").slice(1, 6).map((l) => l.slice(3)).join("\n"));
   process.exit(ok || cmd === "--help" ? 0 : 2);
 }
+const json_ = (t) => { try { return JSON.parse(t); } catch { return null; } };
 const git = (...a) => ex("git", a, { encoding: "utf8", stdio: "pipe" });
 try { process.chdir(git("rev-parse", "--show-toplevel").trim()); } catch {}
 const json = (f) => { try { return JSON.parse(rd(f, "utf8")); } catch { return null; } };
@@ -368,6 +369,35 @@ if (cmd === "local") {
   if (files && args.includes("--local")) files.push(...git("diff", "--name-only", "--no-renames", "HEAD").trim().split("\n").filter(Boolean), ...git("ls-files", "--others", "--exclude-standard").trim().split("\n").filter(Boolean));
   if (!files) fail("instructions: the pull request's base commit is not in this checkout", "check out with fetch-depth: 0 (std-gate.yml does)");
   const bad = new Set(files.filter((f) => INSTRUCTION.some((r) => r.test(f))));
+  // The one change an author may make to AGENTS.md: exactly what the pack's apply generates for this repository at this
+  // head. The BASE commit supplies the renderer (bin/ and everything it imports), the overlay, standards.json and the
+  // template; the pull request supplies exactly one file, template/AGENTS.block.md, read as plain text, so none of its
+  // JavaScript runs. A pull request that adds or changes the renderer or the overlay can never authorise an edit, and a
+  // repository whose base has no renderer (standards.json "overlay" names the overlay apply uses) stays refused. AGENTS.md
+  // and the block file must be regular git blobs (mode 100644): a symlink is refused. The gate runs
+  // PR-supplied scripts, so this guard catches honest mistakes; it is not a security boundary against a crafted pull request.
+  if (bad.has("AGENTS.md")) {
+    const base = prBase(), at = (rev, path) => { try { return git("show", `${rev}:${path}`); } catch { return null; } };
+    const regular = (rev, path) => { try { return /^100644 blob /.test(git("ls-tree", rev, "--", path)); } catch { return false; } };
+    const baseStd = base ? json_(at(base, "standards.json")) : null, baseAgents = base ? at(base, "AGENTS.md") : null;
+    const blockFile = "template/AGENTS.block.md", headBlock = regular("HEAD", blockFile) ? at("HEAD", blockFile) : null;
+    if (base && regular("HEAD", "AGENTS.md") && headBlock !== null && baseAgents !== null && baseStd && typeof baseStd.overlay === "string"
+      && at(base, "bin/repo-standards.mjs") !== null && at(base, baseStd.overlay) !== null) {
+      const dir = mkdtempSync(`${tmpdir()}/agents-render-`);
+      try {
+        spawnSync("mkdir", ["-p", `${dir}/engine`, `${dir}/target`]);
+        // the whole base tree is the engine, template included; only the block file is the pull request's
+        if (spawnSync("sh", ["-c", `git archive ${base} | tar -x -C "${dir}/engine"`]).status === 0) {
+          spawnSync("rm", ["-rf", `${dir}/engine/test`]);
+          writeFileSync(`${dir}/engine/${blockFile}`, headBlock);
+          spawnSync("git", ["init", "-q", `${dir}/target`]);
+          writeFileSync(`${dir}/target/AGENTS.md`, baseAgents); writeFileSync(`${dir}/target/standards.json`, at(base, "standards.json"));
+          const r = spawnSync(process.execPath, [`${dir}/engine/bin/repo-standards.mjs`, "apply", "--target", `${dir}/target`, "--overlay", `${dir}/engine/${baseStd.overlay}`, "--version", baseStd.version], { encoding: "utf8" });
+          if (r.status === 0 && rd(`${dir}/target/AGENTS.md`, "utf8") === at("HEAD", "AGENTS.md")) bad.delete("AGENTS.md");
+        }
+      } finally { rmSync(dir, { recursive: true, force: true }); }
+    }
+  }
   if (files.some((f) => CODEOWNERS.includes(f))) {
     const [before, after] = [ownersBlock(prBase()), ownersBlock("HEAD")];
     if (before.block !== after.block) bad.add(`${after.path ?? before.path} (managed std block${after.path !== before.path ? `, now read from ${after.path ?? "no CODEOWNERS"}` : ""})`);
