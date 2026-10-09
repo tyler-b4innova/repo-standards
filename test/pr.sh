@@ -171,19 +171,12 @@ case "$tip" in *.evidence/*) why="$why; tip tracks .evidence/ after a failed pos
 mut "S.failComments=false"
 if [ -z "$why" ]; then ok no-evidence-on-main; else fail no-evidence-on-main "$why"; fi
 
-# review-round-drafts: review-round turns a ready PR back into a draft and records why (one marked comment naming the head and
-# the reason); ready turns it ready again only when `gate.mjs local` passed on the pushed, clean head. Failures change nothing.
+# ready: turns a draft ready once, and only when `gate.mjs local` passed on the pushed, clean head. Failures change nothing.
 why=""
 git push -q origin HEAD 2>/dev/null
 HEAD_SHA=$(git rev-parse HEAD); GATE=$(git rev-parse --git-path std-local-gate)
-mut "S.pulls[0].draft=false;S.pulls[0].state='open';S.pulls[0].merged=false;S.gqlFail=false;S.issueComments[1]=[]"
+mut "S.pulls[0].draft=true;S.pulls[0].state='open';S.pulls[0].merged=false;S.gqlFail=false"
 draft() { state 'S.pulls[0].draft'; }
-out=$("$PR" review-round 1 "codex: unchecked null in parse" 2>&1) || why="review-round exit $?: $out"
-[ "$(draft)" = true ] || why="$why; review-round left the PR ready"
-c=$(state "S.issueComments[1].filter(c=>c.body.includes('<!-- std:review-round -->')).map(c=>c.body).join('|')")
-case "$c" in *"${HEAD_SHA:0:7}"*"codex: unchecked null in parse"*) ;; *) why="$why; reason/head not recorded: $c" ;; esac
-n=$(lines); out=$("$PR" review-round 1 2>&1) || why="$why; second review-round exit $?"
-[ "$(state 'S.issueComments[1].length')" = 1 ] || why="$why; review-round on a draft posted again"
 # no passing gate: refused, still draft
 rm -f "$GATE"
 out=$("$PR" ready 1 2>&1) && why="$why; ready accepted with no local gate"
@@ -219,9 +212,9 @@ case "$out" in *"head moved"*) ;; *) why="$why; no plain head-moved message: $ou
 [ "$(draft)" = true ] || why="$why; the moved-head PR was left ready"
 mut "S.moveHead=false;S.pulls[0].sha=null"
 # GitHub refusing the toggle is an error, not a silent success
-mut "S.pulls[0].draft=false;S.gqlFail=true"; out=$("$PR" review-round 1 2>&1) && why="$why; refused toggle reported success"
+mut "S.pulls[0].draft=true;S.gqlFail=true"; echo "$HEAD_SHA" >"$GATE"; out=$("$PR" ready 1 2>&1) && why="$why; refused toggle reported success"
 mut "S.gqlFail=false"
 rm -f "$GATE"
-if [ -z "$why" ]; then ok review-round-drafts; else fail review-round-drafts "$why"; fi
+if [ -z "$why" ]; then ok pr-open-verified; else fail pr-open-verified "$why"; fi
 
 done_cases

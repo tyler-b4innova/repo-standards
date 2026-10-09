@@ -88,7 +88,7 @@ jobs:
   # affected e2e, so the setup is paid (and billed) once.
   test:
     needs: checks
-    # skipped when the plan saw a live draft too: a ready run queued before review-round converted the PR
+    # skipped when the plan saw a live draft too: a ready run queued before the PR was converted to draft
     if: needs.checks.outputs.mode == 'full' && needs.checks.outputs.rollback_draft != 'true'
     runs-on: ${{ vars.STD_GATE_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 30
@@ -160,7 +160,7 @@ jobs:
     name: ${{ (github.event.pull_request.draft == true || needs.checks.outputs.rollback_draft == 'true') && 'draft (not gated)' || 'gate' }}
     needs: [checks, test]
     # Skipped for a draft: the event's (a draft push) or the plan's live state (a ready run whose PR was converted to draft
-    # by review-round before plan ran), so neither posts a failing `gate`. Otherwise it runs whatever happened except a run cancelled by a newer one in the
+    # before plan ran), so neither posts a failing `gate`. Otherwise it runs whatever happened except a run cancelled by a newer one in the
     # group, which would post a red gate.
     if: ${{ always() && !cancelled() && github.event.pull_request.draft != true && needs.checks.outputs.rollback_draft != 'true' }}
     runs-on: ${{ vars.STD_GATE_RUNNER || 'ubuntu-24.04' }}

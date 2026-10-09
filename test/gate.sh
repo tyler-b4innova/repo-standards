@@ -176,7 +176,7 @@ assert.match(jobs.checks, /^    if: github\.event\.pull_request\.draft != true$/
 assert.match(jobs.gate, /^    name: \$\{\{ \(github\.event\.pull_request\.draft == true \|\| needs\.checks\.outputs\.rollback_draft == 'true'\) && 'draft \(not gated\)' \|\| 'gate' \}\}$/m, "a draft's gate job is not named gate");
 assert.match(jobs.gate, /^    if: \$\{\{ always\(\) && !cancelled\(\) && github\.event\.pull_request\.draft != true && needs\.checks\.outputs\.rollback_draft != .true. \}\}$/m, "gate is skipped for a draft, never skipped otherwise");
 assert.ok(!y.includes("STD_GATE_DRAFT_PUSHES"), "no draft opt-in knob");
-// a ready run queued before review-round converted the PR: the plan's live draft output skips test and gate and names the gate job
+// a ready run queued before the PR was converted to draft: the plan's live draft output skips test and gate and names the gate job
 assert.match(jobs.test, /^    if: needs\.checks\.outputs\.mode == 'full' && needs\.checks\.outputs\.rollback_draft != 'true'$/m, "test skips on a live draft");
 assert.match(jobs.gate, /^    name: .*needs\.checks\.outputs\.rollback_draft == 'true'\) && 'draft/m, "gate job name follows the plan's live draft");
 assert.match(jobs.test, /needs: checks/);
