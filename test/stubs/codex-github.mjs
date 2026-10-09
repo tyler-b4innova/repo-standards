@@ -30,7 +30,7 @@ const server = createServer((req, res) => {
     if ((m = p.match(/^\/check-runs\/(\d+)$/)) && req.method === "PATCH") { const r = st.runs?.find((x) => x.id === Number(m[1])); Object.assign(r, JSON.parse(raw)); save(); return send(200, r); }
     if ((m = p.match(/^\/check-runs\/(\d+)$/))) return send(200, st.runs?.find((x) => x.id === Number(m[1])) ?? {});
     // compareCommits: the commits after a commit on the branch (newer pushes)
-    if (/^\/compare\/[0-9a-f]+\.\.\.[^/]+$/.test(p)) return send(200, { commits: (st.compareCommits ?? []).map((sha) => ({ sha })) });
+    if (/^\/compare\/[0-9a-f]+\.\.\.[^/]+$/.test(p)) return st.compareFail ? send(503, { message: "Service Unavailable" }) : send(200, { commits: (st.compareCommits ?? []).map((sha) => ({ sha })) });
     if ((m = p.match(/^\/actions\/runs\/(\d+)\/(cancel|force-cancel)$/)) && req.method === "POST") {
       st[m[2] === "cancel" ? "cancelled" : "forced"] = [...(st[m[2] === "cancel" ? "cancelled" : "forced"] ?? []), Number(m[1])]; save();
       return send((m[2] === "cancel" ? st.cancelFail : st.forceFail) ? 403 : 202, {});

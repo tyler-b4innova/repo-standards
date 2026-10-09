@@ -155,7 +155,7 @@ why=""
 git -C "$W" update-ref refs/remotes/origin/main "$(git -C "$W" rev-parse HEAD)"
 SIDE=$(git -C "$W" commit-tree "$(git -C "$W" hash-object -t tree /dev/null)" -m side)
 cstart() { (cd "$W" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_RUN_ID=77 RELEASE_SHA=$1 GITHUB_OUTPUT= GITHUB_ENV=$T/ghenv node scripts/agent/gate.mjs release-start 2>&1); echo "exit=$?"; }
-cdo() { local id=$1 status=$2; shift 2; (cd "$W" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t RELEASE_SHA=$SHA RELEASE_CHECK_ID=$id RELEASE_JOB_STATUS=$status node scripts/agent/gate.mjs "$@" 2>&1); }
+cdo() { local id=$1 suite=$2 verify=$3; shift 3; (cd "$W" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t RELEASE_SHA=$SHA RELEASE_CHECK_ID=$id RELEASE_PRE=${PRE:-success} RELEASE_SUITE=$suite RELEASE_VERIFY=$verify node scripts/agent/gate.mjs "$@" 2>&1); }
 run0() { node -e 'const st=require(process.argv[1]);const r=st.runs?.[Number(process.argv[2])];console.log(r?[r.name,r.head_sha,r.status,r.conclusion??"-"].join(" "):"none")' "$T/state.json" "${1:-0}"; }
 # (d) and (b): run-name, and the checkout is exactly the dispatched sha
 has "run-name: release-check \${{ inputs.sha }}" "$(cat "$W/$WF")" || why="$why; no run-name carrying the sha"
@@ -171,14 +171,22 @@ st '{}'; o=$(cstart abc); has "exit=1" "$o" && has "full 40-character commit sha
 st '{}'; o=$(cstart "$SIDE"); has "exit=1" "$o" && has "is not on the default branch" "$o" && [ "$(run0)" = none ] || why="$why; an off-main sha was accepted: $o"
 # (c) the verdict is created in_progress on the sha, with its id handed to the later steps
 st '{}'; rm -f "$T/ghenv"; o=$(cstart "$SHA"); has "exit=0" "$o" && [ "$(run0)" = "release-check $SHA in_progress -" ] && grep -q "RELEASE_CHECK_ID=1" "$T/ghenv" || why="$why; no in_progress verdict on the sha: $o $(run0)"
-cdo 1 success release-report >/dev/null; [ "$(run0)" = "release-check $SHA completed success" ] || why="$why; success not completed: $(run0)"
-st '{}'; cstart "$SHA" >/dev/null; cdo 1 failure release-report >/dev/null; [ "$(run0)" = "release-check $SHA completed failure" ] || why="$why; failure not completed: $(run0)"
-st '{}'; cstart "$SHA" >/dev/null; cdo 1 cancelled release-report >/dev/null; [ "$(run0)" = "release-check $SHA completed cancelled" ] || why="$why; cancel not completed: $(run0)"
+cdo 1 success success release-report >/dev/null; [ "$(run0)" = "release-check $SHA completed success" ] || why="$why; success not completed: $(run0)"
+st '{}'; cstart "$SHA" >/dev/null; cdo 1 failure success release-report >/dev/null; [ "$(run0)" = "release-check $SHA completed failure" ] || why="$why; failure not completed: $(run0)"
+st '{}'; cstart "$SHA" >/dev/null; cdo 1 cancelled cancelled release-report >/dev/null; [ "$(run0)" = "release-check $SHA completed cancelled" ] || why="$why; cancel not completed: $(run0)"
+# the verdict is computed at report time: success only if pre, the suite and the supersession check all succeeded
+st "{\"compareFail\":true}"; o=$( (cd "$W" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t RELEASE_SHA=$SHA GATE_CANCEL_WAIT_S=0 node scripts/agent/gate.mjs release-verify 2>&1); echo "exit=$?")
+has "exit=1" "$o" && has "503" "$o" || why="$why; release-verify did not fail on an API 503: $o"
+st '{}'; cstart "$SHA" >/dev/null; cdo 1 success failure release-report >/dev/null; [ "$(run0)" = "release-check $SHA completed failure" ] || why="$why; suite green but verify failed was not failure: $(run0)"
+st '{}'; cstart "$SHA" >/dev/null; cdo 1 skipped skipped release-report >/dev/null; [ "$(run0)" = "release-check $SHA completed failure" ] || why="$why; suite skipped was not failure: $(run0)"
+st '{}'; cstart "$SHA" >/dev/null; PRE=failure cdo 1 skipped skipped release-report >/dev/null; [ "$(run0)" = "release-check $SHA completed failure" ] || why="$why; pre failure was not failure: $(run0)"
+st '{}'; cstart "$SHA" >/dev/null; cdo 1 cancelled skipped release-report >/dev/null; [ "$(run0)" = "release-check $SHA completed cancelled" ] || why="$why; suite cancelled was not cancelled: $(run0)"
+st '{}'; cstart "$SHA" >/dev/null; node -e 'const r=require(process.argv[1]).runs[0];process.exit(r.external_id==="77"&&r.details_url.endsWith("/actions/runs/77")?0:1)' "$T/state.json" || why="$why; the check-run does not carry the workflow run id as external_id"
 # superseded: completed as neutral with the reason, never green; the report step then leaves it alone
 st "{\"compareCommits\":[\"$MID\"],\"checksBy\":{\"$MID\":[$OKB]}}"; cstart "$SHA" >/dev/null
 o=$( (cd "$W" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t GITHUB_RUN_ID=77 GATE_CANCEL_WAIT_S=0 GATE_FORCE_WAIT_S=0 RELEASE_SHA=$SHA RELEASE_CHECK_ID=1 GITHUB_OUTPUT= node scripts/agent/gate.mjs release-verify 2>&1); echo "exit=$?")
 [ "$(run0)" = "release-check $SHA completed neutral" ] && node -e 'const r=require(process.argv[1]).runs[0];process.exit(/superseded during the suite/.test(r.output.summary)&&/not a pass/.test(r.output.summary)?0:1)' "$T/state.json" || why="$why; superseded run not neutral with a reason: $(run0) $o"
-cdo 1 success release-report >/dev/null; [ "$(run0)" = "release-check $SHA completed neutral" ] || why="$why; a neutral verdict was overwritten: $(run0)"
+cdo 1 success success release-report >/dev/null; [ "$(run0)" = "release-check $SHA completed neutral" ] || why="$why; a neutral verdict was overwritten: $(run0)"
 if [ -z "$why" ]; then ok release-check-dispatch-contract; else fail release-check-dispatch-contract "$why"; fi
 
 # the verdict is written only by trusted steps: no code from the dispatched commit holds a write token. pre and post run
@@ -219,6 +227,29 @@ git -C "$G" update-ref refs/remotes/origin/main main
 out=$(cd "$G" && RELEASE_SHA=$OFF DEFAULT_BRANCH=main bash -c "$anc" 2>&1) && why="$why; an off-main sha passed the shell check" || has "is not on the default branch" "$out" || why="$why; off-main: [$out]"
 (cd "$G" && RELEASE_SHA=$MAIN DEFAULT_BRANCH=main bash -c "$anc" >/dev/null 2>&1) || why="$why; a main sha was refused by the shell check"
 if [ -z "$why" ]; then ok release-check-trusted-steps; else fail release-check-trusted-steps "$why"; fi
+
+# a consumer's proof (release.mjs verify-release-check): the check-run's external_id is a real workflow run of this workflow,
+# dispatched on the default branch, titled for this sha, and successful; a forged check-run pointing at another sha's run is refused
+why=""
+OTHER=$(printf '9%.0s' $(seq 40))
+vrc() { (cd "$W" && GITHUB_API_URL=$API GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t node scripts/agent/release.mjs verify-release-check "$1" 2>&1); echo "exit=$?"; }
+GOOD="{\"id\":9,\"name\":\"release-check\",\"status\":\"completed\",\"conclusion\":\"success\",\"completed_at\":\"2026-10-09T00:00:00Z\",\"app\":{\"slug\":\"github-actions\"},\"external_id\":\"501\"}"
+run() { printf '{"id":501,"path":".github/workflows/std-release-check.yml","event":"workflow_dispatch","head_branch":"main","status":"completed","conclusion":"success","display_title":"release-check %s",%s}' "$1" "${2:-\"x\":1}"; }
+st "{\"checksBy\":{\"$SHA\":[$GOOD]},\"gateRuns\":[$(run "$SHA")]}"; o=$(vrc "$SHA"); has "exit=0" "$o" && has "verified" "$o" || why="a genuine release-check was refused: $o"
+st "{\"checksBy\":{\"$SHA\":[$GOOD]},\"gateRuns\":[$(run "$OTHER")]}"; o=$(vrc "$SHA"); has "exit=1" "$o" && has "another commit" "$o" || why="$why; a forged check-run pointing at another sha's run was accepted: $o"
+st "{\"checksBy\":{\"$SHA\":[$GOOD]},\"gateRuns\":[$(run "$SHA" '"event":"push"')]}"; o=$(vrc "$SHA"); has "exit=1" "$o" && has "not a workflow_dispatch" "$o" || why="$why; a push-event run was accepted: $o"
+st "{\"checksBy\":{\"$SHA\":[$GOOD]},\"gateRuns\":[$(run "$SHA" '"head_branch":"feat/x"')]}"; o=$(vrc "$SHA"); has "exit=1" "$o" && has "not the default branch" "$o" || why="$why; a feature-branch run was accepted: $o"
+st "{\"checksBy\":{\"$SHA\":[$GOOD]},\"gateRuns\":[$(run "$SHA" '"path":".github/workflows/other.yml"')]}"; o=$(vrc "$SHA"); has "exit=1" "$o" || why="$why; another workflow's run was accepted: $o"
+st "{\"checksBy\":{\"$SHA\":[$GOOD]},\"gateRuns\":[$(run "$SHA" '"conclusion":"failure"')]}"; o=$(vrc "$SHA"); has "exit=1" "$o" || why="$why; an unsuccessful run was accepted: $o"
+st "{\"checksBy\":{\"$SHA\":[{\"id\":9,\"name\":\"release-check\",\"status\":\"completed\",\"conclusion\":\"success\",\"app\":{\"slug\":\"some-other-app\"},\"external_id\":\"501\"}]},\"gateRuns\":[$(run "$SHA")]}"; o=$(vrc "$SHA"); has "exit=1" "$o" || why="$why; another App's check-run was accepted: $o"
+st "{\"checksBy\":{\"$SHA\":[{\"id\":9,\"name\":\"release-check\",\"status\":\"completed\",\"conclusion\":\"success\",\"app\":{\"slug\":\"github-actions\"}}]},\"gateRuns\":[$(run "$SHA")]}"; o=$(vrc "$SHA"); has "exit=1" "$o" || why="$why; a check-run with no run id was accepted: $o"
+st "{\"checksBy\":{\"$SHA\":[]},\"gateRuns\":[]}"; o=$(vrc "$SHA"); has "exit=1" "$o" || why="$why; no release-check was accepted: $o"
+o=$(vrc abc); has "exit=1" "$o" || why="$why; a short sha was accepted"
+# pre refuses a dispatch from any ref but the default branch's
+refstep=$(python3 -c 'import sys,yaml; print([s["run"] for s in yaml.safe_load(open(sys.argv[1]))["jobs"]["pre"]["steps"] if s.get("name")=="ref"][0])' "$W/$WF")
+out=$(GITHUB_REF=refs/heads/feat/x DEFAULT_REF=refs/heads/main bash -c "$refstep" 2>&1) && why="$why; a dispatch from a feature branch passed the ref step" || has "only from the default branch" "$out" || why="$why; [$out]"
+GITHUB_REF=refs/heads/main DEFAULT_REF=refs/heads/main bash -c "$refstep" >/dev/null 2>&1 || why="$why; a dispatch from the default branch was refused"
+if [ -z "$why" ]; then ok release-check-provenance; else fail release-check-provenance "$why"; fi
 
 # the @a11y contract: RELEASE_CHECK=1 reaches the suite only through the release check
 why=""

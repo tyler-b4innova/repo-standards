@@ -79,7 +79,7 @@ async function supersededBy(get, sha, name) {
     if (commits.length < 100) return null;
   }
 }
-// The verdict is the check-run `release-check` on the dispatched commit (the job's own check lands on the ref's tip).
+// The verdict is the check-run `release-check` (its external_id is the workflow run's id: a check-run created through the API joins a check suite that is not the run's) on the dispatched commit (the job's own check lands on the ref's tip).
 // Created in_progress when the job starts (RELEASE_CHECK_ID), completed exactly once: by the report step
 // (success, failure, cancelled), or earlier as neutral with the reason when the run is superseded or has nothing to certify.
 const checksWrite = (method, path, body) => fetch(`${env.GITHUB_API_URL || "https://api.github.com"}/repos/${env.GITHUB_REPOSITORY}${path}`, { method,
@@ -554,7 +554,7 @@ if (cmd === "local") {
   let reachable = false;
   try { git("merge-base", "--is-ancestor", sha, `origin/${repo}`); reachable = true; } catch {}
   if (!reachable) fail(`${sha.slice(0, 7)} is not on the default branch (${repo}); a release-check certifies only a commit that main contains`, "dispatch with the sha of a commit on the default branch");
-  const r = await checksWrite("POST", "/check-runs", { name: "release-check", head_sha: sha, status: "in_progress", started_at: new Date().toISOString(), details_url: runUrl(),
+  const r = await checksWrite("POST", "/check-runs", { name: "release-check", head_sha: sha, status: "in_progress", started_at: new Date().toISOString(), external_id: String(env.GITHUB_RUN_ID ?? ""), details_url: runUrl(),
     output: { title: "release-check running", summary: `The full suite is running against staging for ${sha}.` } });
   if (!r.ok) fail(`could not create release-check on ${sha.slice(0, 7)} (${r.status})`, "grant the job checks: write");
   const id = (await r.json()).id;
@@ -564,11 +564,12 @@ if (cmd === "local") {
 } else if (cmd === "release-report") {
   // Completes the verdict exactly once: success or failure from the job, cancelled when the job was cancelled. A run that
   // already completed it as neutral (superseded, nothing to certify) is left as it is.
-  const sha = env.RELEASE_SHA ?? "", s = env.RELEASE_JOB_STATUS;
+  const sha = env.RELEASE_SHA ?? "";
   if (!env.RELEASE_CHECK_ID) fail("no release-check to complete", "release-start creates it");
   const cur = await (await checksWrite("GET", `/check-runs/${env.RELEASE_CHECK_ID}`)).json();
   if (cur.status === "completed") { console.log(`release-check already ${cur.conclusion} on ${sha.slice(0, 7)}`); process.exit(0); }
-  const conclusion = s === "success" ? "success" : s === "cancelled" ? "cancelled" : "failure";
+  const parts = [env.RELEASE_PRE, env.RELEASE_SUITE, env.RELEASE_VERIFY];
+  const conclusion = parts.includes("cancelled") ? "cancelled" : parts.every((x) => x === "success") ? "success" : "failure";
   const say = { success: "passed", failure: "failed", cancelled: "was cancelled" }[conclusion];
   await completeCheck(conclusion, `release-check ${say}`, `The full suite ${say} against staging for ${sha}.${conclusion === "cancelled" ? " This is not a pass." : ""}`);
   console.log(`release-check ${conclusion} on ${sha.slice(0, 7)}`);
