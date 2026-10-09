@@ -60,10 +60,10 @@ out=$(cd "$R" && WORKERS_CI_COMMIT_SHA=$S node scripts/agent/release.mjs main 2>
 node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n").map(JSON.parse),r=l.find((x)=>x.method==="POST"&&x.path==="/api/0/organizations/acme/releases/");process.exit(r&&r.auth==="Bearer tok"&&JSON.parse(r.body).version===process.argv[2]&&JSON.parse(r.body).projects[0]==="site"?0:1)' "$SLOG" "$S"; posted=$?
 [ $rc -eq 0 ] && has "Sentry release ${S:0:7} created for acme/site" "$out" && [ $posted -eq 0 ] || why="$why; release not created (exit $rc, posted=$posted): $out"
 has "no sentry-cli" "$out" || why="$why; source maps not mentioned: $out"
-# a repository not set up for Sentry (no DSN) is skipped with a notice, not an error
+# a repository not set up for Sentry (no DSN) prints nothing Sentry-related, even with the token set, and is not an error
 (cd "$R" && node -e 'const fs=require("fs"),t=fs.readFileSync("wrangler.jsonc","utf8");fs.writeFileSync("wrangler.jsonc",t.replace(/"vars": \{[^}]*\},/,""))'); commit nodsn; S=$(sha); : >"$SLOG"
 out=$(cd "$R" && SENTRY_AUTH_TOKEN=tok WORKERS_CI_COMMIT_SHA=$S node scripts/agent/release.mjs main 2>&1); rc=$?
-[ $rc -eq 0 ] && has "not set up for Sentry" "$out" && [ ! -s "$SLOG" ] || why="$why; a repo without the DSN was not skipped (exit $rc): $out"
+[ $rc -eq 0 ] && ! printf '%s' "$out" | grep -qE 'Sentry (skipped|release|source)|SENTRY_AUTH_TOKEN|not set up for Sentry' && [ ! -s "$SLOG" ] || why="$why; a repo without the DSN was not skipped (exit $rc): $out"
 if [ -z "$why" ]; then ok release-sentry; else fail release-sentry "$why"; fi
 
 # ---- a wrangler.toml Worker (the DSN sentry-setup writes there is found too): release created, source maps uploaded or, when the
