@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# release.mjs for a Worker with its own config in a subdirectory (the Workers Builds root directory), supporting Workers first, and
-# Sentry releases. Through release.mjs with the stub wrangler.
+# release.mjs: supporting Workers (release_workers) first, and Sentry releases (JSONC and TOML). Through release.mjs with the stub wrangler.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 . test/lib.sh
@@ -22,21 +21,6 @@ sha() { git -C "$R" rev-parse HEAD; }
 calls() { node -e 'const fs=require("fs");const l=fs.readFileSync(process.argv[1],"utf8").trim().split("\n").filter(Boolean).map(JSON.parse).filter(x=>x.args);console.log(l.map(x=>x.args.join(" ")).join("\n"))' "$RELEASE_LOG"; }
 STAGING='"env": { "staging": { "routes": [], "workers_dev": true } }'
 
-# ---- per-Worker configs: the trigger's root directory is workers/api; no root Wrangler config
-why=""
-repo mono
-mkdir -p "$R/workers/api/node_modules/.bin" "$R/workers/api/src"; touch "$R/workers/api/node_modules/.bin/wrangler"
-printf '{ "name": "api", "main": "src/index.js", %s }\n' "$STAGING" >"$R/workers/api/wrangler.jsonc"; echo "export default {};" >"$R/workers/api/src/index.js"
-printf 'node_modules/\n.wrangler/\n' >>"$R/.gitignore"; commit fixture; S=$(sha)
-out=$(cd "$R/workers/api" && WORKERS_CI_COMMIT_SHA=$S node ../../scripts/agent/release.mjs main 2>&1); rc=$?
-c=$(calls)
-[ $rc -eq 0 ] && has "deploy --env staging" "$c" && has "--name api-staging" "$c" && has "versions upload --tag $S" "$c" || why="main from workers/api (exit $rc): $out"
-out=$(cd "$R/workers/api" && WORKERS_CI_BRANCH=feat/x node ../../scripts/agent/release.mjs preview 2>&1); rc=$?
-[ $rc -eq 0 ] && has "preview --name feat-x" "$(calls)" || why="$why; preview from workers/api (exit $rc): $out"
-# from the repository root there is still no Worker to release
-out=$(cd "$R" && node scripts/agent/release.mjs main 2>&1); [ $? -ne 0 ] && has "no wrangler config" "$out" || why="$why; root run did not refuse: $out"
-if [ -z "$why" ]; then ok release-subdir-worker; else fail release-subdir-worker "$why"; fi
-
 # ---- supporting Workers (release_workers) go first, in listed order, then the primary: for the staging deploy and the production upload
 why=""
 repo order
@@ -49,29 +33,6 @@ out=$(cd "$R" && WORKERS_CI_COMMIT_SHA=$S node scripts/agent/release.mjs main 2>
 node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n").map(JSON.parse).filter(x=>x.args);const d=l.filter(x=>x.args[0]==="deploy").map(x=>x.name),u=l.filter(x=>x.args[0]==="versions").map(x=>x.name);process.exit(JSON.stringify(d)===JSON.stringify(["runtime-staging","jobs-staging","app-staging"])&&JSON.stringify(u)===JSON.stringify(["runtime","jobs","app"])?0:1)' "$RELEASE_LOG"; ord=$?
 [ $rc -eq 0 ] && [ $ord -eq 0 ] || why="order (exit $rc, ordered=$ord): $out $(calls)"
 if [ -z "$why" ]; then ok release-supporting-workers-first; else fail release-supporting-workers-first "$why"; fi
-
-# ---- a rootless repository (no root Wrangler config; Workers under workers/<name>): apply ships the release check, and the standards
-# check and the release resolve the supporting Workers the same way, from the primary's directory
-why=""
-repo rootless
-mkdir -p "$R/workers/api/support" "$R/workers/api/node_modules/.bin" "$R/workers/api/src"; touch "$R/workers/api/node_modules/.bin/wrangler"; echo "export default {};" >"$R/workers/api/src/index.js"
-printf '{ "name": "api", "main": "src/index.js", %s }\n' "$STAGING" >"$R/workers/api/wrangler.jsonc"
-printf '{ "name": "api-support", "main": "../src/index.js", "previews": {}, %s }\n' "$STAGING" >"$R/workers/api/support/wrangler.jsonc"
-node -e 'const fs=require("fs"),o=JSON.parse(fs.readFileSync(process.argv[1]));o.release_workers=["support/wrangler.jsonc"];o.staging_url="https://api-staging.preview.example.com/";fs.writeFileSync(process.argv[1],JSON.stringify(o,null,2))' "$R/standards.json"
-printf 'node_modules/\n.wrangler/\n' >>"$R/.gitignore"
-node bin/repo-standards.mjs apply --target "$R" --overlay "$ENGINE/examples/overlay.json" --version 0.8.4 >/dev/null
-[ -f "$R/.github/workflows/std-release-check.yml" ] && grep -q "  .github/workflows/std-release-check.yml$" "$R/standards.lock" || why="a rootless repo with staging_url did not ship the release check"
-[ -f "$R/.github/workflows/std-preview-cleanup.yml" ] || why="$why; a rootless repo did not ship the preview clean-up"
-commit fixture; S=$(sha)
-out=$(cd "$R" && scripts/agent/setup.sh --check 2>&1); rc=$?
-[ $rc -eq 0 ] || why="$why; setup --check failed for a subdirectory primary with trigger-relative supporting Workers: $out"
-out=$(cd "$R/workers/api" && WORKERS_CI_COMMIT_SHA=$S node ../../scripts/agent/release.mjs main 2>&1); rc=$?
-node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n").map(JSON.parse).filter(x=>x.args);const d=l.filter(x=>x.args[0]==="deploy").map(x=>x.name),u=l.filter(x=>x.args[0]==="versions").map(x=>x.name);process.exit(JSON.stringify(d)===JSON.stringify(["api-support-staging","api-staging"])&&JSON.stringify(u)===JSON.stringify(["api-support","api"])?0:1)' "$RELEASE_LOG"; ord=$?
-[ $rc -eq 0 ] && [ $ord -eq 0 ] || why="$why; the same configuration did not release (exit $rc, ordered=$ord): $out"
-# a listed supporting config that does not resolve from the primary's directory fails the check
-node -e 'const fs=require("fs"),o=JSON.parse(fs.readFileSync(process.argv[1]));o.release_workers=["missing/wrangler.jsonc"];fs.writeFileSync(process.argv[1],JSON.stringify(o,null,2))' "$R/standards.json"; commit broken
-out=$(cd "$R" && scripts/agent/setup.sh --check 2>&1) && why="$why; an unresolvable release_workers entry passed the check"
-if [ -z "$why" ]; then ok release-rootless-standards; else fail release-rootless-standards "$why"; fi
 
 # ---- Sentry: skipped with one notice without SENTRY_AUTH_TOKEN; a release for the commit with it and the DSN sentry-setup commits
 why=""

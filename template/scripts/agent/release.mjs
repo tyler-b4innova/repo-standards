@@ -68,13 +68,8 @@ if (cmd === "verify-release-check") {
   fail(`no verified release-check for ${sha.slice(0, 7)}${wrong.length ? `: ${wrong.join("; ")}` : " (none succeeded)"}`, "dispatch std-release-check for the version's commit on the default branch and wait for it to succeed");
 }
 
-// A Workers Builds trigger runs from its root directory. A Worker that keeps its own config there (workers/<name>/wrangler.jsonc)
-// is released from that directory; anywhere else the repository root is used, as before. standards.json is the repository's.
-const here = process.cwd();
-let top = here;
-try { top = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: "pipe" }).trim(); } catch {}
-if (!rootFile() && top !== here) process.chdir(top);
-const std = json(join(top, "standards.json")) ?? {};
+try { process.chdir(execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: "pipe" }).trim()); } catch {}
+const std = json("standards.json") ?? {};
 const configFile = rootFile();
 function config() {
   if (!configFile) fail("no wrangler config (wrangler.jsonc, wrangler.json or wrangler.toml)", "run this from a Worker repository");

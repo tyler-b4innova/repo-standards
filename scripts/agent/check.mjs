@@ -10,7 +10,7 @@ import { rollbackFindings } from "./rollback.mjs";
 import { scan } from "./jsscan.mjs";
 import { localConfig } from "./local.mjs";
 import { claudePins, codexPins } from "./pins.mjs";
-import { verifyGeneratedBuild, releaseContext, readConfig, effectiveConfig, assertStaging, assertReleaseAccounts } from "./release-config.mjs";
+import { verifyGeneratedBuild, workerFiles, readConfig, effectiveConfig, assertStaging, assertReleaseAccounts } from "./release-config.mjs";
 import { findings as stagingFindings, parse as parseWrangler } from "./staging.mjs";
 
 if (process.argv.includes("--help")) {
@@ -393,10 +393,9 @@ else {
     fail(`standards.json secrets is ${JSON.stringify(sec)}`, '{"required": ["NAME", ...], "store": "1password" (our accounts) or "secrets_store" (a client-owned account)}');
   if (![undefined, false].includes(std?.staging)) fail(`standards.json staging is ${JSON.stringify(std.staging)}`, "remove it, or false for a Worker that is not released through staging (previews are still checked)");
   const rootWrangler = ["wrangler.json", "wrangler.jsonc", "wrangler.toml"].find((f) => tracked.includes(f));
-  const hasWorker = tracked.some((f) => /(^|\/)wrangler\.(jsonc?|toml)$/.test(f) && !/(^|\/)(node_modules|\.wrangler)\//.test(f));
   // The release check (std-release-check.yml) ships to every Worker with a staging_url; say why a repository has none.
   if (std?.e2e !== false && !tracked.includes(".github/workflows/std-release-check.yml"))
-    warn(`no release check: ${!hasWorker ? "no Worker (no wrangler config)" : "standards.json has no staging_url"} | fix: ${!hasWorker ? "none needed unless a Worker is added" : "set staging_url to the staging Worker's https URL and re-run sync"}; the production deploy waits for a release-check on the version's commit`);
+    warn(`no release check: ${!rootWrangler ? "no Worker (no root wrangler config)" : "standards.json has no staging_url"} | fix: ${!rootWrangler ? "none needed unless a Worker is added" : "set staging_url to the staging Worker's https URL and re-run sync"}; the production deploy waits for a release-check on the version's commit`);
   // Every production `versions upload` carries `--tag <full commit sha>`: the portal maps a version to its commit, and
   // so to its release-check, through the tag. release.mjs does; a deploy command the repo's own files document must too.
   for (const [where, text] of [["package.json scripts", Object.values(json("package.json")?.scripts ?? {}).join("\n")],
@@ -404,12 +403,11 @@ else {
     if (/\bversions upload\b(?![^\n]*--tag\b)/.test(text)) warn(`${where}: wrangler versions upload without --tag | fix: add --tag "$WORKERS_CI_COMMIT_SHA" (Workers Builds; the full commit SHA) so the portal can tie the version to its release-check`);
   let productionConfigs = [];
   try {
-    // the same resolver release.mjs uses: from the primary's directory (the root, or a workers/<name> trigger root)
-    const context = releaseContext(std ?? {}, tracked), extras = context.extras;
-    productionConfigs = context.primary ? [readConfig(context.primary), ...extras.map(readConfig)] : [];
+    const extras = workerFiles(std ?? {}, rootWrangler ?? null);
+    productionConfigs = rootWrangler ? [readConfig(rootWrangler), ...extras.map(readConfig)] : [];
     if (productionConfigs.length) assertReleaseAccounts(productionConfigs[0], productionConfigs);
     if (extras.length && productionConfigs[0].env?.staging)
-      assertStaging(productionConfigs[0], effectiveConfig(context.primary, true, { redirect: false }), productionConfigs);
+      assertStaging(productionConfigs[0], effectiveConfig(rootWrangler, true, { redirect: false }), productionConfigs);
     for (const file of extras) {
       const cfg = readConfig(file);
       assertStaging(cfg, effectiveConfig(file, true, { redirect: false }), productionConfigs);
