@@ -33,25 +33,31 @@ OPEN='[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"chatgpt-code
 DONE='[{"isResolved":true,"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector"},"url":"u"}]}}]'
 r=""
 chk() { local want=$1 needle=$2 out st; out=$(rv); st=$?; { [ $st -eq "$want" ] && has "$needle" "$out"; } || r="$r [$needle: exit $st: $out]"; }
-st false alice feat "$HEAD1" '✅ **Completed** now' 5 "$DONE" yes "$HEAD1" "$HEAD1"; chk 0 "verdict on ccccccc, no open findings"
+# codex-verdict-required: a completed review on the head with every thread resolved passes; an unresolved thread fails
+st false alice feat "$HEAD1" '✅ **Completed** now' 5 "$DONE" yes "$HEAD1" "$HEAD1"; chk 0 "Codex review complete, no open findings"
 st false alice feat "$HEAD1" '✅ **Completed** now' 5 "$OPEN" yes "$HEAD1" "$HEAD1"; chk 1 "1 unresolved Codex thread"
-# a summary completed before this head was pushed (same short SHA) does not count
-SUMMARY_AT=$(iso 60) st false alice feat "$HEAD1" '✅ **Completed** now' 5 "$DONE" yes "$HEAD1" "$HEAD1"; chk 1 "awaiting a Codex verdict for ccccccc"
-st false alice feat "$OLD" '✅ **Completed** now' 5 "[]" yes "$HEAD1" "$OLD"; chk 1 "awaiting a Codex verdict for ccccccc"
-# a base edit after the verdict (summary or full-SHA review) changes the diff: the verdict no longer counts
-BASE='[{"event":"base_ref_changed","created_at":"'$(iso 1)'"}]'
-TIMELINE=$BASE SUMMARY_AT=$(iso 2) st false alice feat "$HEAD1" '✅ **Completed** now' 5 "$DONE" yes "$HEAD1" "$HEAD1"; chk 1 "awaiting a Codex verdict for ccccccc"
-TIMELINE=$BASE REVIEWS='[{"user":{"login":"chatgpt-codex-connector[bot]","type":"Bot"},"commit_id":"'$HEAD1'","submitted_at":"'$(iso 2)'"}]' st false alice feat "$OLD" '✅ **Completed** now' 5 "$DONE" yes "$HEAD1" "$OLD"; chk 1 "awaiting a Codex verdict for ccccccc"
-TIMELINE=$BASE REVIEWS='[{"user":{"login":"chatgpt-codex-connector[bot]","type":"Bot"},"commit_id":"'$HEAD1'","submitted_at":"'$(iso 0)'"}]' st false alice feat "$OLD" '✅ **Completed** now' 5 "$DONE" yes "$HEAD1" "$OLD"; chk 0 "verdict on ccccccc, no open findings"
-st false alice feat "$HEAD1" '🔄 **Running** since' 5 "[]" yes "$HEAD1" "$OLD"; chk 1 "awaiting a Codex verdict"
-st false alice feat "$OLD" '✅ **Completed** now' 30 "[]" yes "$HEAD1" "$OLD"; chk 1 "no Codex verdict for ccccccc after"
-# a PR with no pull_request gate run (older than std-gate): the head commit and PR dates still start the 20 minutes
-NORUNS=1 st false alice feat "$OLD" '✅ **Completed** now' 30 "[]" yes "$HEAD1" "$OLD"; chk 1 "no Codex verdict for ccccccc after"
+# a review still running is not a review yet; once 20 minutes pass without one the rule fails
+st false alice feat "$OLD" '🔄 **Running** since' 5 "[]" yes "$HEAD1" "$OLD"; chk 1 "awaiting a Codex review"
+st false alice feat none x 30 "[]" yes "$HEAD1" "$OLD"; chk 1 "no Codex review after"
 st true alice feat none x 30 "[]" yes "$HEAD1" "$OLD"; chk 0 "not judged"
 st false alice feat none x 30 "[]" no "$HEAD1" "$OLD"; chk 0 "no Codex reviews on this repo"
 # a pack-sync fallback PR is reviewed like any other (anyone with write access can push to its branch)
-st false 'example-sync[bot]' standards/v1.2.3 none x 30 "[]" yes "$HEAD1" "$OLD"; chk 1 "no Codex verdict for ccccccc"
+st false 'example-sync[bot]' standards/v1.2.3 none x 30 "[]" yes "$HEAD1" "$OLD"; chk 1 "no Codex review after"
 if [ -z "$r" ]; then ok codex-verdict-required; else fail codex-verdict-required "$r"; fi
+# codex-earlier-verdict-passes: the verdict is for an earlier commit and the head was pushed after it (a fix push): all threads resolved passes
+r=""
+SUMMARY_AT=$(iso 60) st false alice feat "$OLD" '✅ **Completed** now' 5 "$DONE" yes "$HEAD1" "$OLD"; chk 0 "Codex review complete, no open findings"
+REVIEWS='[{"user":{"login":"chatgpt-codex-connector[bot]","type":"Bot"},"commit_id":"'$OLD'","submitted_at":"'$(iso 60)'"}]' st false alice feat none x 5 "$DONE" no "$HEAD1" "$OLD"; chk 0 "Codex review complete, no open findings"
+if [ -z "$r" ]; then ok codex-earlier-verdict-passes; else fail codex-earlier-verdict-passes "$r"; fi
+# codex-unresolved-thread-fails: an open Codex thread fails even when the verdict is for an earlier commit
+r=""
+SUMMARY_AT=$(iso 60) st false alice feat "$OLD" '✅ **Completed** now' 5 "$OPEN" yes "$HEAD1" "$OLD"; chk 1 "1 unresolved Codex thread"
+if [ -z "$r" ]; then ok codex-unresolved-thread-fails; else fail codex-unresolved-thread-fails "$r"; fi
+# codex-no-review-pending: no Codex review on a ready PR yet (repo sees Codex reviews elsewhere) stays pending inside 20 minutes
+r=""
+st false alice feat none x 5 "[]" yes "$HEAD1" "$OLD"; chk 1 "awaiting a Codex review"
+if [ -z "$r" ]; then ok codex-no-review-pending; else fail codex-no-review-pending "$r"; fi
+r=""
 
 
 GWF="$R/.github/workflows/std-gate.yml"

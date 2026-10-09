@@ -112,27 +112,17 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.n
     return { state: "failure", description: `UI paths changed (${changed.slice(0, 3).join(", ")}) but no accepted evidence comment`, details: [`UI paths changed: ${changed.join(", ")}`, ...bad.map((b) => `rejected: ${b}`)] };
   }
 
-  // Codex verdict on the current head: its summary comment shows this head as Completed, after the head's push and any
-  // base change, and every Codex thread is resolved. Repositories without Codex reviews, or with codex_review off, are exempt.
+  // Codex review: a completed Codex review exists for some commit of this PR (its summary comment shows Completed, or it
+  // submitted a review), and every Codex thread is resolved (resolved means answered). Fix pushes are not re-reviewed, so
+  // the head and push time do not matter. Repositories without Codex reviews, or with codex_review off, are exempt.
   async function codex() {
     if (std.codex_review === false || pack.codex_review === false) return { state: "success", description: "Codex review off for this repo" };
     const bot = (u) => /codex/i.test(u?.login ?? "") && u?.type === "Bot", MARK = "<!-- codex-pull-request-review-summary -->";
     const comments = await all(`${R}/issues/${n}/comments`);
     const summary = comments.filter((c) => bot(c.user) && c.body?.includes(MARK)).at(-1);
     const row = summary?.body.match(/\|[^|\n]*Code Review[^|\n]*\|([^|\n]*)\|\s*`([0-9a-f]{7,40})`\s*\|/i);
-    // The head's push time is server-recorded (its first pull_request gate run); the latest base change moves it.
-    const timeline = await all(`${R}/issues/${n}/timeline`);
-    const at = (ev) => timeline.filter((e) => e.event === ev).map((e) => Date.parse(e.created_at));
-    const baseAt = Math.max(0, ...at("base_ref_changed"));
-    const runs = (await api("GET", `${R}/actions/runs?head_sha=${head}&event=pull_request&per_page=100`))?.workflow_runs ?? [];
-    // Without a pull_request gate run (a PR older than std-gate), the head commit's date and the PR's creation stand in,
-    // so the 20 minutes still run out instead of restarting at every evaluation.
-    const commitAt = runs.length ? 0 : Date.parse((await api("GET", `${R}/commits/${head}`))?.commit?.committer?.date ?? 0) || 0;
-    const firstRun = runs.length ? Math.min(...runs.map((r) => Date.parse(r.created_at))) : Math.max(Date.parse(pr.created_at ?? 0) || 0, commitAt);
-    const pushedAt = Math.max(Math.min(firstRun || now, now), baseAt);
     const reviews = await all(`${R}/pulls/${n}/reviews`);
-    const reviewed = (row && head.startsWith(row[2]) && /Completed/i.test(row[1]) && Date.parse(summary.updated_at) >= pushedAt)
-      || reviews.some((r) => bot(r.user) && r.commit_id === head && Date.parse(r.submitted_at) >= baseAt);
+    const reviewed = (row && /Completed/i.test(row[1])) || reviews.some((r) => bot(r.user));
     if (!summary && !reviewed) {
       // Codex skips drafts and may skip bot PRs, so sample up to 20 recent ready PRs by people.
       let seen = false;
@@ -152,10 +142,13 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.n
       }
       const open = threads.filter((t) => !t.isResolved && /codex/i.test(t.comments.nodes[0]?.author?.login ?? ""));
       if (open.length) return { state: "failure", description: `${open.length} unresolved Codex thread(s): fix each or reply why, then resolve`, details: open.map((t) => `open: ${t.comments.nodes[0].url}`) };
-      return { state: "success", description: `Codex verdict on ${short(head)}, no open findings` };
+      return { state: "success", description: "Codex review complete, no open findings" };
     }
-    const since = Math.max(pushedAt, ...at("ready_for_review")), mins = Math.floor((now - since) / 60000);
-    if (mins < 20) return { state: "pending", description: `awaiting a Codex verdict for ${short(head)} (${mins} min)` };
-    return { state: "failure", description: `no Codex verdict for ${short(head)} after ${mins} min; request a review` };
+    // Waiting counts from the PR's creation or its last ready_for_review.
+    const timeline = await all(`${R}/issues/${n}/timeline`);
+    const readyAt = timeline.filter((e) => e.event === "ready_for_review").map((e) => Date.parse(e.created_at));
+    const since = Math.max(Date.parse(pr.created_at ?? 0) || 0, ...readyAt), mins = Math.floor((now - since) / 60000);
+    if (mins < 20) return { state: "pending", description: `awaiting a Codex review (${mins} min)` };
+    return { state: "failure", description: `no Codex review after ${mins} min; request a review` };
   }
 }

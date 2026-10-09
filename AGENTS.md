@@ -10,6 +10,7 @@
 - One concern per PR. Issues only for actionable defects or deliberate work, related work grouped in one.
 - Visuals (screenshots, video) are for the people reviewing the PR, in GitHub or the portal, like Cursor's visual PRs; never a test, never compared. Show what the issue asked to see: a video when it moves, before/after for a static change (`std-evidence`).
 - Tests: end-to-end through the real entry point; unit tests only for pure logic with a failure history. Never mock what you own; every test must be able to fail. Run the smallest proof; `gate` runs the rest.
+- One review per PR: the GitHub Codex review. Fix real findings in one push, answer the rest, resolve; fixes are not re-reviewed.
 - Answer every bot finding (fix it or reply why), then resolve the thread.
 - Never commit plans, notes, scratch, decision records, secrets, `.mcp.json`, `.env`, `.dev.vars`, `*.pem` or `.evidence/` on main.
 - Managed paths change only upstream (`setup.sh --check` names drift; `scripts/agent/gate.local.sh` is yours). Cloud setup calls `scripts/agent/setup.sh`; a missing path there breaks cloud tasks.
