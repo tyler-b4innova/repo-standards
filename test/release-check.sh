@@ -161,7 +161,7 @@ run0() { node -e 'const st=require(process.argv[1]);const r=st.runs?.[Number(pro
 has "run-name: release-check \${{ inputs.sha }}" "$(cat "$W/$WF")" || why="$why; no run-name carrying the sha"
 has 'ref: ${{ env.RELEASE_SHA }}' "$(cat "$W/$WF")" || why="$why; the checkout is not the dispatched sha"
 # (a) the workflow's own first step rejects anything but 40 lowercase hex, plainly
-check_step=$(awk '/- name: sha/{f=1;next} f&&/- uses:/{exit} f&&/^        run: \|/{r=1;next} f&&r' "$W/$WF" | sed 's/^          //')
+check_step=$(awk '/- name: sha$/{f=1;next} f&&/^      - /{exit} f&&/^        run: \|/{r=1;next} f&&r' "$W/$WF" | sed 's/^          //')
 for bad in "" abc "$(printf 'A%.0s' $(seq 40))" "${SHA:0:39}" "${SHA}0" "main"; do
   out=$(RELEASE_SHA=$bad bash -c "$check_step" 2>&1) && why="$why; sha '$bad' accepted" || has "full 40-character lowercase hex commit sha" "$out" || why="$why; sha '$bad': [$out]"
 done
