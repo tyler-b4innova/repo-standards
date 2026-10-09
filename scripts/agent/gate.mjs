@@ -370,24 +370,30 @@ if (cmd === "local") {
   if (!files) fail("instructions: the pull request's base commit is not in this checkout", "check out with fetch-depth: 0 (std-gate.yml does)");
   const bad = new Set(files.filter((f) => INSTRUCTION.some((r) => r.test(f))));
   // The one change an author may make to AGENTS.md: exactly what the pack's apply generates for this repository at this
-  // head. Nothing the pull request controls renders it: the renderer (bin/ and everything it imports), the overlay and
-  // standards.json come from the trusted BASE commit, and only the pull request's template/ is read, as data. A pull
-  // request that adds or changes the renderer or the overlay therefore can never authorise an AGENTS.md edit, and a
-  // repository whose base has no renderer (standards.json "overlay" names the overlay apply uses) stays refused.
+  // head. The BASE commit supplies the renderer (bin/ and everything it imports), the overlay, standards.json and the
+  // template; the pull request supplies exactly one file, template/AGENTS.block.md, read as plain text, so none of its
+  // JavaScript runs. A pull request that adds or changes the renderer or the overlay can never authorise an edit, and a
+  // repository whose base has no renderer (standards.json "overlay" names the overlay apply uses) stays refused. AGENTS.md
+  // and the block file must be regular git blobs (mode 100644): a symlink is refused. The gate runs
+  // PR-supplied scripts, so this guard catches honest mistakes; it is not a security boundary against a crafted pull request.
   if (bad.has("AGENTS.md")) {
     const base = prBase(), at = (rev, path) => { try { return git("show", `${rev}:${path}`); } catch { return null; } };
+    const regular = (rev, path) => { try { return /^100644 blob /.test(git("ls-tree", rev, "--", path)); } catch { return false; } };
     const baseStd = base ? json_(at(base, "standards.json")) : null, baseAgents = base ? at(base, "AGENTS.md") : null;
-    if (base && baseAgents !== null && baseStd && typeof baseStd.overlay === "string" && at(base, "bin/repo-standards.mjs") !== null && at(base, baseStd.overlay) !== null) {
+    const blockFile = "template/AGENTS.block.md", headBlock = regular("HEAD", blockFile) ? at("HEAD", blockFile) : null;
+    if (base && regular("HEAD", "AGENTS.md") && headBlock !== null && baseAgents !== null && baseStd && typeof baseStd.overlay === "string"
+      && at(base, "bin/repo-standards.mjs") !== null && at(base, baseStd.overlay) !== null) {
       const dir = mkdtempSync(`${tmpdir()}/agents-render-`);
       try {
-        const unpack = (rev, paths) => { const r = spawnSync("sh", ["-c", `git archive ${rev} ${paths} | tar -x -C "${dir}/engine"`]); return r.status === 0; };
         spawnSync("mkdir", ["-p", `${dir}/engine`, `${dir}/target`]);
-        // the base tree is the renderer; its template/ is replaced by the pull request's, which is data to render
-        if (unpack(base, "") && (spawnSync("rm", ["-rf", `${dir}/engine/template`, `${dir}/engine/test`]), unpack("HEAD", "template"))) {
+        // the whole base tree is the engine, template included; only the block file is the pull request's
+        if (spawnSync("sh", ["-c", `git archive ${base} | tar -x -C "${dir}/engine"`]).status === 0) {
+          spawnSync("rm", ["-rf", `${dir}/engine/test`]);
+          writeFileSync(`${dir}/engine/${blockFile}`, headBlock);
           spawnSync("git", ["init", "-q", `${dir}/target`]);
           writeFileSync(`${dir}/target/AGENTS.md`, baseAgents); writeFileSync(`${dir}/target/standards.json`, at(base, "standards.json"));
           const r = spawnSync(process.execPath, [`${dir}/engine/bin/repo-standards.mjs`, "apply", "--target", `${dir}/target`, "--overlay", `${dir}/engine/${baseStd.overlay}`, "--version", baseStd.version], { encoding: "utf8" });
-          if (r.status === 0 && rd(`${dir}/target/AGENTS.md`, "utf8") === rd("AGENTS.md", "utf8")) bad.delete("AGENTS.md");
+          if (r.status === 0 && rd(`${dir}/target/AGENTS.md`, "utf8") === at("HEAD", "AGENTS.md")) bad.delete("AGENTS.md");
         }
       } finally { rmSync(dir, { recursive: true, force: true }); }
     }
