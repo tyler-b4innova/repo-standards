@@ -78,4 +78,31 @@ o=$( (cd "$R" && GITHUB_EVENT_PATH= node scripts/agent/gate.mjs instructions) 2>
 blk=$(awk '/- name: instructions/{f=1} f&&/- name: secrets/{exit} f' "$R/.github/workflows/std-gate.yml")
 has "gate.mjs instructions" "$blk" && ! has "if:" "$blk" && grep -B 4 -- '- name: instructions' "$R/.github/workflows/std-gate.yml" | grep -q 'setup.sh --check' || why="$why; workflow step: $blk"
 if [ -z "$why" ]; then ok gate-instructions-exempt-sync-retro; else fail gate-instructions-exempt-sync-retro "$why"; fi
+# A change to AGENTS.md is allowed only when it is exactly what the pack's apply generates at the PR's head (the template
+# under review rendered over the base file); the same rule in every repository that carries the engine and names its overlay.
+why=""
+E=$(mktemp -d "$T/e.XXXXXX"); git -C "$E" init -q -b main
+for f in bin lib template defaults.json examples package.json; do cp -R "$ENGINE/$f" "$E/"; done
+node "$E/bin/repo-standards.mjs" apply --target "$E" --overlay "$E/examples/overlay.json" --version 0.1.0 >/dev/null
+node -e 'const fs=require("fs"),o=JSON.parse(fs.readFileSync("'"$E"'/standards.json"));o.overlay="examples/overlay.json";fs.writeFileSync("'"$E"'/standards.json",JSON.stringify(o,null,2)+"\n")'
+gc -C "$E" add -A && gc -C "$E" commit -qm base; EBASE=$(git -C "$E" rev-parse HEAD)
+# variant <name> <shell in the repo>: a feature commit on top of the base, then the instructions step as a person's PR
+variant() { # variant <want exit> <label> <changes>
+  local R; R=$(mktemp -d "$T/v.XXXXXX"); cp -R "$E/." "$R/"
+  (cd "$R" && eval "$3") && gc -C "$R" add -A && gc -C "$R" commit -qm change
+  printf '{"pull_request":{"number":7,"user":{"login":"alice"},"base":{"sha":"%s","ref":"main"},"head":{"sha":"%s","ref":"feat"}}}' "$EBASE" "$(git -C "$R" rev-parse HEAD)" >"$R/.git/event.json"
+  local o s; o=$(cd "$R" && GITHUB_EVENT_PATH=$R/.git/event.json node scripts/agent/gate.mjs instructions 2>&1); s=$?
+  [ "$s" -eq "$1" ] || why="$why; $2 (exit $s): $o"
+}
+RENDER='echo "- A rule added to the template under review." >> template/AGENTS.block.md && node bin/repo-standards.mjs apply --target . --overlay examples/overlay.json --version 0.1.0 >/dev/null'
+variant 0 "regenerated block" "$RENDER"
+# nothing the pull request controls may render: a changed renderer, or a changed or redirected overlay, authorises nothing
+variant 1 "a fake renderer" "printf 'process.argv.includes(\"apply\")&&require(\"fs\").writeFileSync(process.argv[process.argv.indexOf(\"--target\")+1]+\"/AGENTS.md\",require(\"fs\").readFileSync(\"AGENTS.md\",\"utf8\"));\n' > bin/repo-standards.mjs && echo '- crafted' >> AGENTS.md"
+variant 1 "a changed overlay" "node -e 'const fs=require(\"fs\"),o=JSON.parse(fs.readFileSync(\"examples/overlay.json\"));o.profiles.internal.block_lines=[\"- crafted by the overlay\"];fs.writeFileSync(\"examples/overlay.json\",JSON.stringify(o,null,2))' && node bin/repo-standards.mjs apply --target . --overlay examples/overlay.json --version 0.1.0 >/dev/null"
+variant 1 "a redirected overlay" "node -e 'const fs=require(\"fs\"),o=JSON.parse(fs.readFileSync(\"examples/overlay.json\"));o.profiles.internal.block_lines=[\"- crafted\"];fs.writeFileSync(\"evil.json\",JSON.stringify(o));const s=JSON.parse(fs.readFileSync(\"standards.json\"));s.overlay=\"evil.json\";fs.writeFileSync(\"standards.json\",JSON.stringify(s))' && node bin/repo-standards.mjs apply --target . --overlay evil.json --version 0.1.0 >/dev/null"
+variant 1 "regenerated block plus a hand line" "$RENDER && echo '- extra' >> AGENTS.md"
+variant 1 "hand edit inside the block" "sed -i.bak 's/^- Silo:/- Silo (edited):/' AGENTS.md && rm AGENTS.md.bak"
+variant 1 "hand edit outside the block" "echo '- outside' >> AGENTS.md"
+variant 1 "block edited without the template changing" "sed -i.bak 's/^- Done = /- Done (edited) = /' AGENTS.md && rm AGENTS.md.bak"
+if [ -z "$why" ]; then ok gate-instructions-regenerated-block; else fail gate-instructions-regenerated-block "$why"; fi
 done_cases
