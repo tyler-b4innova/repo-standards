@@ -184,6 +184,16 @@ Retired in 0.6.0 with the staged flow: `promote-no-ui-auto`, `promote-ui-needs-h
 - **`pr-status-done`**: `DONE` only when the PR is open or merged, closes an issue, `gate` is green on the head SHA, and every review thread is resolved (the org rulesets require it); an unreadable thread list is not DONE.
 - **`pr-resolve-thread`**: `pr.sh resolve <pr> <comment-id>` resolves only the review thread holding that comment, following thread and comment pages and matching REST ids past GraphQL's Int (`fullDatabaseId`), and fails naming an id no thread holds.
 - **`sync-lands-without-gate`**: a pack landing runs no gate (the engine's own CI is the release gate): sync commits on the default head, checks the tree offline, and fast-forwards the default branch with no branch, PR or workflow run. The default branch moving first costs one re-apply, then it lands. A repository still on the retired staged flow, by its `standards.json` or by the org's `flow` property, gets a PR for a person naming the migration instead of a landing. Incident: each fleet roll ran every repository's gate twice (about 60 billed minutes).
+- **`release-supporting-workers-first`**: `release_workers` deploy before the primary, in their listed order, for the staging deploy and the production upload (the primary binds Durable Objects and Workflows that live on them, so a new class must exist before the primary's deploy needs it).
+
+- **`release-sentry-toml`**: the DSN is found in a `wrangler.toml` Worker as in JSON; the Sentry release is created and source maps uploaded, and a failing source map upload is a warning, never a failed release.
+
+- **`release-partial-failure`**: when a later Worker fails during the main release, the build log reports the mixed state (which Workers' staging deploys and production uploads, with version ids, completed and which did not) and that re-running the build does them all again; nothing is restored or rolled back automatically; a complete release prints no such report.
+
+- **`release-sentry-bounded`**: Sentry work comes after the Worker uploads (a failed upload creates no Sentry release) and is bounded: a stalled Sentry API or sentry-cli ends in a warning and the finished release exits 0.
+
+- **`release-sentry`**: with the SENTRY_AUTH_TOKEN build secret and the DSN `sentry-setup` commits in the Worker config, the main release creates the Sentry release for the commit (org from pack.json, project from the DSN's project id) and uploads source maps when sentry-cli and a build output directory exist; without the token it logs one notice; a repository without the DSN prints nothing Sentry-related; none of these is an error.
+
 - **`sync-includes-standards-repo`**: sync applies the pack to the overlay's own standards repository like every other repository (only `fleet.exclude` leaves a repository out); a pin pull request there changes only the overlay, and the sync App lands the repository's managed files. Stated rule: no per-repo exceptions.
 
 - **`sync-lists-off-fleet`**: a fleet run lists each organization repository with no `standards.json` in the compliance issue as "not in fleet" and writes nothing to it; excluded, archived, other-pack and other-org repositories stay off the table. Incident: repositories outside the standards were skipped silently, so nobody saw they were missing.

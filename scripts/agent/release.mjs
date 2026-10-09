@@ -9,9 +9,10 @@
 // required secret fails the build. Secret values are never printed.
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parse, findings as stagingFindings, resourceFindings } from "./staging.mjs";
 import { build, rootFile, readConfig, effectiveConfig, assertStaging, assertReleaseAccounts, workerFiles, buildProductionConfigs } from "./release-config.mjs";
 
@@ -105,6 +106,42 @@ const wrangler = (a, { capture = false } = {}) => {
 };
 const must = (a) => { const r = wrangler(a); if (r.status) process.exit(r.status); };
 
+// Sentry: when the build has the SENTRY_AUTH_TOKEN secret and the repo was set up with sentry-setup (the public DSN it commits
+// is in the Worker config), create the release for the commit after the Worker uploads succeeded and upload the source maps of
+// the primary's final bundle: its production `versions upload` writes the bundle and maps to a clean --outdir with
+// --upload-source-maps (https://developers.cloudflare.com/workers/wrangler/commands/workers/: "--outdir: Output directory for
+// the bundled Worker", "--upload-source-maps: Include source maps when uploading this Worker"), never framework build directories.
+// Org comes from pack.json, the project from the DSN's project id. A repository not set up for Sentry prints nothing; one set up but without the token prints one notice. Every Sentry request and
+// the sentry-cli run are bounded (RELEASE_SENTRY_TIMEOUT_S, default 60): an expiry or any failure is a warning, and the
+// already-finished release exits 0.
+const SENTRY_MS = Number(env.RELEASE_SENTRY_TIMEOUT_S ?? 60) * 1000;
+function sentryPlan(file) {
+  const et = json(fileURLToPath(new URL("pack.json", import.meta.url)))?.modules?.error_tracker;
+  const dsn = (() => { try { const v = readConfig(file)?.vars?.SENTRY_DSN; return typeof v === "string" && /^https:\/\/[^/]+\/\d+$/.test(v) ? v : null; } catch { return null; } })();
+  if (et?.kind !== "sentry" || !et.org || !dsn) return null; // not set up for Sentry: nothing Sentry-related is printed
+  const token = env.SENTRY_AUTH_TOKEN;
+  if (!token) { console.log("release: Sentry skipped: no SENTRY_AUTH_TOKEN build secret (set it once on the Builds trigger to create Sentry releases)"); return null; }
+  return { token, org: et.org, dsn, base: String(et.api_base ?? "https://sentry.io").replace(/\/$/, "") };
+}
+async function sentryRelease(sha, plan, outdir) {
+  const { token, org, dsn, base } = plan, headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+  const call = (path, init) => fetch(`${base}${path}`, { ...init, headers, signal: AbortSignal.timeout(SENTRY_MS) });
+  try {
+    const projectId = dsn.split("/").pop(), pr = await call(`/api/0/projects/${org}/${projectId}/`);
+    if (!pr.ok) throw new Error(`project ${projectId}: ${pr.status}`);
+    const project = (await pr.json()).slug;
+    const rel = await call(`/api/0/organizations/${org}/releases/`, { method: "POST", body: JSON.stringify({ version: sha, projects: [project] }) });
+    await rel.text();
+    if (!rel.ok && rel.status !== 208) throw new Error(`create release: ${rel.status}`);
+    console.log(`release: Sentry release ${sha.slice(0, 7)} created for ${org}/${project}`);
+    const cli = ["node_modules/.bin/sentry-cli"].find(existsSync);
+    const maps = outdir && existsSync(outdir) ? readdirSync(outdir, { recursive: true }).some((f) => String(f).endsWith(".map")) : false;
+    if (!cli || !maps) { console.log("release: Sentry: no sentry-cli in node_modules or no source maps in Wrangler's bundle; source maps not uploaded"); return; }
+    const r = spawnSync(cli, ["sourcemaps", "upload", "--org", org, "--project", project, "--release", sha, outdir], { stdio: "inherit", env: { ...env, SENTRY_URL: base }, timeout: SENTRY_MS, killSignal: "SIGKILL" });
+    console.log(r.status === 0 ? "release: Sentry source maps uploaded" : r.error?.code === "ETIMEDOUT" || r.signal ? `::warning::Sentry source map upload timed out after ${SENTRY_MS / 1000}s; the release exists without them` : `::warning::Sentry source map upload failed (exit ${r.status ?? 1}); the release exists without them`);
+  } catch (e) { console.log(`::warning::Sentry release skipped: ${e.name === "TimeoutError" || e.name === "AbortError" ? `timed out after ${SENTRY_MS / 1000}s` : e.message}`); }
+}
+
 const secrets = std.secrets && typeof std.secrets === "object" ? std.secrets : {};
 // Required: standards.json secrets.required and the wrangler config's own secrets.required.
 const wranglerRequired = (() => { const c = configFile && !configFile.endsWith(".toml") ? parse(readFileSync(configFile, "utf8")) : null; return Array.isArray(c?.secrets?.required) ? c.secrets.required : []; })();
@@ -180,6 +217,20 @@ function secretCheck(what, a, namesRequired = required) {
   console.log(`release: ${what} has its ${namesRequired.length} required secret(s)`);
 }
 
+// What a main release has changed so far. A later failure leaves the release mixed (some Workers updated, some not); the report on
+// exit says which, and that a re-run deploys and uploads them all again. Nothing is restored or rolled back automatically.
+const state = { stagingPlan: [], staged: [], productionPlan: [], uploaded: [], done: false };
+process.on("exit", (code) => {
+  if (!code || state.done || !(state.staged.length || state.uploaded.length)) return;
+  const list = (a) => (a.length ? a.join(", ") : "none");
+  console.log(`::error::release incomplete: Workers are in a mixed state
+  staging updated: ${list(state.staged)}
+  staging not updated: ${list(state.stagingPlan.filter((n) => !state.staged.includes(n)))}
+  production uploaded: ${list(state.uploaded.map((u) => `${u.name} (version ${u.id})`))}
+  production not uploaded: ${list(state.productionPlan.filter((n) => !state.uploaded.some((u) => u.name === n)))}
+  Re-running the build deploys and uploads all of them again; nothing was restored or rolled back.`);
+});
+
 async function deploy() {
   // The secrets file goes with its directory on every exit, including a failed step's process.exit.
   const dir = mkdtempSync(join(tmpdir(), "release-"));
@@ -214,13 +265,17 @@ async function deploy() {
     if (staged) build(std, pkg, true);
     // Validate every staging target before deploying any of them. Secondary explicit configs
     // bypass the primary adapter redirect, exactly as Wrangler -c does.
-    const targets = [...(staged ? [{ file: configFile, cfg, primary: true }] : []), ...extras].map((worker) => {
+    // Supporting Workers (release_workers) go first, in their listed order, then the primary: the primary binds Durable Objects and
+    // Workflows that live on them, so a new class must exist there before the primary's deploy needs it.
+    const targets = [...extras, ...(staged ? [{ file: configFile, cfg, primary: true }] : [])].map((worker) => {
       const resolved = effectiveConfig(worker.file, true, { redirect: Boolean(worker.primary) });
       const name = assertStaging(worker.cfg, resolved, productionConfigs);
       const configArgs = resolved.redirected ? [] : ["--config", resolved.file];
       const names = worker.primary ? required : [...new Set((Array.isArray(worker.cfg.secrets?.required) ? worker.cfg.secrets.required : []).filter((name) => typeof name === "string" && name))];
       return { ...worker, resolved, name, configArgs, names };
     });
+    state.stagingPlan = [...targets.map((t) => t.name), ...(staged ? [] : ["the staging Preview"])];
+    state.productionPlan = [...extras.map((w) => w.cfg.name), productionName];
     const f = await secretsFile(dir), sf = f ? ["--secrets-file", f] : [];
     for (let i = 0; i < targets.length; i++) {
       const target = targets[i];
@@ -241,11 +296,13 @@ async function deploy() {
       }
       const confirmed = [...deployed.out.replace(/\x1b\[[0-9;]*m/g, "").matchAll(/^\s*(?:Uploaded|Deployed) ([a-zA-Z0-9_-]+)(?: triggers)? \(/gm)].map((m) => m[1]);
       if (!confirmed.length || confirmed.some((n) => n !== name)) fail(`staging deploy output did not confirm ${name}`, "inspect the Wrangler deployment immediately; production upload aborted");
+      state.staged.push(name);
       secretCheck("the staging Worker", stagingCommand(name, resolved, ["secret", "list", ...configArgs, "--name", name, "--format", "json"]), names);
     }
     if (!staged) {
       console.log(`::warning::${configFile} has no env.staging; deploying staging as the legacy "staging" Preview. Add env.staging (a separate <name>-staging Worker with its own data): see the standards README`);
       must(["preview", "--name", "staging", ...sf]);
+      state.staged.push("the staging Preview");
       secretCheck("the staging Preview", ["preview", "secret", "list", "--name", "staging", "--json"]);
     }
     build(std, pkg);
@@ -258,13 +315,25 @@ async function deploy() {
     const sha = env.WORKERS_CI_COMMIT_SHA || env.GITHUB_SHA;
     if (!sha) console.log("::warning::no WORKERS_CI_COMMIT_SHA: this production version is untagged, so the portal cannot tie it to its release-check");
     const tags = sha ? ["--tag", sha, "--message", `main ${sha}`, "--var", `SENTRY_RELEASE:${sha}`] : [];
-    must(["versions", "upload", ...tags]);
-    secretCheck("the production Worker", ["secret", "list", "--name", productionName, "--format", "json"]);
+    // Sentry: the primary's final bundle and source maps go to a clean --outdir for the source map upload (only when it will run)
+    const sentry = sha ? sentryPlan(configFile) : null;
+    const outdir = sentry ? mkdtempSync(join(tmpdir(), "release-bundle-")) : null;
+    if (outdir) process.on("exit", () => rmSync(outdir, { recursive: true, force: true }));
+    const upload = (name, a) => {
+      const r = wrangler(a, { capture: true });
+      process.stdout.write(r.out);
+      if (r.status) process.exit(r.status);
+      state.uploaded.push({ name, id: /Worker Version ID:\s*([A-Za-z0-9-]+)/.exec(r.out)?.[1] ?? "id not reported" });
+    };
     for (const worker of extras) {
-      must(["versions", "upload", "-c", worker.file, "--name", worker.cfg.name, ...tags]);
+      upload(worker.cfg.name, ["versions", "upload", "-c", worker.file, "--name", worker.cfg.name, ...tags]);
       const names = [...new Set((Array.isArray(worker.cfg.secrets?.required) ? worker.cfg.secrets.required : []).filter((name) => typeof name === "string" && name))];
       secretCheck("the production Worker", ["secret", "list", "--config", worker.file, "--name", worker.cfg.name, "--format", "json"], names);
     }
+    upload(productionName, ["versions", "upload", ...(outdir ? ["--outdir", outdir, "--upload-source-maps"] : []), ...tags]);
+    secretCheck("the production Worker", ["secret", "list", "--name", productionName, "--format", "json"]);
+    state.done = true;
+    if (sentry) await sentryRelease(sha, sentry, outdir);
   }
 }
 

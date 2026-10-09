@@ -20,12 +20,12 @@ const HOSTS = new Set([
   "registry.npmjs.org", "www.npmjs.com", "npmjs.com",
   "code.claude.com", "docs.anthropic.com", "claude.ai",
   "learn.chatgpt.com", "developers.openai.com", "chatgpt.com",
-  "developers.cloudflare.com", "challenges.cloudflare.com", "cache.agilebits.com", "json-schema.org", "docs.sentry.io",
+  "developers.cloudflare.com", "challenges.cloudflare.com", "cache.agilebits.com", "json-schema.org", "docs.sentry.io", "sentry.io",
   "example.com", "example.org", "example.net",
   "octocoders.io", // the example org host in GitHub's documented webhook payloads
 ]);
 // GitHub-owned avatar hosts (avatars.githubusercontent.com, avatars1.githubusercontent.com, ...) in the same documented payloads.
-const HOST_PATTERNS = [/^avatars\d*\.githubusercontent\.com$/];
+const HOST_PATTERNS = [/^avatars\d*\.githubusercontent\.com$/, /^o\d+\.ingest\.sentry\.io$/]; // GitHub avatar hosts; Sentry's public DSN ingest hosts
 const TLD = "com|net|org|io|dev|app|ai|co|ca|us|uk|cloud|site|xyz|tech|info|biz|me";
 const RULES = [
   [/(?<![0-9a-f])[0-9a-f]{32}(?![0-9a-f])/i, "32-hex identifier (account or zone id)"],

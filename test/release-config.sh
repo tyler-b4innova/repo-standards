@@ -58,18 +58,18 @@ if (kind === "astro") {
   const primaryName = kind === "secondary-alt" ? "connected-site" : "site";
   const calls = lines.filter((line) => line.args);
   const deploys = calls.filter((line) => line.args[0] === "deploy");
-  assert.deepEqual(deploys.map((line) => line.name), ["site-staging", "runtime-staging"]);
-  assert.equal(deploys[1].configName, "runtime-staging");
-  assert.ok(deploys[1].args.includes("--config"));
+  assert.deepEqual(deploys.map((line) => line.name), ["runtime-staging", "site-staging"]);
+  assert.equal(deploys[0].configName, "runtime-staging");
+  assert.ok(deploys[0].args.includes("--config"));
   const uploads = calls.filter((line) => line.args[0] === "versions");
-  assert.deepEqual(uploads.map((line) => line.name), [primaryName, "runtime"]);
-  assert.ok(uploads[1].args.includes("-c"));
+  assert.deepEqual(uploads.map((line) => line.name), ["runtime", primaryName]);
+  assert.ok(uploads[0].args.includes("-c"));
   for (const call of calls) {
-    const primaryUpload = call === uploads[0];
+    const primaryUpload = call === uploads[1];
     assert.equal(call.overrideName, primaryUpload ? primaryName : null);
     assert.equal(call.matchTag, primaryUpload ? "primary-tag" : null);
   }
-  assert.deepEqual(calls.filter((line) => line.args[0] === "secret").map((line) => line.name), ["site-staging", "runtime-staging", primaryName, "runtime"]);
+  assert.deepEqual(calls.filter((line) => line.args[0] === "secret").map((line) => line.name), ["runtime-staging", "site-staging", "runtime", primaryName]);
   const builds = lines.filter((line) => "build" in line);
   assert.deepEqual(builds.map((line) => line.build), [null, "staging", null]);
   for (const build of builds) { assert.equal(build.overrideName, null); assert.equal(build.matchTag, null); }
@@ -77,7 +77,7 @@ if (kind === "astro") {
   const calls = lines.filter((line) => line.args);
   assert.deepEqual(calls.filter((line) => line.args[0] === "deploy").map((line) => line.name), ["runtime-staging"]);
   assert.deepEqual(calls.filter((line) => line.args[0] === "preview").map((line) => line.name), ["staging"]);
-  assert.deepEqual(calls.filter((line) => line.args[0] === "versions").map((line) => line.name), ["site", "runtime"]);
+  assert.deepEqual(calls.filter((line) => line.args[0] === "versions").map((line) => line.name), ["runtime", "site"]);
   assert.deepEqual(lines.filter((line) => "build" in line).map((line) => line.build), [null, null]);
 } else if (kind === "secret-failure") {
   assert.ok(lines.some((line) => line.args?.[0] === "secret" && line.name === "runtime-staging"));
@@ -212,8 +212,8 @@ if MALICIOUS_DOTENV=1 WRANGLER_CI_OVERRIDE_NAME=site WRANGLER_CI_MATCH_TAG=prima
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 const calls = readFileSync(process.argv[2], "utf8").trim().split("\n").map(JSON.parse).filter((line) => line.args);
-assert.deepEqual(calls.filter((line) => line.args[0] === "deploy").map((line) => line.name), ["site-staging", "runtime-staging"]);
-assert.deepEqual(calls.filter((line) => line.args[0] === "versions").map((line) => line.name), ["site", "runtime"]);
+assert.deepEqual(calls.filter((line) => line.args[0] === "deploy").map((line) => line.name), ["runtime-staging", "site-staging"]);
+assert.deepEqual(calls.filter((line) => line.args[0] === "versions").map((line) => line.name), ["runtime", "site"]);
 for (const call of calls) { assert.equal(call.controlledEmpty, true); assert.equal(call.account, null); }
 assert.equal(calls.find((line) => line.name === "runtime" && line.args[0] === "versions").matchTag, null);
 JS
