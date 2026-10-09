@@ -19,7 +19,8 @@ accept="gitleaks sha256 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b
 uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 docs: https://code.claude.com/docs/en/settings and https://learn.chatgpt.com/docs/config-file/config-basic
 preview: preview.example.com; download https://github.com/gitleaks/gitleaks/releases
-trigger 1477542a-ed67-4c5a-9f0f-943faadd42b7 timeout 1200000"
+trigger 1477542a-ed67-4c5a-9f0f-943faadd42b7 timeout 1200000
+Sentry: https://sentry.io/api/0/ and a public DSN https://abc@o1.ingest.sentry.io/42"
 if printf '%s\n' "$accept" | scan; then ok engine-neutral-allows-pins-and-docs; else fail engine-neutral-allows-pins-and-docs "$(printf '%s\n' "$accept" | node tools/neutrality.mjs --stdin 2>&1)"; fi
 if node tools/neutrality.mjs >/dev/null 2>&1; then ok engine-neutral-tree; else fail engine-neutral-tree "$(node tools/neutrality.mjs 2>&1)"; fi
 # GitHub's documented webhook example hosts pass; an organization's host still fails, even next to them
