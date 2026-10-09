@@ -30,6 +30,7 @@ seed acme/old "$(std example internal)"
 seed acme/plain
 seed acme/delta "$(std example internal)"
 seed acme/skipme "$(std example internal)"
+seed acme/standards "$(std example internal)"
 seed rival/x "$(std example internal)"
 cat >"$T/stub.json" <<JSON
 { "remotes": "$R",
@@ -136,10 +137,16 @@ else fail sync-lands-without-gate "rc=$rc1 gates=$gates a0=$a0 a1=$a1 a2=$a2 mov
 
 # sync-lists-off-fleet: a repository with no standards.json gets a row (and nothing written to it); excluded,
 # archived, other-pack and other-org repositories stay off the table.
-plain_row=$(row acme/plain) rest=$(for r in acme/skipme acme/old acme/other acme/standards rival/x; do row "$r"; done)
+plain_row=$(row acme/plain) rest=$(for r in acme/skipme acme/old acme/other rival/x; do row "$r"; done)
 plain_writes=$(between "$m1" "$e1" | grep -v '"method":"GET"' | grep -c '/repos/acme/plain/' || true)
 if [ "$plain_row" = "| acme/plain | - | none | not in fleet: no standards.json |" ] && [ -z "$rest" ] && [ "$plain_writes" = 0 ] && [ "$(sha acme/plain main)" = "$(git -C "$T/seed/acme/plain" rev-parse HEAD)" ]; then ok sync-lists-off-fleet
 else fail sync-lists-off-fleet "plain=$plain_row rest=$rest writes=$plain_writes"; fi
+
+# sync-includes-standards-repo: the overlay's own repository gets its pack from sync like every other repository (no
+# exception; a pin pull request there changes only the overlay and the sync App lands the managed files)
+srow=$(row acme/standards)
+if [ -n "$(printf '%s' "$srow" | grep -F '| landed ')" ] && git --git-dir "$R/acme/standards.git" ls-tree -r --name-only main | grep -qx 'AGENTS.md' && git --git-dir "$R/acme/standards.git" ls-tree -r --name-only main | grep -qx 'standards.lock'; then ok sync-includes-standards-repo
+else fail sync-includes-standards-repo "row=$srow"; fi
 
 # A repository still on the retired staged flow gets no landing: its offline check names the migration, so a person
 # gets the PR (sync knows no integration branch).
