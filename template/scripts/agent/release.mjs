@@ -577,7 +577,7 @@ function gitProof(sha, git) {
 // days (--sweep), except a branch an open pull request still uses. Never the legacy "staging" Preview; a Preview
 // already gone is fine.
 async function cleanup() {
-  config();
+  if (!declared) config();
   const at = args.indexOf("--pr-branch"), names = new Set(), keep = new Set(["staging"]);
   if (at < 0 && !args.includes("--sweep")) fail("nothing to clean up", "release.mjs cleanup --pr-branch <branch> | --sweep");
   if (at >= 0 && !args[at + 1]) fail("--pr-branch needs a branch", "release.mjs cleanup --pr-branch <branch>");
@@ -601,12 +601,16 @@ async function cleanup() {
     }
   }
   let bad = 0;
+  // A Preview belongs to a Worker: each declared Worker's is deleted with its own config, from the repository root.
+  const owners = declared ? declared.map((w) => ({ args: ["--config", w.file], of: ` of ${w.name}` })) : [{ args: [], of: "" }];
   for (const name of [...names].filter(Boolean).sort()) {
     if (keep.has(name)) { console.log(`cleanup: keep ${name} (${name === "staging" ? "staging" : "an open pull request uses it"})`); continue; }
-    const r = wrangler(["preview", "delete", "--name", name, "--skip-confirmation"], { capture: true });
-    if (!r.status) console.log(`cleanup: deleted Preview ${name}`);
-    else if (/not (been )?found|does not exist/i.test(r.out)) console.log(`cleanup: Preview ${name} is already gone`);
-    else { process.stdout.write(r.out); console.log(`::error::could not delete Preview ${name}`); bad++; }
+    for (const owner of owners) {
+      const r = wrangler(["preview", "delete", "--name", name, "--skip-confirmation", ...owner.args], { capture: true });
+      if (!r.status) console.log(`cleanup: deleted Preview ${name}${owner.of}`);
+      else if (/not (been )?found|does not exist/i.test(r.out)) console.log(`cleanup: Preview ${name}${owner.of} is already gone`);
+      else { process.stdout.write(r.out); console.log(`::error::could not delete Preview ${name}${owner.of}`); bad++; }
+    }
   }
   if (bad) process.exit(1);
   console.log(`cleanup: ${names.size ? "done" : "no closed pull requests"}`);
