@@ -22,8 +22,8 @@ createServer((req, res) => {
       return send(404, {});
     }
     if (p === "/cf/accounts") return ok([{ id: "acct" }]);
-    if (!p.startsWith("/cf/accounts/acct/")) return send(404, {});
-    const q = p.slice("/cf/accounts/acct/".length), live = st.live ?? {};
+    if (!(m = p.match(/^\/cf\/accounts\/[^/]+\/(.*)$/))) return send(404, {});
+    const q = m[1], live = st.live ?? {};
     if (q === "workers/scripts") return st.scriptsFail ? send(500, { success: false }) : ok(st.scripts ?? []);
     if ((m = q.match(/^workers\/scripts\/([^/]+)\/schedules$/))) return ok({ schedules: (live[m[1]]?.crons ?? []).map((cron) => ({ cron })) });
     if (q === "workers/domains") return ok((live[url.searchParams.get("service")]?.domains ?? []).map((hostname) => ({ hostname })));
