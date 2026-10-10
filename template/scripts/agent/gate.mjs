@@ -422,6 +422,8 @@ if (cmd === "local") {
       const tip = v ? git("rev-parse", "--verify", "-q", `refs/remotes/origin/standards/v${v}^{commit}`).trim() : null;
       // the pull request must descend from the tip: a left-over older branch cannot authorise a downgrade
       if (tip) git("merge-base", "--is-ancestor", tip, "HEAD");
+      // ... and must not already be in the base: a tip the default branch carries was merged (or superseded) before
+      if (tip && prBase()) { try { git("merge-base", "--is-ancestor", tip, prBase()); return null; } catch {} }
       return tip;
     } catch { return null; }
   })());
