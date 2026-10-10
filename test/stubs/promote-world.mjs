@@ -21,6 +21,7 @@ createServer((req, res) => {
       if ((m = q.match(/^\/actions\/runs\/(\d+)$/))) return send(200, (st.runs ?? {})[m[1]] ?? {});
       return send(404, {});
     }
+    if (p === "/cf/accounts") return ok([{ id: "acct" }]);
     if (!p.startsWith("/cf/accounts/acct/")) return send(404, {});
     const q = p.slice("/cf/accounts/acct/".length), live = st.live ?? {};
     if (q === "workers/scripts") return st.scriptsFail ? send(500, { success: false }) : ok(st.scripts ?? []);

@@ -116,6 +116,15 @@ async function cf(method, path, body) {
   if (!r.ok || !b?.success) throw new Error(`Cloudflare API ${method} ${path}: ${r.status}`);
   return b.result;
 }
+// The account that owns the Worker: its config, CLOUDFLARE_ACCOUNT_ID, else the one account the build's token can see.
+let discovered;
+async function accountOf(cfg) {
+  const id = cfg.account_id || env.CLOUDFLARE_ACCOUNT_ID;
+  if (id) return id;
+  const accounts = discovered ??= await cf("GET", "/accounts");
+  if (accounts.length !== 1) throw new Error("cannot tell which Cloudflare account owns this Worker: set CLOUDFLARE_ACCOUNT_ID");
+  return accounts[0].id;
+}
 const sameSet = (a, b) => a.length === b.length && a.every((x) => b.includes(x));
 
 // Does this Worker need a full `wrangler deploy` instead of a version? Cloudflare cannot upload a version that creates, deletes, renames
@@ -123,11 +132,11 @@ const sameSet = (a, b) => a.length === b.length && a.every((x) => b.includes(x))
 // `migration_tag` in the Workers scripts list (https://developers.cloudflare.com/api/resources/workers/subresources/scripts/methods/list/)
 // against the config's last migration tag; a Worker with DO `exports` always does (Cloudflare reconciles those on every deploy).
 // Unreadable live state throws: it is never taken for "none".
-async function needsFullDeploy(account, name, cfg) {
+async function needsFullDeploy(name, cfg) {
   const lc = doLifecycle(cfg);
   if (lc.exports) return "it declares Durable Object exports";
   if (!lc.tag) return null;
-  const script = (await cf("GET", `/accounts/${account}/workers/scripts`)).find((s) => s.id === name);
+  const script = (await cf("GET", `/accounts/${await accountOf(cfg)}/workers/scripts`)).find((s) => s.id === name);
   if (!script) throw new Error(`${name} is not in the Cloudflare account's scripts, so its live migration state is unknown`);
   return (script.migration_tag ?? null) === lc.tag ? null : `migration ${lc.tag} is not applied in production (live: ${script.migration_tag ?? "none"})`;
 }
@@ -137,8 +146,8 @@ async function needsFullDeploy(account, name, cfg) {
 // settings API (https://developers.cloudflare.com/workers/configuration/multipart-upload-metadata/ lists logpush and tail_consumers as
 // not available to version uploads; https://developers.cloudflare.com/workers/versions-and-deployments/deployment-management/ sends
 // routes, domains and crons to `triggers deploy`). Routes cannot be read without a zone, so a Worker that declares them always re-applies.
-async function settingsDrift(account, name, cfg) {
-  const drift = [], base = `/accounts/${account}/workers`;
+async function settingsDrift(name, cfg) {
+  const account = await accountOf(cfg), drift = [], base = `/accounts/${account}/workers`;
   let triggers = false;
   if (Array.isArray(cfg.triggers?.crons)) {
     const live = (await cf("GET", `${base}/scripts/${name}/schedules`)).schedules?.map((s) => s.cron) ?? [];
@@ -325,13 +334,6 @@ async function deploy() {
     }
     const builtProduction = buildProductionConfigs(std, pkg, [{ file: configFile, cfg, primary: true }, ...extras]);
     productionConfigs.push(...builtProduction);
-    // A Worker whose Durable Object lifecycle differs from production's live state cannot be uploaded as a version: promote deploys it.
-    const account = cfg.account_id || env.CLOUDFLARE_ACCOUNT_ID, noUpload = new Map();
-    const productionNames = [productionName, ...extras.map((w) => w.cfg.name)];
-    for (const [i, c] of builtProduction.entries()) {
-      const why = await needsFullDeploy(account, productionNames[i], c);
-      if (why) noUpload.set(productionNames[i], why);
-    }
     if (!staged) {
       const preview = builtProduction[0].previews ?? {};
       const isolation = resourceFindings({ ...preview, migrations: preview.migrations ?? builtProduction[0].migrations }, productionConfigs);
@@ -349,6 +351,13 @@ async function deploy() {
       const names = worker.primary ? required : [...new Set((Array.isArray(worker.cfg.secrets?.required) ? worker.cfg.secrets.required : []).filter((name) => typeof name === "string" && name))];
       return { ...worker, resolved, name, configArgs, names };
     });
+    // A Worker whose Durable Object lifecycle differs from production's live state cannot be uploaded as a version: promote deploys it.
+    const noUpload = new Map();
+    const productionNames = [productionName, ...extras.map((w) => w.cfg.name)];
+    for (const [i, c] of builtProduction.entries()) {
+      const why = await needsFullDeploy(productionNames[i], c);
+      if (why) noUpload.set(productionNames[i], why);
+    }
     state.stagingPlan = [...targets.map((t) => t.name), ...(staged ? [] : ["the staging Preview"])];
     state.productionPlan = [...extras.map((w) => w.cfg.name), productionName].filter((n) => !noUpload.has(n));
     const f = await secretsFile(dir), sf = f ? ["--secrets-file", f] : [];
@@ -414,7 +423,7 @@ async function deploy() {
     else for (const [i, c] of builtProduction.entries()) {
       if (noUpload.has(productionNames[i])) continue;
       try {
-        const d = await settingsDrift(account, productionNames[i], c);
+        const d = await settingsDrift(productionNames[i], c);
         if (d.drift.length) console.log(`::warning::production ${productionNames[i]} differs from its config: ${d.drift.join("; ")} | fix: promotion applies these (wrangler triggers deploy, Worker settings API)`);
       } catch (e) { console.log(`::warning::production ${productionNames[i]} settings drift not checked: ${e.message}`); }
     }
@@ -436,8 +445,6 @@ async function promote() {
   const short = sha.slice(0, 7), primary = effectiveConfig(configFile);
   const extras = workerFiles(std, configFile).map((file) => ({ file, cfg: effectiveConfig(file, false, { redirect: false }).cfg }));
   assertReleaseAccounts(primary.cfg, [primary.cfg, ...extras.map((w) => w.cfg)]);
-  const account = primary.cfg.account_id || env.CLOUDFLARE_ACCOUNT_ID;
-  if (!account) fail("no Cloudflare account id (account_id in the config or CLOUDFLARE_ACCOUNT_ID)", "set CLOUDFLARE_ACCOUNT_ID on the Promote trigger");
   const workers = [...extras.map((w) => ({ name: w.cfg.name, cfg: w.cfg, file: w.file, cfgArgs: ["--config", w.file] })),
     { name: env.WRANGLER_CI_OVERRIDE_NAME || primary.cfg.name, cfg: primary.cfg, file: primary.file, cfgArgs: [], primary: true }];
 
@@ -453,7 +460,7 @@ async function promote() {
   }
   const plan = [];
   for (const w of workers) {
-    const full = await needsFullDeploy(account, w.name, w.cfg);
+    const full = await needsFullDeploy(w.name, w.cfg);
     let version = null;
     if (!full) {
       const r = wrangler(["versions", "list", "--name", w.name, "--json"], { capture: true, primary: w.primary });
@@ -469,7 +476,7 @@ async function promote() {
   for (const w of plan) {
     const r = wrangler(["deploy", "--dry-run", ...w.cfgArgs, "--name", w.name], { capture: true, primary: w.primary });
     if (r.status) { process.stdout.write(r.out); fail(`${w.name} does not bundle with its production config; nothing was deployed`, "fix the build and approve a new commit"); }
-    if (!w.full) w.settings = await settingsDrift(account, w.name, w.cfg);
+    if (!w.full) w.settings = await settingsDrift(w.name, w.cfg);
   }
 
   const done = [], report = [];
@@ -503,7 +510,7 @@ async function promote() {
         process.stdout.write(r.out);
         if (r.status) process.exit(r.status);
       }
-      if (s.patch) await cf("PATCH", `/accounts/${account}/workers/scripts/${w.name}/script-settings`, s.patch);
+      if (s.patch) await cf("PATCH", `/accounts/${await accountOf(w.cfg)}/workers/scripts/${w.name}/script-settings`, s.patch);
       report.push(`${w.name}: ${s.drift.length ? `applied ${s.drift.join("; ")}` : "settings already match"}${s.routes ? "; routes re-applied" : ""}`);
     }
     done.push(w.name);

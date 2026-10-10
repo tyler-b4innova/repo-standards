@@ -4,13 +4,18 @@ cd "$(dirname "$0")/.."
 . test/lib.sh
 ENGINE=$PWD
 T=$(mktemp -d)
-trap 'rm -rf "$T"' EXIT
+trap '{ [ -n "${WORLD_PID:-}" ] && kill $WORLD_PID; } 2>/dev/null; rm -rf "$T"' EXIT
 export CODEX_HOME=/nonexistent CLAUDE_CONFIG_DIR=/nonexistent
 unset GITHUB_EVENT_PATH GITHUB_EVENT_NAME OP_CLI OP_VAULT OP_SERVICE_ACCOUNT_TOKEN
 mkdir -p "$T/bin"
 printf '#!/bin/sh\nshift\nexec node "$RELEASE_STUB" "$@"\n' > "$T/bin/npx"
 chmod +x "$T/bin/npx"
 export PATH="$T/bin:$PATH" RELEASE_STUB="$ENGINE/test/stubs/release-wrangler.mjs"
+# production's live Durable Object migration state (the fixtures' secondary Worker declares migration v1, which is live)
+echo '{"scripts":[{"id":"runtime","migration_tag":"v1"}]}' >"$T/world.json"
+node test/stubs/promote-world.mjs "$T/port" "$T/world.json" & WORLD_PID=$!
+for i in $(seq 50); do [ -s "$T/port" ] && break; sleep 0.1; done
+export CLOUDFLARE_API_BASE="http://127.0.0.1:$(cat "$T/port")/cf" CLOUDFLARE_API_TOKEN=t
 repo() {
   R=$T/$1
   git init -q -b main "$R"
