@@ -530,10 +530,13 @@ async function uploadedVersion(w, sha) {
 }
 
 // Without a version to look for, the evidence is git's: the commit is an ancestor of main in the build checkout's history, after a fetch of main
-// from the remote the checkout came from (the build has no GitHub token, so a remote that needs one is unreadable and refuses). "" when proven,
+// from the remote the checkout came from (readable in a Builds checkout with no GitHub token; a remote that needs one refuses). "" when proven,
 // else why not. A shallow checkout that cannot reach the commit from main refuses; it never passes.
 function gitProof(sha, git) {
-  const fetched = git("fetch", "--no-tags", "--quiet", "origin", "+refs/heads/main:refs/remotes/origin/main");
+  // Workers Builds clones shallow (depth 1, one remote `origin`, readable without a token: `git fetch origin main` succeeded in a live build), so
+  // main's whole history is fetched with --unshallow; proven live: afterwards an older main commit is an ancestor of origin/main.
+  const shallow = git("rev-parse", "--is-shallow-repository").stdout.trim() === "true";
+  const fetched = git("fetch", "--no-tags", "--quiet", ...(shallow ? ["--unshallow"] : []), "origin", "+refs/heads/main:refs/remotes/origin/main");
   const r = git("merge-base", "--is-ancestor", sha, "refs/remotes/origin/main");
   if (r.status === 0) return "";
   if (r.status === 1) return "it is not in main's history";
