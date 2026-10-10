@@ -92,6 +92,8 @@ const configFile = declared ? lead?.file ?? null : rootFile();
 // Wrangler finds the root default config (and the adapter redirect beside it) by itself; any other declared config is named with --config.
 const leadRedirect = !declared || configFile === rootFile();
 const leadArgs = leadRedirect || !configFile ? [] : ["--config", configFile];
+// A declared Worker's own build command replaces the repository's.
+const buildStd = lead?.build ? { ...std, build: lead.build } : std;
 const supportingFiles = () => (declared ? lead.extras : workerFiles(std, configFile));
 function config() {
   if (!configFile) fail("no wrangler config (wrangler.jsonc, wrangler.json or wrangler.toml)", "run this from a Worker repository");
@@ -367,14 +369,14 @@ async function deploy() {
       const isolation = isolationFindings(worker, productionConfigs);
       if (isolation.length) throw new Error(isolation.join("; "));
     }
-    const builtProduction = buildProductionConfigs(std, pkg, [{ file: configFile, cfg, primary: true, redirect: leadRedirect }, ...extras]);
+    const builtProduction = buildProductionConfigs(buildStd, pkg, [{ file: configFile, cfg, primary: true, redirect: leadRedirect }, ...extras]);
     productionConfigs.push(...builtProduction);
     if (!staged) {
       const preview = builtProduction[0].previews ?? {};
       const isolation = resourceFindings({ ...preview, migrations: preview.migrations ?? builtProduction[0].migrations }, productionConfigs);
       if (isolation.length) throw new Error(`unsafe staging Preview resources: ${isolation.join("; ")}`);
     }
-    if (staged) build(std, pkg, true);
+    if (staged) build(buildStd, pkg, true);
     // Validate every staging target before deploying any of them. Secondary explicit configs
     // bypass the primary adapter redirect, exactly as Wrangler -c does.
     // Supporting Workers (release_workers) go first, in their listed order, then the primary: the primary binds Durable Objects and
@@ -424,7 +426,7 @@ async function deploy() {
       state.staged.push("the staging Preview");
       secretCheck("the staging Preview", ["preview", "secret", "list", "--name", "staging", ...leadArgs, "--json"]);
     }
-    build(std, pkg);
+    build(buildStd, pkg);
     const production = effectiveConfig(configFile, false, { redirect: leadRedirect });
     if (production.cfg.name !== cfg.name) fail("production build does not target the production Worker", "build without CLOUDFLARE_ENV before uploading");
     for (const worker of extras) if (effectiveConfig(worker.file, false, { redirect: false }).cfg.name !== worker.cfg.name)
