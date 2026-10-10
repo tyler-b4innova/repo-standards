@@ -211,4 +211,23 @@ got=$(calls | grep -vE '^secret list' | sed -E 's/--tag [0-9a-f]{40}.*//; s/ +$/
 [ "$(calls)" = "preview --name feat-x" ] || why="$why; root preview: $(calls)"
 if [ -z "$why" ]; then ok release-root-unchanged; else fail release-root-unchanged "$why"; fi
 
+# ---- a declared Worker's own build replaces the repository's build for its release: the main build runs it, not standards.json build;
+# a Worker without the key keeps standards.json build; --check wants a non-empty string
+why=""
+repo bld
+printf '#!/bin/sh\necho "$0 $*" >>"$BUILD_LOG"\n' >"$R/repo-build.sh"; printf '#!/bin/sh\necho "$0 $*" >>"$BUILD_LOG"\n' >"$R/web-build.sh"; chmod +x "$R/repo-build.sh" "$R/web-build.sh"
+jset "$R/standards.json" 'o.build="./repo-build.sh";o.workers[0]={config:"workers/web",build:"./web-build.sh one"}'; commit builds
+export BUILD_LOG=$T/build.log; : >"$BUILD_LOG"
+: >"$RELEASE_LOG"; out=$(WRANGLER_CI_OVERRIDE_NAME=web main)
+has "exit=0" "$out" && grep -q 'web-build.sh one' "$BUILD_LOG" && ! grep -q 'repo-build.sh' "$BUILD_LOG" || why="web build: $out // $(cat "$BUILD_LOG")"
+: >"$BUILD_LOG"; : >"$RELEASE_LOG"; out=$(WRANGLER_CI_OVERRIDE_NAME=api main)
+has "exit=0" "$out" && grep -q 'repo-build.sh' "$BUILD_LOG" && ! grep -q 'web-build.sh' "$BUILD_LOG" || why="$why; api build: $out // $(cat "$BUILD_LOG")"
+out=$(check); has "exit=0" "$out" || why="$why; valid build: $out"
+for bad in '""' '5' '["x"]'; do
+  cp "$R/standards.json" "$T/standards.keep"; jset "$R/standards.json" "o.workers[0].build=$bad"; out=$(check)
+  has "exit=1" "$out" && has "build" "$out" || why="$why; build $bad passed: $out"
+  cp "$T/standards.keep" "$R/standards.json"
+done
+if [ -z "$why" ]; then ok release-declared-build; else fail release-declared-build "$why"; fi
+
 done_cases
