@@ -137,6 +137,7 @@ done
 join 1 "AGENTS.md" "lock names a version with no sync branch" "$OV" 'sed -i.bak "1s/ v0.1.0 / v0.2.0 /" standards.lock && rm standards.lock.bak'
 join 1 "AGENTS.md" "lock names a version that renders differently" "$OV" 'git switch -q --detach HEAD && echo "- other" >> AGENTS.md && git -c user.name=t -c user.email=t@t commit -qam other && git update-ref refs/remotes/origin/standards/v0.2.0 HEAD && git switch -q fix/join && sed -i.bak "1s/ v0.1.0 / v0.2.0 /" standards.lock && rm standards.lock.bak'
 join 1 ".github/CODEOWNERS (managed std block" "an edited CODEOWNERS block" "$OV" 'sed -i.bak "s#@acme/leads#@acme/someone#" .github/CODEOWNERS && rm .github/CODEOWNERS.bak'
+join 1 "AGENTS.md" "a sync tip the PR does not descend from (a left-over branch)" "$OV" 'git rm -q .github/workflows/ci.yml && git update-ref refs/remotes/origin/standards/v0.1.0 $(git -c user.name=t -c user.email=t@t commit-tree HEAD^{tree} -m old)'
 join 1 "CLAUDE.md" "another instruction file" "$OV" 'echo "rule" > CLAUDE.md'
 # the local gate also judges uncommitted edits: a dirty AGENTS.md on a join branch is not the sync branch's file
 join 0 "no instruction file" "uncommitted edit, before" "$OV" 'git rm -q .github/workflows/ci.yml'
