@@ -64,4 +64,34 @@ has "exit=1" "$out" && [ -z "$(calls)" ] || why="$why; disagreement: $out $(call
 has "exit=1" "$out" && [ -z "$(calls)" ] || why="$why; a supporting Worker was selected as a primary: $out $(calls)"
 if [ -z "$why" ]; then ok release-declared-selection; else fail release-declared-selection "$why"; fi
 
+# ---- the release/<sha> path works per declared Worker with the same provenance check and steps; production D1 migrations run there
+# only, never in the main build (whose D1 migrations are staging's own databases)
+why=""
+echo '{}' >"$T/state.json"
+node test/stubs/promote-world.mjs "$T/port" "$T/state.json" & WORLD_PID=$!
+for i in $(seq 50); do [ -s "$T/port" ] && break; sleep 0.1; done
+export CLOUDFLARE_API_BASE="http://127.0.0.1:$(cat "$T/port")/cf" CLOUDFLARE_API_TOKEN=t CLOUDFLARE_ACCOUNT_ID=acct
+repo rel
+D1='"d1_databases": [{ "binding": "DB", "database_name": "d", "database_id": "x", "migrations_dir": "migrations" }]'
+D1S='"d1_databases": [{ "binding": "DB", "database_name": "d-staging", "database_id": "y", "migrations_dir": "migrations" }]'
+printf '{ "name": "web", "main": "../../src/index.js", %s, "env": { "staging": { "routes": [], "workers_dev": true, %s } }, "previews": { %s } }\n' "$D1" "$D1S" "$D1S" >"$R/workers/web/wrangler.jsonc"
+mkdir -p "$R/workers/web/migrations"; echo "select 1;" >"$R/workers/web/migrations/0001.sql"; commit d1
+git init -q --bare "$T/rel.git"; gc -C "$R" remote add origin "$T/rel.git"; gc -C "$R" push -q origin main
+S=$(sha)
+node -e 'const s=JSON.parse(process.argv[2]);const v=(id)=>[{id,annotations:{"workers/tag":process.argv[1]}}];require("fs").writeFileSync(process.argv[3],JSON.stringify({scripts:[{id:"api"},{id:"jobs"},{id:"web"}],versions:{api:v("va"),jobs:v("vj"),web:v("vw")}}))' "$S" '{}' "$T/state.json"
+: >"$RELEASE_LOG"; out=$(WRANGLER_CI_OVERRIDE_NAME=web main)
+! calls | grep '^d1 ' | grep -vq -- '--env staging' && calls | grep -q '^d1 migrations apply DB --env staging' || why="main build touched production D1: $out // $(calls)"
+prom() { (cd "$R" && WRANGLER_CI_OVERRIDE_NAME=$1 WORKERS_CI_BRANCH=release/$S WORKERS_CI_COMMIT_SHA=$S node scripts/agent/release.mjs preview 2>&1); echo "exit=$?"; }
+: >"$RELEASE_LOG"; out=$(prom web)
+changes=$(calls | grep -vE -- '--dry-run|^versions list|^secret list')
+has "exit=0" "$out" && has "promoted ${S:0:7}" "$out" && [ "$(printf '%s\n' "$changes" | cut -d' ' -f1-3 | tr '\n' ',')" = "d1 migrations apply,versions deploy vw@100%," ] \
+  && printf '%s\n' "$changes" | grep -q -- '^d1 migrations apply DB --config .*workers/web/wrangler.jsonc --remote$' && ! calls | grep -qE 'api|jobs' || why="$why; web: $out // $changes"
+: >"$RELEASE_LOG"; out=$(prom api)
+changes=$(calls | grep -vE -- '--dry-run|^versions list|^secret list')
+has "exit=0" "$out" && [ "$(printf '%s\n' "$changes" | cut -d' ' -f1-3 | tr '\n' ',')" = "versions deploy vj@100%,versions deploy va@100%," ] && ! calls | grep -qE '^d1 |web' || why="$why; api: $out // $changes"
+# an unknown name promotes nothing
+: >"$RELEASE_LOG"; out=$(prom nope)
+has "exit=1" "$out" && [ -z "$(calls)" ] || why="$why; unknown: $out // $(calls)"
+if [ -z "$why" ]; then ok release-declared-promote; else fail release-declared-promote "$why"; fi
+
 done_cases
