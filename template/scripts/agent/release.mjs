@@ -370,7 +370,11 @@ async function deploy() {
   {
     if (RELEASE_SHA) return promote(RELEASE_SHA);
     if (cmd === "preview") {
-      const f = await secretsFile(dir), sf = f ? ["--secrets-file", f] : [];
+      // A Preview inherits no top-level secrets (Wrangler reads previews.secrets.required), and the vault's staging secrets must not land on a PR
+      // Preview, which runs unreviewed code: a config with previews.secrets.required, even empty, supplies and verifies exactly that list.
+      const pc = configFile && !configFile.endsWith(".toml") ? parse(readFileSync(configFile, "utf8")) : null;
+      const previewNames = Array.isArray(pc?.previews?.secrets?.required) ? [...new Set(pc.previews.secrets.required.filter((s) => typeof s === "string" && s))] : required;
+      const f = await secretsFile(dir, previewNames), sf = f ? ["--secrets-file", f] : [];
       const branch = env.WORKERS_CI_BRANCH || execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" }).trim(), name = slug(branch);
       if (!name || name === "staging") fail(`branch ${branch} has no usable Preview name (${name || "empty"})`, "rename the branch");
       const cfg = config();
@@ -381,7 +385,7 @@ async function deploy() {
       }
       migratePreviewDatabases(dir, cfg);
       must(["preview", "--name", name, ...leadArgs, ...sf]);
-      secretCheck(`Preview ${name}`, ["preview", "secret", "list", "--name", name, ...leadArgs, "--json"]);
+      secretCheck(`Preview ${name}`, ["preview", "secret", "list", "--name", name, ...leadArgs, "--json"], previewNames);
       return;
     }
     const cfg = config(), staged = Boolean(cfg.env?.staging);
