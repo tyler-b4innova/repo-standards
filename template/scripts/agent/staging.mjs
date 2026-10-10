@@ -146,14 +146,15 @@ export function findings(cfg, { file, std = {}, pack = {}, required = [], produc
   const vars = Object.keys(cfg.vars ?? {}).filter((v) => !(v in (stage.vars ?? {})));
   if (vars.length) F(`env.staging lacks vars ${vars.join(", ")} (vars are not inherited)`, "declare them in env.staging.vars with staging values");
 
-  // PR Previews: every production binding re-declared, on the resource env.staging uses
-  if (!previews || typeof previews !== "object") F("has no previews block (PR Previews inherit nothing)", "add previews, pointing every binding at the staging resources");
+  // PR Previews inherit nothing, so a binding is only there if previews declares it. Each is staging's resource, a dedicated Preview resource
+  // (every key differs from staging's; the Preview build migrates a dedicated D1), or absent. Never production's (checked above).
+  if (!previews || typeof previews !== "object") F("has no previews block (PR Previews inherit nothing)", "add previews, with the bindings a Preview needs on staging or dedicated Preview resources");
   else {
     for (const [k, keys] of KINDS) for (const b of list(at(cfg, k))) {
       const n = nameOf(b), p = list(at(previews, k)).find((x) => nameOf(x) === n), s = list(at(stage, k)).find((x) => nameOf(x) === n);
-      if (!n || !DATA.has(k)) continue;
-      if (!p) F(`previews lacks ${k} ${n}`, `bind ${n} in previews to the staging resource env.staging uses`);
-      else if (s) for (const key of keys) if (s[key] !== undefined && p[key] !== s[key]) F(`previews ${k} ${n} ${key} is ${JSON.stringify(p[key])}, not staging's ${JSON.stringify(s[key])}`, "point previews at the staging resources");
+      if (!n || !DATA.has(k) || !p || !s) continue;
+      if (!keys.every((key) => s[key] === undefined || p[key] !== s[key]))
+        for (const key of keys) if (s[key] !== undefined && p[key] !== s[key]) F(`previews ${k} ${n} ${key} is ${JSON.stringify(p[key])}, not staging's ${JSON.stringify(s[key])}`, "use staging's resource, or a dedicated Preview resource that differs in every key");
     }
   }
 

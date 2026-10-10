@@ -339,6 +339,30 @@ process.on("exit", (code) => {
 const isolationFindings = (worker, productionConfigs) => stagingFindings(worker.cfg, { file: worker.file, std: { staging: true }, productionConfigs })
   .fails.filter(([message]) => /names the production resource|consumes the production queue/.test(message)).map(([message]) => message);
 
+// Pending D1 migrations for the databases the `previews` block dedicates to Previews, applied before the Preview deploys. Wrangler's d1
+// commands read only a config's top-level d1_databases, never `previews`, so those bindings are written to a generated config (absolute
+// migrations_dir, account_id copied) that the apply is pointed at. A database that is a production database of any Worker is refused;
+// one that is a staging database of any Worker (or the database of the legacy staging Preview, which has no env.staging) is never migrated
+// here: main migrates staging.
+function migratePreviewDatabases(dir, cfg) {
+  const dbs = (c) => (Array.isArray(c?.d1_databases) ? c.d1_databases.filter((d) => d && typeof d === "object") : []);
+  const same = (a, b) => (a.database_id && a.database_id === b.database_id) || (a.database_name && a.database_name === b.database_name);
+  const workers = declared ? declared.flatMap((w) => [w.cfg, ...w.extraConfigs]) : [cfg];
+  const production = workers.flatMap(dbs);
+  const staging = workers.flatMap((w) => (w.env?.staging ? dbs(w.env.staging) : dbs(w.previews)));
+  const dedicated = [];
+  for (const d of dbs(cfg.previews)) {
+    const hit = production.find((p) => same(d, p));
+    if (hit) fail(`previews d1_databases ${d.binding ?? ""} names the production resource ${hit.database_id ?? hit.database_name}`, "bind a Preview database of its own, or staging's; Previews never reach production");
+    if (typeof d.database_id === "string" && d.binding && !staging.some((x) => same(d, x))) dedicated.push(d);
+  }
+  const pending = dedicated.map((d) => ({ ...d, migrations_dir: resolve(dirname(configFile), d.migrations_dir ?? "migrations") })).filter((d) => existsSync(d.migrations_dir));
+  if (!pending.length) return;
+  const file = join(dir, "preview-d1.json");
+  writeFileSync(file, JSON.stringify({ ...(cfg.account_id ? { account_id: cfg.account_id } : {}), d1_databases: pending }));
+  for (const d of pending) must(["d1", "migrations", "apply", d.binding, "--remote", "--config", file]);
+}
+
 async function deploy() {
   // The secrets file goes with its directory on every exit, including a failed step's process.exit.
   const dir = mkdtempSync(join(tmpdir(), "release-"));
@@ -346,17 +370,22 @@ async function deploy() {
   {
     if (RELEASE_SHA) return promote(RELEASE_SHA);
     if (cmd === "preview") {
-      const f = await secretsFile(dir), sf = f ? ["--secrets-file", f] : [];
+      // A Preview inherits no top-level secrets (Wrangler reads previews.secrets.required), and the vault's staging secrets must not land on a PR
+      // Preview, which runs unreviewed code: a config with previews.secrets.required, even empty, supplies and verifies exactly that list.
+      const pc = configFile && !configFile.endsWith(".toml") ? parse(readFileSync(configFile, "utf8")) : null;
+      const previewNames = Array.isArray(pc?.previews?.secrets?.required) ? [...new Set(pc.previews.secrets.required.filter((s) => typeof s === "string" && s))] : required;
+      const f = await secretsFile(dir, previewNames), sf = f ? ["--secrets-file", f] : [];
       const branch = env.WORKERS_CI_BRANCH || execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" }).trim(), name = slug(branch);
       if (!name || name === "staging") fail(`branch ${branch} has no usable Preview name (${name || "empty"})`, "rename the branch");
-      config();
+      const cfg = config();
       // A declared Worker's Preview is held to the staging isolation too, against every declared Worker's production resources.
       if (declared) {
         const isolation = isolationFindings({ file: configFile, cfg: readConfig(configFile) }, declared.flatMap((w) => [w.cfg, ...w.extraConfigs]));
         if (isolation.length) throw new Error(isolation.join("; "));
       }
+      migratePreviewDatabases(dir, cfg);
       must(["preview", "--name", name, ...leadArgs, ...sf]);
-      secretCheck(`Preview ${name}`, ["preview", "secret", "list", "--name", name, ...leadArgs, "--json"]);
+      secretCheck(`Preview ${name}`, ["preview", "secret", "list", "--name", name, ...leadArgs, "--json"], previewNames);
       return;
     }
     const cfg = config(), staged = Boolean(cfg.env?.staging);
