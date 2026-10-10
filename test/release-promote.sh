@@ -144,6 +144,11 @@ has "exit=0" "$out" && has "cron triggers [] -> [0 * * * *]" "$out" && has "cust
 world '{"scripts":[{"id":"app"},{"id":"runtime"}],'"$Q"',"consumers":{"q1":[{"script":"app"}]},"live":{"app":{"crons":["0 * * * *"],"domains":["app.example.com"],"settings":{"observability":{"enabled":true}}}}}'
 : >"$RELEASE_LOG"; out=$(prom "$S")
 has "exit=0" "$out" && has "app: settings already match" "$out" && ! calls | grep -q "^triggers deploy" && ! grep -q patches "$T/state.json" || why="$why; equal: $out $(calls)"
+# removing the last custom domain leaves `routes: []`: the domain still attached in production is detached by triggers deploy, not skipped
+repo removal ', "routes": []'; S=$(sha); versions "$S"
+world '{"scripts":[{"id":"app"},{"id":"runtime"}],"live":{"app":{"domains":["app.example.com"]}}}'
+: >"$RELEASE_LOG"; out=$(prom "$S")
+has "exit=0" "$out" && has "custom domains [app.example.com] -> []" "$out" && calls | grep -q "^triggers deploy --name app" || why="$why; route removal: $out $(calls)"
 if [ -z "$why" ]; then ok promote-settings-applied; else fail promote-settings-applied "$why"; fi
 
 # ---- the main release warns where live production differs from the declared settings (read-only), and says nothing where it matches
