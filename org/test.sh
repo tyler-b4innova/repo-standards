@@ -170,7 +170,8 @@ node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8
 : >"$T/log"; lb=$(node org/apply.mjs --overlay "$T/org.json.bad" --dry-run 2>&1); lx=$?
 if [ $lx -ne 0 ] && grep -q "set on the launcher dashboard" <<<"$lb" && [ ! -s "$T/log" ]; then ok engine-org-dry-run-diff; else fail engine-org-dry-run-diff "launcher: $lx $lb"; fi
 
-# engine-org-ref-protection: `release/**` and `standards/v*` branches are created, moved and deleted by one App each and nobody
+# engine-org-ref-protection: `release/**` branches are created, moved and deleted, and `standards/v*` branches created and moved (not
+# deleted: a missing standards branch already refuses, and deletion protection could block GitHub's auto-delete after a merge), by one App each and nobody
 # else, org admins included. The release ruleset's bypass is the portal App from org_admin.release_app.id; with no portal App
 # set it has no bypass at all, so nobody can create a release branch. The standards ruleset's bypass is the org standards App.
 # A release_app without a positive id is refused. A dry run against an org without them lists both as creates.
@@ -187,7 +188,7 @@ out=$(node --input-type=module -e '
   console.log(JSON.stringify({ release: shape(pick(set, "release branches")), releaseUnset: pick(none, "release branches").bypass_actors,
     standards: shape(pick(set, "standards version")), standardsUnset: pick(none, "standards version").bypass_actors,
     refused: refuse({}) && refuse({ id: 0, slug: "p" }) && refuse({ id: "7", slug: "p" }) }));' "$T/org.json" 2>&1)
-want='{"release":{"target":"branch","refs":["refs/heads/release/**"],"rules":["creation","deletion","update"],"bypass":[{"actor_id":777,"actor_type":"Integration","bypass_mode":"always"}]},"releaseUnset":[],"standards":{"target":"branch","refs":["refs/heads/standards/v*"],"rules":["creation","deletion","update"],"bypass":[{"actor_id":4242,"actor_type":"Integration","bypass_mode":"always"}]},"standardsUnset":[{"actor_id":4242,"actor_type":"Integration","bypass_mode":"always"}],"refused":true}'
+want='{"release":{"target":"branch","refs":["refs/heads/release/**"],"rules":["creation","deletion","update"],"bypass":[{"actor_id":777,"actor_type":"Integration","bypass_mode":"always"}]},"releaseUnset":[],"standards":{"target":"branch","refs":["refs/heads/standards/v*"],"rules":["creation","update"],"bypass":[{"actor_id":4242,"actor_type":"Integration","bypass_mode":"always"}]},"standardsUnset":[{"actor_id":4242,"actor_type":"Integration","bypass_mode":"always"}],"refused":true}'
 echo '{"org":"acme","repos":[],"property":null,"values":{},"rulesets":[]}' >"$T/empty.json"
 start "$T/empty.json"
 dry=$(run --dry-run)
