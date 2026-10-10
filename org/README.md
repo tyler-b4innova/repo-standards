@@ -6,7 +6,11 @@ One ruleset set and one App definition for every organization. An org admin runs
 |---|---|---|
 | default branch and main | every repo: default branch, `main` | PR (0 approvals, threads resolved), `gate` plus `extra_checks.default`, no deletion, no force-push |
 | squash-merge with code-owner review | every repo: default branch, `main` | squash only; code-owner review; `gate` (strict when `strict_status_checks`) |
+| release branches (portal App only) | every repo: `release/**` | creating, moving and deleting are restricted; the only bypass is the portal App (`org_admin.release_app.id`), and with none set nobody can create one |
+| standards version branches (standards App only) | every repo: `standards/v*` | creating, moving and deleting are restricted; the only bypass is the org standards App (`org_admin.app.id`) |
 | push hygiene | every repo | no private env files, keys or tfvars, plus `extra_restricted_paths`, except `push_ignored_paths`; files up to `max_file_size_mb` |
+
+`release/<40-hex sha>` is how a production release starts: the portal's GitHub App creates it at an approved commit that is already on `main`, the repository's Workers Builds preview trigger builds it, `release.mjs preview` promotes the commit (see the README's Releases section), and the portal deletes the branch afterwards. `standards/v<version>` is the sync App's pack branch; gate's instructions step trusts its tip, which is why only the org App may write it. Neither ruleset has an org-admin bypass: a ref-protection ruleset carries exactly one bypass actor, because a bypass for admins would let a local agent session on an admin's `gh` login push to either branch.
 
 Every repository squash-merges and deletes merged branches, and its squash commit takes the PR title and description, so the commit on `main` carries the PR's What, Why and linked issue.
 
@@ -25,6 +29,7 @@ Overlay:
 ```json
 "org_admin": {
   "app": { "id": 0, "slug": "<app slug>", "name": "<App name>" },
+  "release_app": { "id": 0, "slug": "<portal App slug>" },
   "gate_integration_id": 0,
   "strict_status_checks": false,
   "extra_checks": { "default": [] },
@@ -34,6 +39,8 @@ Overlay:
   "max_file_size_mb": 50
 }
 ```
+
+`release_app` is optional: the portal's GitHub App, the only actor that may create `release/**` branches (a positive `id` is required when it is set; the example's `0` is refused). Leave it out and nobody can create them.
 
 `strict_status_checks` defaults to `false`; `gate` is required either way, and when on, it makes `gate` strict on the squash-merge ruleset. Every pull-request ruleset requires resolved review threads, and `gate` is the only required check (plus `extra_checks`). Code-owner review is required on the default branch and `main`, which with the pack's managed CODEOWNERS block (overlay `ui_owners`) is the approval for UI changes. App permissions are listed with their callers in `app-manifest.json`; the App has no webhook because the launcher polls.
 
