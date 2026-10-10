@@ -83,6 +83,14 @@ echo "export default { local: true };" >"$R/src/index.js"; commit unlanded; U=$(
 has "exit=1" "$out" && has "cannot prove ${U:0:7} came from main" "$out" && has "it is not in main's history" "$out" && [ -z "$(changes)" ] || why="$why; not main: $out $(changes)"
 land; : >"$RELEASE_LOG"; out=$(prom "$U")
 has "exit=0" "$out" && calls | grep -qE "^deploy --config .*/workers/runtime/wrangler.jsonc --name runtime --tag $U " && calls | grep -qE "^deploy --name app --tag $U " || why="$why; main's history: $out $(calls)"
+# the Builds checkout is a shallow clone of the release commit, and main has moved on since: main's history is fetched in full
+echo "export default { moved: 1 };" >"$R/src/index.js"; commit moved; land
+git -C "$T/allfull.git" config uploadpack.allowAnySHA1InWant true
+SH=$T/shallow; git init -q "$SH"; gc -C "$SH" remote add origin "file://$T/allfull.git"; gc -C "$SH" fetch -q --depth 1 origin "$U"; gc -C "$SH" checkout -q "$U"
+mkdir -p "$SH/node_modules/.bin"; touch "$SH/node_modules/.bin/wrangler"
+[ "$(gc -C "$SH" rev-parse --is-shallow-repository)" = true ] || why="$why; fixture is not shallow"
+: >"$RELEASE_LOG"; out=$(cd "$SH" && WORKERS_CI_BRANCH=release/$U WORKERS_CI_COMMIT_SHA=$U node scripts/agent/release.mjs preview 2>&1)
+has "promoted ${U:0:7}" "$out" || why="$why; shallow checkout: $out"
 repo noremote ', "exports": { "A": { "type": "durable-object", "storage": "sqlite" } }'
 printf '{ "name": "runtime", "main": "../../src/index.js", "exports": { "B": { "type": "durable-object", "storage": "sqlite" } }, %s }\n' "$STAGING" >"$R/workers/runtime/wrangler.jsonc"; commit full
 gc -C "$R" remote remove origin; world '{"scripts":[{"id":"app"},{"id":"runtime"}]}'; : >"$RELEASE_LOG"; out=$(prom "$(sha)")
