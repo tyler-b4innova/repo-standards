@@ -332,6 +332,10 @@ process.on("exit", (code) => {
   Re-running the build deploys and uploads all of them again; nothing was restored or rolled back.`);
 });
 
+// The part of the staging validation a deploy must not skip: nothing non-production names a production resource.
+const isolationFindings = (worker, productionConfigs) => stagingFindings(worker.cfg, { file: worker.file, std: { staging: true }, productionConfigs })
+  .fails.filter(([message]) => /names the production resource|consumes the production queue/.test(message)).map(([message]) => message);
+
 async function deploy() {
   // The secrets file goes with its directory on every exit, including a failed step's process.exit.
   const dir = mkdtempSync(join(tmpdir(), "release-"));
@@ -343,6 +347,11 @@ async function deploy() {
       const branch = env.WORKERS_CI_BRANCH || execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" }).trim(), name = slug(branch);
       if (!name || name === "staging") fail(`branch ${branch} has no usable Preview name (${name || "empty"})`, "rename the branch");
       config();
+      // A declared Worker's Preview is held to the staging isolation too, against every declared Worker's production resources.
+      if (declared) {
+        const isolation = isolationFindings({ file: configFile, cfg: readConfig(configFile) }, declared.flatMap((w) => [w.cfg, ...w.extraConfigs]));
+        if (isolation.length) throw new Error(isolation.join("; "));
+      }
       must(["preview", "--name", name, ...leadArgs, ...sf]);
       secretCheck(`Preview ${name}`, ["preview", "secret", "list", "--name", name, ...leadArgs, "--json"]);
       return;
@@ -354,9 +363,8 @@ async function deploy() {
     // Every declared Worker is production to this one's staging: its resources are never staging's either.
     const productionConfigs = [cfg, ...extras.map((w) => w.cfg), { name: productionName }, ...(declared ?? []).filter((w) => w !== lead).flatMap((w) => [w.cfg, ...w.extraConfigs])];
     for (const worker of [...(staged ? [{ file: configFile, cfg }] : []), ...extras]) {
-      const result = stagingFindings(worker.cfg, { file: worker.file, std: { staging: true }, productionConfigs });
-      const isolation = result.fails.filter(([message]) => /names the production resource|consumes the production queue/.test(message));
-      if (isolation.length) throw new Error(isolation.map(([message]) => message).join("; "));
+      const isolation = isolationFindings(worker, productionConfigs);
+      if (isolation.length) throw new Error(isolation.join("; "));
     }
     const builtProduction = buildProductionConfigs(std, pkg, [{ file: configFile, cfg, primary: true, redirect: leadRedirect }, ...extras]);
     productionConfigs.push(...builtProduction);

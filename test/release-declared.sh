@@ -99,7 +99,8 @@ if [ -z "$why" ]; then ok release-declared-promote; else fail release-declared-p
 why=""
 repo prev
 D1='"d1_databases": [{ "binding": "DB", "database_name": "web-prod", "database_id": "web-prod-id" }]'
-printf '{ "name": "api", "main": "src/index.js", "d1_databases": [{ "binding": "AUTH", "database_name": "auth-prod", "database_id": "auth-prod-id" }], %s }\n' "$STAGING" >"$R/wrangler.api.jsonc"
+AUTH='"d1_databases": [{ "binding": "AUTH", "database_name": "auth-stg", "database_id": "auth-stg-id" }]'
+printf '{ "name": "api", "main": "src/index.js", "d1_databases": [{ "binding": "AUTH", "database_name": "auth-prod", "database_id": "auth-prod-id" }], "env": { "staging": { "routes": [], "workers_dev": true, %s } }, "previews": { %s } }\n' "$AUTH" "$AUTH" >"$R/wrangler.api.jsonc"
 prev() { # prev <previews block for web>: web's config with that previews block
   printf '{ "name": "web", "main": "../../src/index.js", %s, "env": { "staging": { "routes": [], "workers_dev": true, "d1_databases": [{ "binding": "DB", "database_name": "web-stg", "database_id": "web-stg-id" }] } }, "previews": %s }\n' "$D1" "$1" >"$R/workers/web/wrangler.jsonc"; }
 preview() { (cd "$R" && WRANGLER_CI_OVERRIDE_NAME=web WORKERS_CI_BRANCH=feat/x node scripts/agent/release.mjs preview 2>&1); echo "exit=$?"; }
