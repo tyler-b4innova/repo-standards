@@ -52,6 +52,7 @@ appendFileSync(process.env.RELEASE_LOG, JSON.stringify({ args, controlledEmpty, 
 if (args[0] === "deploy" && args.includes("--dry-run") && process.env.FAIL_DRYRUN === name) { console.error("simulated bundle failure"); process.exit(1); }
 if (args[0] === "preview" && args[1] === "delete" && process.env.FAIL_PREVIEW_DELETE === cfg.name) { console.error("simulated preview delete failure"); process.exit(1); }
 // promote: D1 migrations
+if (args[0] === "d1" && explicitConfig) appendFileSync(process.env.RELEASE_LOG, JSON.stringify({ d1config: cfg }) + "\n");
 if (args[0] === "d1") { console.log(process.env.D1_PENDING ? "Migrations to be applied: 0002.sql" : "No migrations to apply!"); process.exit(0); }
 if (args[0] === "deploy" && process.env.FAIL_DEPLOY === name) { console.error("simulated deploy failure"); process.exit(1); }
 if (args[0] === "versions" && args[1] === "upload") {
