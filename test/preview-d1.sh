@@ -27,7 +27,7 @@ D1S='"d1_databases": [{ "binding": "DB", "database_name": "app-stg", "database_i
 D1X='"d1_databases": [{ "binding": "DB", "database_name": "app-pr", "database_id": "app-pr-id", "migrations_dir": "migrations" }]'
 # repo <name> <previews block>: a root Worker with production and staging databases and migrations
 repo() {
-  R=$T/$1; git init -q -b main "$R"; node bin/repo-standards.mjs apply --target "$R" --overlay "$ENGINE/examples/overlay.json" --version 0.8.9 >/dev/null
+  R=$(cd "$T" && pwd -P)/$1; git init -q -b main "$R"; node bin/repo-standards.mjs apply --target "$R" --overlay "$ENGINE/examples/overlay.json" --version 0.8.9 >/dev/null
   export RELEASE_LOG=$T/$1.log; : >"$RELEASE_LOG"
   mkdir -p "$R/node_modules/.bin" "$R/src" "$R/migrations"; touch "$R/node_modules/.bin/wrangler"; echo "export default {};" >"$R/src/index.js"; echo "select 1;" >"$R/migrations/0001.sql"
   printf '{ "name": "app", "main": "src/index.js", "account_id": "acct1", %s, "env": { "staging": { "routes": [], "workers_dev": true, %s } }, "previews": %s }\n' "$D1P" "$D1S" "$2" >"$R/wrangler.jsonc"
@@ -76,7 +76,7 @@ jset "$R/standards.json" 'o.workers=["workers/web","wrangler.api.jsonc"]'; commi
 : >"$RELEASE_LOG"; out=$(cd "$R" && WRANGLER_CI_OVERRIDE_NAME=web WORKERS_CI_BRANCH=feat/x node scripts/agent/release.mjs preview 2>&1; echo "exit=$?")
 want=$(printf 'd1 migrations apply WDB --remote --config <tmp>\npreview --name feat-x --config workers/web/wrangler.jsonc')
 has "exit=0" "$out" && [ "$(calls)" = "$want" ] || why="web: $out // $(calls)"
-[ "$(d1config)" = '{"keys":["account_id","d1_databases"],"account":null,"d1":[["WDB","web-pr","web-pr-id","'"$R"'/workers/web/migrations"]]}' ] || why="$why; web config: $(d1config)"
+[ "$(d1config)" = '{"keys":["d1_databases"],"account":null,"d1":[["WDB","web-pr","web-pr-id","'"$R"'/workers/web/migrations"]]}' ] || why="$why; web config: $(d1config)"
 sed -i.bak 's/"database_name": "web-pr", "database_id": "web-pr-id"/"database_name": "app-stg", "database_id": "app-stg-id"/' "$R/workers/web/wrangler.jsonc"; rm "$R/workers/web/wrangler.jsonc.bak"; commit other-staging
 : >"$RELEASE_LOG"; out=$(cd "$R" && WRANGLER_CI_OVERRIDE_NAME=web WORKERS_CI_BRANCH=feat/x node scripts/agent/release.mjs preview 2>&1; echo "exit=$?")
 [ "$(calls)" = "preview --name feat-x --config workers/web/wrangler.jsonc" ] && has "exit=0" "$out" || why="$why; another Worker's staging database: $out // $(calls)"

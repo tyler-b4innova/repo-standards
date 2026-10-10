@@ -153,7 +153,8 @@ export function findings(cfg, { file, std = {}, pack = {}, required = [], produc
       const n = nameOf(b), p = list(at(previews, k)).find((x) => nameOf(x) === n), s = list(at(stage, k)).find((x) => nameOf(x) === n);
       if (!n || !DATA.has(k)) continue;
       if (!p) F(`previews lacks ${k} ${n}`, `bind ${n} in previews to the staging resource env.staging uses`);
-      else if (s) for (const key of keys) if (s[key] !== undefined && p[key] !== s[key]) F(`previews ${k} ${n} ${key} is ${JSON.stringify(p[key])}, not staging's ${JSON.stringify(s[key])}`, "point previews at the staging resources");
+      // A D1 binding may instead name a database of its own (a dedicated Preview database, migrated by the Preview build): every key differs.
+      else if (s && !(k === "d1_databases" && keys.every((key) => s[key] === undefined || p[key] !== s[key]))) for (const key of keys) if (s[key] !== undefined && p[key] !== s[key]) F(`previews ${k} ${n} ${key} is ${JSON.stringify(p[key])}, not staging's ${JSON.stringify(s[key])}`, "point previews at the staging resources");
     }
   }
 
