@@ -167,4 +167,35 @@ out=$(applied "$d"); rc=$?
 [ $rc -ne 0 ] && has "workers/missing" "$out" && [ ! -d "$d/.github" ] || why="$why; invalid declaration applied (exit $rc): $out"
 if [ -z "$why" ]; then ok release-declared-apply; else fail release-declared-apply "$why"; fi
 
+# ---- the PR Preview clean-up runs the actual delete command, from the repository root, for every declared Worker (not the supporting
+# ones, which get no Preview); a repository without the key still runs the one command it always ran
+why=""
+repo clean
+echo '{"open":[],"closed":[]}' >"$T/gh.json"
+node test/stubs/previews-github.mjs "$T/gh.port" "$T/gh.json" & GH_PID=$!
+for i in $(seq 50); do [ -s "$T/gh.port" ] && break; sleep 0.1; done
+export GITHUB_API_URL="http://127.0.0.1:$(cat "$T/gh.port")" GITHUB_REPOSITORY=acme/demo GITHUB_TOKEN=t
+tidy() { (cd "$R" && node scripts/agent/release.mjs cleanup "$@" 2>&1); echo "exit=$?"; }
+: >"$RELEASE_LOG"; out=$(tidy --pr-branch Feat/Login)
+want=$(printf 'preview delete --name feat-login --skip-confirmation --config workers/web/wrangler.jsonc\npreview delete --name feat-login --skip-confirmation --config wrangler.api.jsonc')
+has "exit=0" "$out" && [ "$(calls)" = "$want" ] || why="pr: $out // $(calls)"
+# the open pull request keeps its Previews, for every Worker
+echo '{"open":[{"head":{"ref":"feat/login","repo":{"full_name":"acme/demo"}}}],"closed":[]}' >"$T/gh.json"
+: >"$RELEASE_LOG"; out=$(tidy --pr-branch Feat/Login)
+has "exit=0" "$out" && [ -z "$(calls)" ] || why="$why; open pr: $out // $(calls)"
+# a failing delete for one Worker fails the run, and the other Worker's is still attempted
+echo '{"open":[],"closed":[]}' >"$T/gh.json"
+: >"$RELEASE_LOG"; out=$(FAIL_PREVIEW_DELETE=web tidy --pr-branch Feat/Login)
+has "exit=1" "$out" && has "could not delete Preview feat-login" "$out" && [ "$(calls | wc -l | tr -d ' ')" = 2 ] || why="$why; failure: $out // $(calls)"
+now=$(node -e 'console.log(new Date().toISOString())')
+echo "{\"open\":[],\"closed\":[{\"head\":{\"ref\":\"done/one\",\"repo\":{\"full_name\":\"acme/demo\"}},\"closed_at\":\"$now\",\"updated_at\":\"$now\"}]}" >"$T/gh.json"
+: >"$RELEASE_LOG"; out=$(tidy --sweep)
+has "exit=0" "$out" && [ "$(calls | sed 's/feat-login/X/')" = "$(printf 'preview delete --name done-one --skip-confirmation --config workers/web/wrangler.jsonc\npreview delete --name done-one --skip-confirmation --config wrangler.api.jsonc')" ] || why="$why; sweep: $out // $(calls)"
+# a repository without the key: one command, no --config
+repo plain; rm -f "$R"/wrangler.api.jsonc; printf '{ "name": "site", "main": "src/index.js", %s }\n' "$STAGING" >"$R/wrangler.jsonc"; jset "$R/standards.json" 'delete o.workers'; commit plain
+: >"$RELEASE_LOG"; out=$(tidy --pr-branch Feat/Login)
+has "exit=0" "$out" && [ "$(calls)" = "preview delete --name feat-login --skip-confirmation" ] || why="$why; root repo: $out // $(calls)"
+kill $GH_PID 2>/dev/null
+if [ -z "$why" ]; then ok release-declared-cleanup; else fail release-declared-cleanup "$why"; fi
+
 done_cases
