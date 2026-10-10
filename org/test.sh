@@ -74,7 +74,7 @@ out=$(node --input-type=module -e '
     pushBypass: b.rulesets.find((r) => r.target === "push").bypass_actors,
     unattributed: [a, b].map((x) => [...new Set(x.rulesets.flatMap((r) => r.rules.pull_request ? [r.rules.pull_request.require_extra_approval_for_unattributed_changes] : []))]),
     placeholders: JSON.stringify(a).includes("\"$"), refused }));' "$T/org.json" 2>&1)
-want='{"bypass":["branch:[{\"actor_id\":4242,\"actor_type\":\"Integration\",\"bypass_mode\":\"always\"},{\"actor_id\":null,\"actor_type\":\"OrganizationAdmin\",\"bypass_mode\":\"pull_request\"}]","push:[]"],"threads":[true,true],"codeOwners":["org: squash-merge with code-owner review"],"squash":["squash"],"names":["org: default branch and main (PR + gate)","org: squash-merge with code-owner review","org: push hygiene (secret files, large files)"],"flowProperty":false,"vault":true,"size":[50,20],"strict":[[],["org: squash-merge with code-owner review"]],"checks":["gate+lint","gate"],"ignored":[null,[".env.example"]],"pinned":[{"context":"gate","integration_id":42}],"unpinned":[{"context":"gate"}],"pushBypass":[],"unattributed":[[false],[true]],"placeholders":false,"refused":true}'
+want='{"bypass":["branch:[]","branch:[{\"actor_id\":4242,\"actor_type\":\"Integration\",\"bypass_mode\":\"always\"},{\"actor_id\":null,\"actor_type\":\"OrganizationAdmin\",\"bypass_mode\":\"pull_request\"}]","branch:[{\"actor_id\":4242,\"actor_type\":\"Integration\",\"bypass_mode\":\"always\"}]","push:[]"],"threads":[true,true],"codeOwners":["org: squash-merge with code-owner review"],"squash":["squash"],"names":["org: default branch and main (PR + gate)","org: squash-merge with code-owner review","org: push hygiene (secret files, large files)","org: release branches (portal App only)","org: standards version branches (standards App only)"],"flowProperty":false,"vault":true,"size":[50,20],"strict":[[],["org: squash-merge with code-owner review"]],"checks":["gate+lint","gate"],"ignored":[null,[".env.example"]],"pinned":[{"context":"gate","integration_id":42}],"unpinned":[{"context":"gate"}],"pushBypass":[],"unattributed":[[false],[true]],"placeholders":false,"refused":true}'
 [ "$out" = "$want" ] && ok org-rulesets-render || fail org-rulesets-render "$out"
 
 # gate-required-either-strict: `gate` is a required check on every ruleset that covers a default branch or main, direct
@@ -169,6 +169,30 @@ else fail engine-org-push-external "$ext :: $managed"; fi
 node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8")); o.launcher={lanes:[{name:"x",vendor:"claude"}]}; require("fs").writeFileSync(f+".bad",JSON.stringify(o))' "$T/org.json"
 : >"$T/log"; lb=$(node org/apply.mjs --overlay "$T/org.json.bad" --dry-run 2>&1); lx=$?
 if [ $lx -ne 0 ] && grep -q "set on the launcher dashboard" <<<"$lb" && [ ! -s "$T/log" ]; then ok engine-org-dry-run-diff; else fail engine-org-dry-run-diff "launcher: $lx $lb"; fi
+
+# engine-org-ref-protection: `release/**` branches are created, moved and deleted, and `standards/v*` branches created and moved (not
+# deleted: a missing standards branch already refuses, and deletion protection could block GitHub's auto-delete after a merge), by one App each and nobody
+# else, org admins included. The release ruleset's bypass is the portal App from org_admin.release_app.id; with no portal App
+# set it has no bypass at all, so nobody can create a release branch. The standards ruleset's bypass is the org standards App.
+# A release_app without a positive id is refused. A dry run against an org without them lists both as creates.
+out=$(node --input-type=module -e '
+  import { render } from "./org/apply.mjs";
+  import { readFileSync } from "node:fs";
+  const o = JSON.parse(readFileSync(process.argv[1], "utf8"));
+  const pick = (x, n) => x.rulesets.find((r) => r.name.includes(n));
+  const none = render(o);
+  o.org_admin.release_app = { id: 777, slug: "portal" };
+  const set = render(o);
+  const refuse = (ra) => { try { render({ org_admin: { app: { id: 1, slug: "x" }, release_app: ra } }); return false; } catch { return true; } };
+  const shape = (r) => ({ target: r.target, refs: r.conditions.ref_name.include, rules: Object.keys(r.rules).sort(), bypass: r.bypass_actors });
+  console.log(JSON.stringify({ release: shape(pick(set, "release branches")), releaseUnset: pick(none, "release branches").bypass_actors,
+    standards: shape(pick(set, "standards version")), standardsUnset: pick(none, "standards version").bypass_actors,
+    refused: refuse({}) && refuse({ id: 0, slug: "p" }) && refuse({ id: "7", slug: "p" }) }));' "$T/org.json" 2>&1)
+want='{"release":{"target":"branch","refs":["refs/heads/release/**"],"rules":["creation","deletion","update"],"bypass":[{"actor_id":777,"actor_type":"Integration","bypass_mode":"always"}]},"releaseUnset":[],"standards":{"target":"branch","refs":["refs/heads/standards/v*"],"rules":["creation","update"],"bypass":[{"actor_id":4242,"actor_type":"Integration","bypass_mode":"always"}]},"standardsUnset":[{"actor_id":4242,"actor_type":"Integration","bypass_mode":"always"}],"refused":true}'
+echo '{"org":"acme","repos":[],"property":null,"values":{},"rulesets":[]}' >"$T/empty.json"
+start "$T/empty.json"
+dry=$(run --dry-run)
+if [ "$out" = "$want" ] && grep -q 'ruleset "org: release branches (portal App only)": create' <<<"$dry" && grep -q 'ruleset "org: standards version branches (standards App only)": create' <<<"$dry"; then ok engine-org-ref-protection; else fail engine-org-ref-protection "$out :: $dry"; fi
 
 # engine-org-app-link: create-app prints GitHub's URL-parameter registration link for the org, prefilled with
 # the overlay's App name, webhook off, and exactly the manifest's permissions.
