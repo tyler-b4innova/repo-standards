@@ -10,7 +10,7 @@ import { rollbackFindings } from "./rollback.mjs";
 import { scan } from "./jsscan.mjs";
 import { localConfig } from "./local.mjs";
 import { claudePins, codexPins } from "./pins.mjs";
-import { verifyGeneratedBuild, workerFiles, readConfig, effectiveConfig, assertStaging, assertReleaseAccounts } from "./release-config.mjs";
+import { verifyGeneratedBuild, workerFiles, declaredWorkers, readConfig, effectiveConfig, assertStaging, assertReleaseAccounts } from "./release-config.mjs";
 import { findings as stagingFindings, parse as parseWrangler } from "./staging.mjs";
 
 if (process.argv.includes("--help")) {
@@ -393,32 +393,60 @@ else {
     fail(`standards.json secrets is ${JSON.stringify(sec)}`, '{"required": ["NAME", ...], "store": "1password" (our accounts) or "secrets_store" (a client-owned account)}');
   if (![undefined, false].includes(std?.staging)) fail(`standards.json staging is ${JSON.stringify(std.staging)}`, "remove it, or false for a Worker that is not released through staging (previews are still checked)");
   const rootWrangler = ["wrangler.json", "wrangler.jsonc", "wrangler.toml"].find((f) => tracked.includes(f));
+  // Declared Workers (standards.json workers) are the repository's primaries: validated like the root config, never discovered.
+  let primaries = null;
+  try { primaries = declaredWorkers(std ?? {}); }
+  catch (e) { fail(e.message, 'standards.json workers: each entry a Wrangler config file or a directory holding one (or {"config": ..., "release_workers": [...]}), with distinct Worker names; no top-level release_workers'); }
+  const declaredKey = std?.workers !== undefined;
+  if (primaries && Array.isArray(sec?.required) && sec.required.length)
+    fail("standards.json secrets.required with workers declared", "list each declared Worker's required secrets in its own wrangler config secrets.required; keep secrets.store here");
   // The release check (std-release-check.yml) ships to every Worker with a staging_url; say why a repository has none.
   if (std?.e2e !== false && !tracked.includes(".github/workflows/std-release-check.yml"))
-    warn(`no release check: ${!rootWrangler ? "no Worker (no root wrangler config)" : "standards.json has no staging_url"} | fix: ${!rootWrangler ? "none needed unless a Worker is added" : "set staging_url to the staging Worker's https URL and re-run sync"}; the production deploy waits for a release-check on the version's commit`);
+    warn(`no release check: ${!rootWrangler && !primaries ? "no Worker (no root wrangler config, no declared workers)" : "standards.json has no staging_url"} | fix: ${!rootWrangler && !primaries ? "none needed unless a Worker is added" : "set staging_url to the staging Worker's https URL and re-run sync"}; the production deploy waits for a release-check on the version's commit`);
   // Every production `versions upload` carries `--tag <full commit sha>`: the portal maps a version to its commit, and
   // so to its release-check, through the tag. release.mjs does; a deploy command the repo's own files document must too.
   for (const [where, text] of [["package.json scripts", Object.values(json("package.json")?.scripts ?? {}).join("\n")],
     ...tracked.filter((f) => /^\.github\/workflows\/(?!std-)[^/]+\.ya?ml$/.test(f) || f === "scripts/agent/gate.local.sh").map((f) => [f, read(f) ?? ""])])
     if (/\bversions upload\b(?![^\n]*--tag\b)/.test(text)) warn(`${where}: wrangler versions upload without --tag | fix: add --tag "$WORKERS_CI_COMMIT_SHA" (Workers Builds; the full commit SHA) so the portal can tie the version to its release-check`);
   let productionConfigs = [];
-  try {
+  // A supporting Worker is validated as a staging target of its own.
+  const supporting = (file) => {
+    const cfg = readConfig(file);
+    assertStaging(cfg, effectiveConfig(file, true, { redirect: false }), productionConfigs);
+    const required = [...new Set(Array.isArray(cfg.secrets?.required) ? cfg.secrets.required : [])];
+    const result = stagingFindings(cfg, { file, std: std ?? {}, pack, required, productionConfigs });
+    result.fails.forEach(([m, f]) => fail(m, f)); result.warns.forEach(warn);
+  };
+  if (primaries) try {
+    productionConfigs = primaries.flatMap((w) => [w.cfg, ...w.extraConfigs]);
+    assertReleaseAccounts(productionConfigs[0], productionConfigs);
+    for (const w of primaries) {
+      // each declared primary gets the full validation, preview isolation from every declared Worker's production resources included
+      if (w.cfg.env?.staging) assertStaging(w.cfg, effectiveConfig(w.file, true, { redirect: false }), productionConfigs);
+      const required = [...new Set(Array.isArray(w.cfg.secrets?.required) ? w.cfg.secrets.required : [])];
+      const result = stagingFindings(w.cfg, { file: w.file, std: std ?? {}, pack, required, productionConfigs });
+      result.fails.forEach(([m, f]) => fail(m, f)); result.warns.forEach(warn);
+      w.extras.forEach(supporting);
+    }
+  } catch (e) { fail(e.message, "give each declared Worker (and its release_workers) an isolated env.staging and a previews block on staging resources"); }
+  else if (!declaredKey) try {
     const extras = workerFiles(std ?? {}, rootWrangler ?? null);
     productionConfigs = rootWrangler ? [readConfig(rootWrangler), ...extras.map(readConfig)] : [];
     if (productionConfigs.length) assertReleaseAccounts(productionConfigs[0], productionConfigs);
     if (extras.length && productionConfigs[0].env?.staging)
       assertStaging(productionConfigs[0], effectiveConfig(rootWrangler, true, { redirect: false }), productionConfigs);
-    for (const file of extras) {
-      const cfg = readConfig(file);
-      assertStaging(cfg, effectiveConfig(file, true, { redirect: false }), productionConfigs);
-      const required = [...new Set(Array.isArray(cfg.secrets?.required) ? cfg.secrets.required : [])];
-      const result = stagingFindings(cfg, { file, std: std ?? {}, pack, required, productionConfigs });
-      result.fails.forEach(([m, f]) => fail(m, f)); result.warns.forEach(warn);
-    }
+    extras.forEach(supporting);
   } catch (e) { fail(e.message, "list each secondary Worker's own config in standards.json release_workers and give it an isolated env.staging"); }
-  try { verifyGeneratedBuild(std ?? {}, json("package.json"), rootWrangler ?? null); }
+  try { if (!declaredKey) verifyGeneratedBuild(std ?? {}, json("package.json"), rootWrangler ?? null); }
   catch (e) { fail(`generated Wrangler config: ${e.message}`, "make standards.json build or package.json scripts.build honor CLOUDFLARE_ENV=staging (use an adapter with environment selection), then rebuild without it for production"); }
-  if (rootWrangler?.endsWith(".toml")) warn(`${rootWrangler} is not checked for staging isolation (TOML) | fix: convert it to wrangler.jsonc`);
+  // the Worker calls the managed pass check (scripts/agent/portal-pass.mjs) before anything else
+  const portalCheck = () => {
+    if (pack.portal && !tracked.some((f) => /\.([cm]?[jt]sx?|svelte|astro)$/.test(f) && !f.startsWith("scripts/agent/") && !/(^|\/)(tests?|e2e|__tests__)\//.test(f)
+      && /from\s+["'][^"']*scripts\/agent\/portal-pass(\.mjs)?["']/.test(read(f) ?? "") && /\bportalPass\s*\(/.test(scan(read(f) ?? "").code)))
+      fail("no Worker source calls the portal pass check", 'import { portalPass } from "<path to>/scripts/agent/portal-pass.mjs" and, first in the fetch handler or middleware: const denied = await portalPass(request, env); if (denied) return denied;');
+  };
+  if (declaredKey) { if (primaries) portalCheck(); }
+  else if (rootWrangler?.endsWith(".toml")) warn(`${rootWrangler} is not checked for staging isolation (TOML) | fix: convert it to wrangler.jsonc`);
   else if (rootWrangler) {
     const cfg = parseWrangler(read(rootWrangler) ?? "");
     if (!cfg || typeof cfg !== "object") fail(`${rootWrangler} does not parse`, "fix the JSON (comments and trailing commas are fine)");
@@ -426,10 +454,7 @@ else {
       const required = [...new Set([...(Array.isArray(sec?.required) ? sec.required : []), ...(Array.isArray(cfg.secrets?.required) ? cfg.secrets.required : [])])];
       const r = stagingFindings(cfg, { file: rootWrangler, std: std ?? {}, pack, required, productionConfigs: productionConfigs.length ? productionConfigs : [cfg] });
       r.fails.forEach(([m, f]) => fail(m, f)); r.warns.forEach(warn);
-      // the Worker calls the managed pass check (scripts/agent/portal-pass.mjs) before anything else
-      if (pack.portal && !tracked.some((f) => /\.([cm]?[jt]sx?|svelte|astro)$/.test(f) && !f.startsWith("scripts/agent/") && !/(^|\/)(tests?|e2e|__tests__)\//.test(f)
-        && /from\s+["'][^"']*scripts\/agent\/portal-pass(\.mjs)?["']/.test(read(f) ?? "") && /\bportalPass\s*\(/.test(scan(read(f) ?? "").code)))
-        fail("no Worker source calls the portal pass check", 'import { portalPass } from "<path to>/scripts/agent/portal-pass.mjs" and, first in the fetch handler or middleware: const denied = await portalPass(request, env); if (denied) return denied;');
+      portalCheck();
     }
   }
   for (const host of pack.shared_preview_hosts)

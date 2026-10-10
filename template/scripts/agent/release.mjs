@@ -8,6 +8,7 @@
 // Secrets (standards.json "secrets": {"required": [...], "store": "1password" | "secrets_store"}) are re-supplied on every
 // staging and Preview deploy (a Preview drops secrets set on it when it is redeployed), and a deployed Worker missing a
 // required secret fails the build. Secret values are never printed.
+// With standards.json "workers" declared, the Worker a main/preview build releases is WRANGLER_CI_OVERRIDE_NAME, or --worker <name> locally.
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -15,7 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse, findings as stagingFindings, resourceFindings } from "./staging.mjs";
-import { build, rootFile, readConfig, effectiveConfig, assertStaging, assertReleaseAccounts, workerFiles, buildProductionConfigs, doLifecycle } from "./release-config.mjs";
+import { build, rootFile, readConfig, effectiveConfig, assertStaging, assertReleaseAccounts, workerFiles, declaredWorkers, selectDeclared, buildProductionConfigs, doLifecycle } from "./release-config.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
 const SUBS = ["main", "preview", "slug", "cleanup", "verify-release-check"];
@@ -74,7 +75,24 @@ if (cmd === "verify-release-check") {
 
 try { process.chdir(execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: "pipe" }).trim()); } catch {}
 const std = json("standards.json") ?? {};
-const configFile = rootFile();
+// Declared Workers (standards.json "workers"): each has its own Builds trigger running from the repository root, and the build releases
+// the one it is for (WRANGLER_CI_OVERRIDE_NAME, or --worker <name> in a local run). Without the key the root config is the one Worker.
+let declared = null, lead = null;
+try {
+  declared = declaredWorkers(std);
+  if (declared && cmd !== "cleanup") {
+    const at = args.indexOf("--worker"), asked = at >= 0 ? args[at + 1] : undefined;
+    if (at >= 0 && !asked) throw new Error("--worker needs a Worker name");
+    if (asked && env.WRANGLER_CI_OVERRIDE_NAME && asked !== env.WRANGLER_CI_OVERRIDE_NAME)
+      throw new Error(`--worker ${asked} disagrees with this build's WRANGLER_CI_OVERRIDE_NAME ${env.WRANGLER_CI_OVERRIDE_NAME}`);
+    lead = selectDeclared(declared, asked ?? env.WRANGLER_CI_OVERRIDE_NAME);
+  }
+} catch (e) { fail(e.message, "declare each Worker in standards.json workers and give each Worker's Builds trigger its own name (WRANGLER_CI_OVERRIDE_NAME)"); }
+const configFile = declared ? lead?.file ?? null : rootFile();
+// Wrangler finds the root default config (and the adapter redirect beside it) by itself; any other declared config is named with --config.
+const leadRedirect = !declared || configFile === rootFile();
+const leadArgs = leadRedirect || !configFile ? [] : ["--config", configFile];
+const supportingFiles = () => (declared ? lead.extras : workerFiles(std, configFile));
 function config() {
   if (!configFile) fail("no wrangler config (wrangler.jsonc, wrangler.json or wrangler.toml)", "run this from a Worker repository");
   if (cmd !== "main" && !RELEASE_SHA && configFile.endsWith(".toml")) return {};
@@ -228,7 +246,8 @@ async function sentryRelease(sha, plan, outdir) {
 const secrets = std.secrets && typeof std.secrets === "object" ? std.secrets : {};
 // Required: standards.json secrets.required and the wrangler config's own secrets.required.
 const wranglerRequired = (() => { const c = configFile && !configFile.endsWith(".toml") ? parse(readFileSync(configFile, "utf8")) : null; return Array.isArray(c?.secrets?.required) ? c.secrets.required : []; })();
-const required = [...new Set([...(Array.isArray(secrets.required) ? secrets.required : []), ...wranglerRequired])].filter((s) => typeof s === "string" && s);
+// A declared Worker requires what its own config lists: a repository-wide list cannot know which Worker needs which secret.
+const required = [...new Set([...(Array.isArray(secrets.required) && !declared ? secrets.required : []), ...wranglerRequired])].filter((s) => typeof s === "string" && s);
 const store = secrets.store ?? "1password";
 
 // The 1Password CLI the build reads secrets with: OP_CLI, else a pinned release, checksum-verified (the build image has none).
@@ -314,6 +333,10 @@ process.on("exit", (code) => {
   Re-running the build deploys and uploads all of them again; nothing was restored or rolled back.`);
 });
 
+// The part of the staging validation a deploy must not skip: nothing non-production names a production resource.
+const isolationFindings = (worker, productionConfigs) => stagingFindings(worker.cfg, { file: worker.file, std: { staging: true }, productionConfigs })
+  .fails.filter(([message]) => /names the production resource|consumes the production queue/.test(message)).map(([message]) => message);
+
 async function deploy() {
   // The secrets file goes with its directory on every exit, including a failed step's process.exit.
   const dir = mkdtempSync(join(tmpdir(), "release-"));
@@ -325,21 +348,26 @@ async function deploy() {
       const branch = env.WORKERS_CI_BRANCH || execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8" }).trim(), name = slug(branch);
       if (!name || name === "staging") fail(`branch ${branch} has no usable Preview name (${name || "empty"})`, "rename the branch");
       config();
-      must(["preview", "--name", name, ...sf]);
-      secretCheck(`Preview ${name}`, ["preview", "secret", "list", "--name", name, "--json"]);
+      // A declared Worker's Preview is held to the staging isolation too, against every declared Worker's production resources.
+      if (declared) {
+        const isolation = isolationFindings({ file: configFile, cfg: readConfig(configFile) }, declared.flatMap((w) => [w.cfg, ...w.extraConfigs]));
+        if (isolation.length) throw new Error(isolation.join("; "));
+      }
+      must(["preview", "--name", name, ...leadArgs, ...sf]);
+      secretCheck(`Preview ${name}`, ["preview", "secret", "list", "--name", name, ...leadArgs, "--json"]);
       return;
     }
     const cfg = config(), staged = Boolean(cfg.env?.staging);
-    const extras = workerFiles(std, configFile).map((file) => ({ file, cfg: readConfig(file) }));
+    const extras = supportingFiles().map((file) => ({ file, cfg: readConfig(file) }));
     assertReleaseAccounts(cfg, [cfg, ...extras.map((worker) => worker.cfg)]);
     const productionName = env.WRANGLER_CI_OVERRIDE_NAME || cfg.name;
-    const productionConfigs = [cfg, ...extras.map((w) => w.cfg), { name: productionName }];
+    // Every declared Worker is production to this one's staging: its resources are never staging's either.
+    const productionConfigs = [cfg, ...extras.map((w) => w.cfg), { name: productionName }, ...(declared ?? []).filter((w) => w !== lead).flatMap((w) => [w.cfg, ...w.extraConfigs])];
     for (const worker of [...(staged ? [{ file: configFile, cfg }] : []), ...extras]) {
-      const result = stagingFindings(worker.cfg, { file: worker.file, std: { staging: true }, productionConfigs });
-      const isolation = result.fails.filter(([message]) => /names the production resource|consumes the production queue/.test(message));
-      if (isolation.length) throw new Error(isolation.map(([message]) => message).join("; "));
+      const isolation = isolationFindings(worker, productionConfigs);
+      if (isolation.length) throw new Error(isolation.join("; "));
     }
-    const builtProduction = buildProductionConfigs(std, pkg, [{ file: configFile, cfg, primary: true }, ...extras]);
+    const builtProduction = buildProductionConfigs(std, pkg, [{ file: configFile, cfg, primary: true, redirect: leadRedirect }, ...extras]);
     productionConfigs.push(...builtProduction);
     if (!staged) {
       const preview = builtProduction[0].previews ?? {};
@@ -351,8 +379,8 @@ async function deploy() {
     // bypass the primary adapter redirect, exactly as Wrangler -c does.
     // Supporting Workers (release_workers) go first, in their listed order, then the primary: the primary binds Durable Objects and
     // Workflows that live on them, so a new class must exist there before the primary's deploy needs it.
-    const targets = [...extras, ...(staged ? [{ file: configFile, cfg, primary: true }] : [])].map((worker) => {
-      const resolved = effectiveConfig(worker.file, true, { redirect: Boolean(worker.primary) });
+    const targets = [...extras, ...(staged ? [{ file: configFile, cfg, primary: true, redirect: leadRedirect }] : [])].map((worker) => {
+      const resolved = effectiveConfig(worker.file, true, { redirect: worker.redirect ?? Boolean(worker.primary) });
       const name = assertStaging(worker.cfg, resolved, productionConfigs);
       const configArgs = resolved.redirected ? [] : ["--config", resolved.file];
       const names = worker.primary ? required : [...new Set((Array.isArray(worker.cfg.secrets?.required) ? worker.cfg.secrets.required : []).filter((name) => typeof name === "string" && name))];
@@ -392,12 +420,12 @@ async function deploy() {
     }
     if (!staged) {
       console.log(`::warning::${configFile} has no env.staging; deploying staging as the legacy "staging" Preview. Add env.staging (a separate <name>-staging Worker with its own data): see the standards README`);
-      must(["preview", "--name", "staging", ...sf]);
+      must(["preview", "--name", "staging", ...leadArgs, ...sf]);
       state.staged.push("the staging Preview");
-      secretCheck("the staging Preview", ["preview", "secret", "list", "--name", "staging", "--json"]);
+      secretCheck("the staging Preview", ["preview", "secret", "list", "--name", "staging", ...leadArgs, "--json"]);
     }
     build(std, pkg);
-    const production = effectiveConfig(configFile);
+    const production = effectiveConfig(configFile, false, { redirect: leadRedirect });
     if (production.cfg.name !== cfg.name) fail("production build does not target the production Worker", "build without CLOUDFLARE_ENV before uploading");
     for (const worker of extras) if (effectiveConfig(worker.file, false, { redirect: false }).cfg.name !== worker.cfg.name)
       fail("secondary production build targets a different Worker", "restore each secondary config's production name before uploading");
@@ -422,8 +450,8 @@ async function deploy() {
       const names = [...new Set((Array.isArray(worker.cfg.secrets?.required) ? worker.cfg.secrets.required : []).filter((name) => typeof name === "string" && name))];
       secretCheck("the production Worker", ["secret", "list", "--config", worker.file, "--name", worker.cfg.name, "--format", "json"], names);
     }
-    upload(productionName, ["versions", "upload", ...(outdir ? ["--outdir", outdir, "--upload-source-maps"] : []), ...tags]);
-    secretCheck("the production Worker", ["secret", "list", "--name", productionName, "--format", "json"]);
+    upload(productionName, ["versions", "upload", ...leadArgs, ...(outdir ? ["--outdir", outdir, "--upload-source-maps"] : []), ...tags]);
+    secretCheck("the production Worker", ["secret", "list", ...leadArgs, "--name", productionName, "--format", "json"]);
     state.done = true;
     // Settings a version upload never applies: warn where live production differs from the config (read-only; promote applies them).
     if (!env.CLOUDFLARE_API_TOKEN) console.log("release: settings drift not checked: no CLOUDFLARE_API_TOKEN in this build");
@@ -450,14 +478,14 @@ async function promote(sha) {
   if (env.WORKERS_CI_COMMIT_SHA !== sha || git("rev-parse", "HEAD").stdout.trim() !== sha)
     fail(`the release branch names ${short} but this build is of ${(env.WORKERS_CI_COMMIT_SHA ?? "no commit").slice(0, 7)}`, "the portal creates release/<sha> pointing at <sha> and starts nothing else; delete the branch and approve the version again");
   config();
-  const primary = effectiveConfig(configFile);
-  const extras = workerFiles(std, configFile).map((file) => ({ file, cfg: effectiveConfig(file, false, { redirect: false }).cfg }));
+  const primary = effectiveConfig(configFile, false, { redirect: leadRedirect });
+  const extras = supportingFiles().map((file) => ({ file, cfg: effectiveConfig(file, false, { redirect: false }).cfg }));
   assertReleaseAccounts(primary.cfg, [primary.cfg, ...extras.map((w) => w.cfg)]);
   // Builds sets WRANGLER_CI_OVERRIDE_NAME for the production trigger only; a name that disagrees with the config is not guessed at.
   if (env.WRANGLER_CI_OVERRIDE_NAME && env.WRANGLER_CI_OVERRIDE_NAME !== primary.cfg.name)
     fail(`this build renames the Worker (WRANGLER_CI_OVERRIDE_NAME=${env.WRANGLER_CI_OVERRIDE_NAME}, config ${primary.cfg.name})`, "promote deploys the names in the commit's wrangler configs");
   const workers = [...extras.map((w) => ({ name: w.cfg.name, cfg: w.cfg, file: w.file, cfgArgs: ["--config", w.file] })),
-    { name: primary.cfg.name, cfg: primary.cfg, file: primary.file, cfgArgs: [] }];
+    { name: primary.cfg.name, cfg: primary.cfg, file: primary.file, cfgArgs: leadArgs }];
 
   // 1. Production's live state is readable, and main released this commit: each Worker that deploys as a version has the version main
   //    uploaded for it (tagged with the commit), and a commit no Worker has a version for (all deploy in full) is an ancestor of main
@@ -550,7 +578,7 @@ function gitProof(sha, git) {
 // days (--sweep), except a branch an open pull request still uses. Never the legacy "staging" Preview; a Preview
 // already gone is fine.
 async function cleanup() {
-  config();
+  if (!declared) config();
   const at = args.indexOf("--pr-branch"), names = new Set(), keep = new Set(["staging"]);
   if (at < 0 && !args.includes("--sweep")) fail("nothing to clean up", "release.mjs cleanup --pr-branch <branch> | --sweep");
   if (at >= 0 && !args[at + 1]) fail("--pr-branch needs a branch", "release.mjs cleanup --pr-branch <branch>");
@@ -574,12 +602,16 @@ async function cleanup() {
     }
   }
   let bad = 0;
+  // A Preview belongs to a Worker: each declared Worker's is deleted with its own config, from the repository root.
+  const owners = declared ? declared.map((w) => ({ args: ["--config", w.file], of: ` of ${w.name}` })) : [{ args: [], of: "" }];
   for (const name of [...names].filter(Boolean).sort()) {
     if (keep.has(name)) { console.log(`cleanup: keep ${name} (${name === "staging" ? "staging" : "an open pull request uses it"})`); continue; }
-    const r = wrangler(["preview", "delete", "--name", name, "--skip-confirmation"], { capture: true });
-    if (!r.status) console.log(`cleanup: deleted Preview ${name}`);
-    else if (/not (been )?found|does not exist/i.test(r.out)) console.log(`cleanup: Preview ${name} is already gone`);
-    else { process.stdout.write(r.out); console.log(`::error::could not delete Preview ${name}`); bad++; }
+    for (const owner of owners) {
+      const r = wrangler(["preview", "delete", "--name", name, "--skip-confirmation", ...owner.args], { capture: true });
+      if (!r.status) console.log(`cleanup: deleted Preview ${name}${owner.of}`);
+      else if (/not (been )?found|does not exist/i.test(r.out)) console.log(`cleanup: Preview ${name}${owner.of} is already gone`);
+      else { process.stdout.write(r.out); console.log(`::error::could not delete Preview ${name}${owner.of}`); bad++; }
+    }
   }
   if (bad) process.exit(1);
   console.log(`cleanup: ${names.size ? "done" : "no closed pull requests"}`);
