@@ -8,6 +8,7 @@
 // Secrets (standards.json "secrets": {"required": [...], "store": "1password" | "secrets_store"}) are re-supplied on every
 // staging and Preview deploy (a Preview drops secrets set on it when it is redeployed), and a deployed Worker missing a
 // required secret fails the build. Secret values are never printed.
+// With standards.json "workers" declared, the Worker a main/preview build releases is WRANGLER_CI_OVERRIDE_NAME, or --worker <name> locally.
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
