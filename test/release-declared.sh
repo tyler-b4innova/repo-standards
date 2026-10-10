@@ -118,4 +118,53 @@ for bad in '{ "d1_databases": [{ "binding": "DB", "database_name": "web-prod", "
 done
 if [ -z "$why" ]; then ok release-declared-preview-isolation; else fail release-declared-preview-isolation "$why"; fi
 
+# ---- setup --check validates the declaration: an invalid entry (a supporting Worker that is missing, outside the repo, or a duplicate name,
+# a directory with no config, an undeclared key), workers beside the top-level release_workers, or a repository-wide secrets.required all fail
+# it; the valid declaration passes
+why=""
+repo chk
+out=$(check); has "exit=0" "$out" || why="valid declaration: $out"
+bad() { # bad <label> <jset script> <expected text>: the declaration with that change fails --check and says why
+  cp "$R/standards.json" "$T/standards.keep"; jset "$R/standards.json" "$2"; out=$(check)
+  has "exit=1" "$out" && has "$3" "$out" || why="$why; $1 passed or said nothing useful: $out"
+  cp "$T/standards.keep" "$R/standards.json"
+}
+bad "missing supporting Worker" 'o.workers[1].release_workers=["workers/none/wrangler.jsonc"]' "none"
+bad "supporting Worker outside the repo" 'o.workers[1].release_workers=["../elsewhere/wrangler.jsonc"]' "release_workers"
+bad "supporting Worker named like a primary" 'o.workers[1].release_workers=["workers/web/wrangler.jsonc"]' "release_workers"
+bad "directory with no config" 'o.workers=["workers"]' "exactly one of"
+bad "missing primary" 'o.workers=["workers/none"]' "does not exist"
+bad "the same config twice" 'o.workers=["workers/web","workers/web/wrangler.jsonc"]' "duplicate"
+bad "unknown key" 'o.workers[1].main="x"' "unknown key"
+bad "empty list" 'o.workers=[]' "non-empty"
+bad "top-level release_workers" 'o.release_workers=["workers/jobs/wrangler.jsonc"]' "release_workers"
+bad "repository-wide secrets" 'o.secrets={required:["TOKEN"]}' "secrets.required"
+# a config that is not declared is not a primary: a repository with a fixture-only config in a subdirectory and no declaration is not checked for it
+repo fixture; rm -f "$R/wrangler.api.jsonc"; jset "$R/standards.json" 'delete o.workers'; printf '{ "name": "fx", "main": "../../src/index.js" }\n' >"$R/workers/web/wrangler.jsonc"; commit fx
+out=$(check); has "exit=0" "$out" && ! has "fx" "$out" || why="$why; fixture-only repo: $out"
+if [ -z "$why" ]; then ok release-declared-check; else fail release-declared-check "$why"; fi
+
+# ---- apply ships the release check and the Preview clean-up only to a repository with a root primary or declared primaries: a
+# fixture-only repository (a config in a subdirectory, nothing declared) gets neither; a declared one gets both
+why=""
+OVL=$T/overlay.json; cp "$ENGINE/examples/overlay.json" "$OVL"
+applied() { node bin/repo-standards.mjs apply --target "$1" --overlay "$OVL" --version 0.8.3 2>&1; }
+git_repo() { git init -q -b main "$1"; }
+for kind in fixture declared root none; do
+  d=$T/apply-$kind; git_repo "$d"; mkdir -p "$d/workers/web"
+  printf '{ "name": "web", "main": "x.js", "env": { "staging": {} } }\n' >"$d/workers/web/wrangler.jsonc"
+  printf '{ "pack": "example", "version": "0.8.3", "profile": "internal", "staging_url": "https://staging.example.com"%s }\n' "$([ $kind = declared ] && echo ', "workers": ["workers/web"]')" >"$d/standards.json"
+  [ $kind = root ] && printf '{ "name": "root", "main": "x.js", "env": { "staging": {} } }\n' >"$d/wrangler.jsonc"
+  [ $kind = none ] && rm -rf "$d/workers"
+  out=$(applied "$d"); rc=$?
+  cleanup=$([ -f "$d/.github/workflows/std-preview-cleanup.yml" ] && echo yes || echo no); rcheck=$([ -f "$d/.github/workflows/std-release-check.yml" ] && echo yes || echo no)
+  want=$([ $kind = declared ] || [ $kind = root ] && echo yes || echo no)
+  [ $rc -eq 0 ] && [ "$cleanup" = "$want" ] && [ "$rcheck" = "$want" ] || why="$why; $kind: exit $rc cleanup=$cleanup release-check=$rcheck (want $want): $out"
+done
+# an invalid declaration stops apply before it writes anything
+d=$T/apply-invalid; git_repo "$d"; printf '{ "pack": "example", "version": "0.8.3", "profile": "internal", "workers": ["workers/missing"] }\n' >"$d/standards.json"
+out=$(applied "$d"); rc=$?
+[ $rc -ne 0 ] && has "workers/missing" "$out" && [ ! -d "$d/.github" ] || why="$why; invalid declaration applied (exit $rc): $out"
+if [ -z "$why" ]; then ok release-declared-apply; else fail release-declared-apply "$why"; fi
+
 done_cases
