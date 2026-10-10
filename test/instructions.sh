@@ -123,6 +123,8 @@ join() {
   gc -C "$R" switch -qc standards/v0.1.0 && node "$ENGINE/bin/repo-standards.mjs" apply --target "$R" --overlay "$4" --version 0.1.0 >/dev/null
   gc -C "$R" add -A && gc -C "$R" commit -qm "chore: standards v0.1.0"
   git -C "$R" update-ref refs/remotes/origin/standards/v0.1.0 HEAD
+  # JOINNEWER: the default branch already carries the sync tip plus a later change to AGENTS.md
+  if [ -n "${JOINNEWER:-}" ]; then echo "- newer" >>"$R/AGENTS.md"; gc -C "$R" commit -qam newer; base=$(git -C "$R" rev-parse HEAD); fi
   gc -C "$R" switch -qc fix/join
   (cd "$R" && eval "$5") && gc -C "$R" add -A && gc -C "$R" commit -qm fix
   printf '{"pull_request":{"number":7,"user":{"login":"alice"},"base":{"sha":"%s","ref":"main"},"head":{"sha":"%s","ref":"fix/join"}}}' "$base" "$(git -C "$R" rev-parse HEAD)" >"$R/.git/event.json"
@@ -138,6 +140,7 @@ join 1 "AGENTS.md" "lock names a version with no sync branch" "$OV" 'sed -i.bak 
 join 1 "AGENTS.md" "lock names a version that renders differently" "$OV" 'git switch -q --detach HEAD && echo "- other" >> AGENTS.md && git -c user.name=t -c user.email=t@t commit -qam other && git update-ref refs/remotes/origin/standards/v0.2.0 HEAD && git switch -q fix/join && sed -i.bak "1s/ v0.1.0 / v0.2.0 /" standards.lock && rm standards.lock.bak'
 join 1 ".github/CODEOWNERS (managed std block" "an edited CODEOWNERS block" "$OV" 'sed -i.bak "s#@acme/leads#@acme/someone#" .github/CODEOWNERS && rm .github/CODEOWNERS.bak'
 join 1 "AGENTS.md" "a sync tip the PR does not descend from (a left-over branch)" "$OV" 'git rm -q .github/workflows/ci.yml && git update-ref refs/remotes/origin/standards/v0.1.0 $(git -c user.name=t -c user.email=t@t commit-tree HEAD^{tree} -m old)'
+JOINNEWER=1 join 1 "AGENTS.md" "a sync tip already in the PR's base" "$OVB" 'git checkout -q refs/remotes/origin/standards/v0.1.0 -- AGENTS.md'
 join 1 "CLAUDE.md" "another instruction file" "$OV" 'echo "rule" > CLAUDE.md'
 # the local gate also judges uncommitted edits: a dirty AGENTS.md on a join branch is not the sync branch's file
 join 0 "no instruction file" "uncommitted edit, before" "$OV" 'git rm -q .github/workflows/ci.yml'
