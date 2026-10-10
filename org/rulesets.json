@@ -1,5 +1,5 @@
 {
-  "$comment": "Org-level rulesets every org gets. `org/apply.mjs` renders them with the overlay's `org_admin` (App bypass, strict checks, extra checks, extra restricted and ignored push paths, max file size, an external push ruleset) and owns every organization-level ruleset: names not listed here are deleted on apply. `$`-prefixed strings are overlay placeholders. One branch, `main`: work squash-merges to the default branch, every PR ruleset requires resolved review threads, and code-owner review (the managed CODEOWNERS block for a repo's ui_paths) is required on the default branch and main. Strict status checks (`strict_status_checks`) apply on the squash-merge ruleset (its `gate` rule is always present; only its strict flag follows the overlay). A ruleset's `replaces` names the legacy rulesets it takes over: the first one found is updated in place, and with the overlay's extra-approval setting unset the strictest legacy value is kept. A ruleset's `bypass` names its only bypass actor: `release_app` (the overlay's org_admin.release_app, none when unset) or `app` (the org standards App); without `bypass`, branch rulesets take the App and org admins (pull_request only) and push rulesets none. Creating, moving and deleting `release/**` (the portal's production-release branches) and `standards/v*` (the sync's pack branches) belongs to one App each, org admins included.",
+  "$comment": "Org-level rulesets every org gets. `org/apply.mjs` renders them with the overlay's `org_admin` (App bypass, strict checks, extra checks, extra restricted and ignored push paths, max file size, an external push ruleset) and owns every organization-level ruleset: names not listed here are deleted on apply. `$`-prefixed strings are overlay placeholders. One branch, `main`: work squash-merges to the default branch, every PR ruleset requires resolved review threads, and code-owner review (the managed CODEOWNERS block for a repo's ui_paths) is required on the default branch and main. Strict status checks (`strict_status_checks`) apply on the squash-merge ruleset (its `gate` rule is always present; only its strict flag follows the overlay). A ruleset's `replaces` names the legacy rulesets it takes over: the first one found is updated in place, and with the overlay's extra-approval setting unset the strictest legacy value is kept. A ruleset's `bypass` names its only bypass actor: `release_app` (the overlay's org_admin.release_app, none when unset) or `app` (the org standards App); without `bypass`, branch rulesets take the App and org admins (pull_request only) and push rulesets none. Creating, moving and deleting `release/**` (the portal's production-release branches) and creating and moving `standards/v*` (the sync's pack branches; deletion is open, since a missing branch already makes gate refuse and GitHub's auto-delete after a merge must not be blocked) belong to one App each, org admins included.",
   "rulesets": [
     {
       "name": "org: default branch and main (PR + gate)",
@@ -209,9 +209,6 @@
         },
         {
           "type": "update"
-        },
-        {
-          "type": "deletion"
         }
       ]
     }
