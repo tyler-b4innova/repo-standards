@@ -8,6 +8,7 @@
 - Silo: no global config, plugins, MCP or personal memory; nothing crosses orgs.
 - Start each task in a new worktree from freshly fetched `origin/<default>`, unless you are building on an existing branch.
 - One concern per PR. Issues only for actionable defects or deliberate work, related work grouped in one.
+- Work can be discussed anywhere, between sessions included. Once its scope is settled, it's written as issues with `std-issue` before any agent builds it with `std-implement`.
 - Visuals (screenshots, video) are for the people reviewing the PR, in GitHub or the portal, like Cursor's visual PRs; never a test, never compared. Show what the issue asked to see: a video when it moves, before/after for a static change (`std-evidence`).
 - Tests: end-to-end through the real entry point; unit tests only for pure logic with a failure history. Never mock what you own; every test must be able to fail. Run the smallest proof; `gate` runs the rest.
 - One review per PR: the GitHub Codex review. Fix real findings in one push, answer the rest, resolve; fixes are not re-reviewed.
