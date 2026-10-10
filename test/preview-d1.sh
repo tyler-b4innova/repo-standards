@@ -82,4 +82,24 @@ sed -i.bak 's/"database_name": "web-pr", "database_id": "web-pr-id"/"database_na
 [ "$(calls)" = "preview --name feat-x --config workers/web/wrangler.jsonc" ] && has "exit=0" "$out" || why="$why; another Worker's staging database: $out // $(calls)"
 if [ -z "$why" ]; then ok release-preview-d1-declared; else fail release-preview-d1-declared "$why"; fi
 
+# ---- a Preview resupplies and verifies exactly previews.secrets.required when the config has it (even empty): top-level secrets are
+# not inherited by a Preview, and the vault's staging secrets must not land on a PR Preview; without the key, today's behaviour
+why=""
+printf '#!/bin/sh\nshift; echo "$*" >>"$OP_LOG"; printf v\n' >"$T/op"; chmod +x "$T/op"; export OP_LOG=$T/op.log
+psec() { # psec <label> <previews secrets JS or ""> <names the Preview has>: Preview run; prints op reads, wrangler secret lists, exit
+  repo "sec-$1" "{ $D1S }"; jset "$R/wrangler.jsonc" "o.secrets={required:['A','B']}; o.env.staging.secrets=o.secrets; $2"; commit s
+  printf '{"feat-x": %s}' "$3" >"$T/list.json"; : >"$OP_LOG"
+  out=$(cd "$R" && OP_CLI=$T/op OP_VAULT=v OP_SERVICE_ACCOUNT_TOKEN=t RELEASE_SECRET_LIST=$T/list.json WORKERS_CI_BRANCH=feat/x node scripts/agent/release.mjs preview 2>&1; echo "exit=$?")
+  reads=$(sed 's/.*staging\///' "$OP_LOG" | tr '\n' ','); lists=$(calls | grep -c 'secret list')
+}
+psec none "" '["A","B"]'
+[ "$reads" = "A,B," ] && [ "$lists" = 1 ] && has "exit=0" "$out" || why="absent: reads=$reads lists=$lists $out"
+psec empty "o.previews.secrets={required:[]}" '[]'
+[ -z "$reads" ] && [ "$lists" = 0 ] && has "exit=0" "$out" || why="$why; empty: reads=$reads lists=$lists $out"
+psec some "o.previews.secrets={required:['B']}" '["B"]'
+[ "$reads" = "B," ] && [ "$lists" = 1 ] && has "exit=0" "$out" || why="$why; one: reads=$reads lists=$lists $out"
+psec missing "o.previews.secrets={required:['B']}" '["A"]'
+has "exit=1" "$out" && has "missing required secret(s): B" "$out" || why="$why; missing listed secret: $out"
+if [ -z "$why" ]; then ok release-preview-secrets; else fail release-preview-secrets "$why"; fi
+
 done_cases

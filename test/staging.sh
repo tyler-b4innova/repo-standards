@@ -109,13 +109,34 @@ if [ -z "$why" ]; then ok staging-no-production-resources; else fail staging-no-
 # ---- previews point every data binding at the staging resources
 why=""
 with "$A" 'delete o.previews'; o=$(check "$A"); has "has no previews block" "$o" || why="no previews: $o"
-with "$A" "$GOOD"; with "$A" 'o.previews.d1_databases=[]'; o=$(check "$A"); has "previews lacks d1_databases DB" "$o" || why="$why; missing: $o"
-with "$A" "$GOOD"; with "$A" 'o.previews.kv_namespaces[0].id="kv-other"'; o=$(check "$A"); has "not staging's" "$o" || why="$why; other resource: $o"
+# a binding may be staging's, a dedicated Preview resource, or absent; never production's
+for c in 'o.previews.d1_databases=[]' 'o.previews.kv_namespaces[0].id="kv-other"' 'delete o.previews.kv_namespaces; delete o.previews.r2_buckets'; do
+  with "$A" "$GOOD"; with "$A" "$c"; o=$(check "$A") || why="$why; [$c] failed: $o"
+done
+for c in 'o.previews.kv_namespaces[0].id="kv-prod"' 'o.previews.r2_buckets[0].bucket_name="app-files"' 'o.previews.d1_databases[0].database_id="d1-prod"'; do
+  with "$A" "$GOOD"; with "$A" "$c"; o=$(check "$A"); has "names the production resource" "$o" || why="$why; [$c] passed: $o"
+done
+# one key matching staging's while the other differs is neither staging's nor a dedicated resource
+with "$A" "$GOOD"; with "$A" 'o.previews.d1_databases[0].database_name="app-db-other"'; o=$(check "$A"); has "not staging's" "$o" || why="$why; half-staging: $o"
 with "$A" "$GOOD"
 # the shipped example config is the standard shape and passes
 E=$T/example; git init -q -b main "$E"; cp examples/wrangler.staging.jsonc "$E/wrangler.jsonc"; apply "$E"; jset "$E/standards.json" 'o.staging=undefined'; commit "$E"
 o=$(check "$E") || why="$why; example config: $o"
 if [ -z "$why" ]; then ok previews-point-at-staging; else fail previews-point-at-staging "$why"; fi
+
+# ---- a Preview block with dedicated resources (a D1 and two R2 buckets of its own), no KV and no analytics binding: staging's flag
+# store and telemetry are never shared with unreviewed PR code; bindings absent from previews are simply not bound
+why=""
+D=$(repo ded "$DATA")
+with "$D" "$GOOD"
+with "$D" 'o.kv_namespaces.push({binding:"FLAGS",id:"flags-prod"}); o.env.staging.kv_namespaces.push({binding:"FLAGS",id:"flags-staging"});
+  o.analytics_engine_datasets=[{binding:"EVENTS",dataset:"app-events"}]; o.env.staging.analytics_engine_datasets=[{binding:"EVENTS",dataset:"app-events-staging"}];
+  o.r2_buckets.push({binding:"AGREEMENTS",bucket_name:"app-agreements"}); o.env.staging.r2_buckets.push({binding:"AGREEMENTS",bucket_name:"app-agreements-staging"});
+  o.previews.d1_databases=[{binding:"DB",database_name:"app-db-preview",database_id:"d1-preview"}];
+  o.previews.r2_buckets=[{binding:"FILES",bucket_name:"app-files-preview"},{binding:"AGREEMENTS",bucket_name:"app-agreements-preview"}]'
+o=$(check "$D") || why="dedicated block failed: $o"
+with "$D" 'o.previews.analytics_engine_datasets=[{binding:"EVENTS",dataset:"app-events"}]'; o=$(check "$D"); has "names the production resource" "$o" || why="$why; production analytics passed: $o"
+if [ -z "$why" ]; then ok previews-dedicated-resources; else fail previews-dedicated-resources "$why"; fi
 
 # ---- secrets: standards.json shape; a client-owned account binds every required secret from Secrets Store
 why=""
