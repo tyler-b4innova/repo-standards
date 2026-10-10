@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Workers Builds deploy commands and PR Preview clean-up (the Worker's trigger settings call these):
 //   main      production trigger: deploy the staging Worker (wrangler deploy --env staging), upload the production version
+//   promote <sha>   "Promote production" trigger (manual builds only): verify the approved commit, then deploy it to production
 //   preview   preview trigger: deploy this branch's Preview (wrangler preview --name <slug>)
 //   slug <branch>                          the Preview name for a branch
 //   cleanup --pr-branch <branch> | --sweep  delete a closed pull request's Preview (std-preview-cleanup.yml)
@@ -14,12 +15,12 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse, findings as stagingFindings, resourceFindings } from "./staging.mjs";
-import { build, rootFile, readConfig, effectiveConfig, assertStaging, assertReleaseAccounts, workerFiles, buildProductionConfigs } from "./release-config.mjs";
+import { build, rootFile, readConfig, effectiveConfig, assertStaging, assertReleaseAccounts, workerFiles, buildProductionConfigs, doLifecycle } from "./release-config.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
-const SUBS = ["main", "preview", "slug", "cleanup", "verify-release-check"];
+const SUBS = ["main", "promote", "preview", "slug", "cleanup", "verify-release-check"];
 if (!SUBS.includes(cmd) || args.includes("--help")) {
-  console.log(readFileSync(new URL(import.meta.url), "utf8").split("\n").slice(1, 6).map((l) => l.slice(3)).join("\n"));
+  console.log(readFileSync(new URL(import.meta.url), "utf8").split("\n").slice(1, 7).map((l) => l.slice(3)).join("\n"));
   process.exit(SUBS.includes(cmd) || cmd === "--help" ? 0 : 2);
 }
 const fail = (msg, fix) => { console.log(`::error::${msg}\nfix: ${fix}`); process.exit(1); };
@@ -73,7 +74,7 @@ const std = json("standards.json") ?? {};
 const configFile = rootFile();
 function config() {
   if (!configFile) fail("no wrangler config (wrangler.jsonc, wrangler.json or wrangler.toml)", "run this from a Worker repository");
-  if (cmd !== "main" && configFile.endsWith(".toml")) return {};
+  if (cmd !== "main" && cmd !== "promote" && configFile.endsWith(".toml")) return {};
   return readConfig(configFile);
 }
 const pkg = json("package.json");
@@ -97,14 +98,81 @@ const envDir = mkdtempSync(join(tmpdir(), "release-env-"));
 const envFile = join(envDir, "controlled.env");
 writeFileSync(envFile, "", { mode: 0o600 });
 process.on("exit", () => rmSync(envDir, { recursive: true, force: true }));
-const wrangler = (a, { capture = false } = {}) => {
+const wrangler = (a, { capture = false, primary = false } = {}) => {
   console.log(`release: npx wrangler ${a.map((x) => (/^\//.test(x) ? "<file>" : x)).join(" ")}`);
   // The repository's own wrangler where it is installed (the build), else the current major (the clean-up job installs nothing).
   const bin = existsSync("node_modules/.bin/wrangler") ? ["wrangler"] : ["-y", "wrangler@4"];
-  const r = spawnSync("npx", [...bin, ...a, `--env-file=${envFile}`], { encoding: "utf8", stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit", env: primaryUpload(a) ? productionEnv : ISOLATED_ENV });
+  const r = spawnSync("npx", [...bin, ...a, `--env-file=${envFile}`], { encoding: "utf8", stdio: capture ? ["ignore", "pipe", "pipe"] : "inherit", env: primary || primaryUpload(a) ? productionEnv : ISOLATED_ENV });
   return { status: r.status ?? 1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
 };
 const must = (a) => { const r = wrangler(a); if (r.status) process.exit(r.status); };
+
+// Live production state, read from Cloudflare's API with the Builds token (CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID), never from commit history.
+const CF_API = (env.CLOUDFLARE_API_BASE || "https://api.cloudflare.com/client/v4").replace(/\/$/, "");
+async function cf(method, path, body) {
+  if (!env.CLOUDFLARE_API_TOKEN) throw new Error("no CLOUDFLARE_API_TOKEN in this build: live production state cannot be read");
+  const r = await fetch(`${CF_API}${path}`, { method, headers: { Authorization: `Bearer ${env.CLOUDFLARE_API_TOKEN}`, "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(30000) });
+  const b = await r.json().catch(() => null);
+  if (!r.ok || !b?.success) throw new Error(`Cloudflare API ${method} ${path}: ${r.status}`);
+  return b.result;
+}
+const sameSet = (a, b) => a.length === b.length && a.every((x) => b.includes(x));
+
+// Does this Worker need a full `wrangler deploy` instead of a version? Cloudflare cannot upload a version that creates, deletes, renames
+// or transfers a Durable Object class (exports or migrations), so the answer comes from production's LIVE state: the script's
+// `migration_tag` in the Workers scripts list (https://developers.cloudflare.com/api/resources/workers/subresources/scripts/methods/list/)
+// against the config's last migration tag; a Worker with DO `exports` always does (Cloudflare reconciles those on every deploy).
+// Unreadable live state throws: it is never taken for "none".
+async function needsFullDeploy(account, name, cfg) {
+  const lc = doLifecycle(cfg);
+  if (lc.exports) return "it declares Durable Object exports";
+  if (!lc.tag) return null;
+  const script = (await cf("GET", `/accounts/${account}/workers/scripts`)).find((s) => s.id === name);
+  if (!script) throw new Error(`${name} is not in the Cloudflare account's scripts, so its live migration state is unknown`);
+  return (script.migration_tag ?? null) === lc.tag ? null : `migration ${lc.tag} is not applied in production (live: ${script.migration_tag ?? "none"})`;
+}
+
+// Declared Worker-level settings that `versions upload` never applies, compared with production's live ones. Triggers (crons, queue
+// consumers, routes, custom domains) are applied by `wrangler triggers deploy`; observability, logpush and tail consumers by the Worker
+// settings API (https://developers.cloudflare.com/workers/configuration/multipart-upload-metadata/ lists logpush and tail_consumers as
+// not available to version uploads; https://developers.cloudflare.com/workers/versions-and-deployments/deployment-management/ sends
+// routes, domains and crons to `triggers deploy`). Routes cannot be read without a zone, so a Worker that declares them always re-applies.
+async function settingsDrift(account, name, cfg) {
+  const drift = [], base = `/accounts/${account}/workers`;
+  let triggers = false;
+  if (Array.isArray(cfg.triggers?.crons)) {
+    const live = (await cf("GET", `${base}/scripts/${name}/schedules`)).schedules?.map((s) => s.cron) ?? [];
+    if (!sameSet(live, cfg.triggers.crons)) { drift.push(`cron triggers [${live}] -> [${cfg.triggers.crons}]`); triggers = true; }
+  }
+  const declared = [...(cfg.routes ?? []), ...(cfg.route ? [cfg.route] : [])];
+  const domains = declared.filter((r) => r?.custom_domain).map((r) => r.pattern);
+  if (domains.length) {
+    const live = (await cf("GET", `${base}/domains?service=${encodeURIComponent(name)}`)).map((d) => d.hostname);
+    if (!sameSet(live, domains)) { drift.push(`custom domains [${live}] -> [${domains}]`); triggers = true; }
+  }
+  const consumers = (Array.isArray(cfg.queues?.consumers) ? cfg.queues.consumers : []).map((c) => c?.queue).filter(Boolean);
+  if (consumers.length) {
+    const queues = await cf("GET", `/accounts/${account}/queues`);
+    for (const queue of consumers) {
+      const q = queues.find((x) => x.queue_name === queue);
+      const has = q && (await cf("GET", `/accounts/${account}/queues/${q.queue_id}/consumers`)).some((c) => (c.script ?? c.script_name) === name);
+      if (!has) { drift.push(`queue consumer for ${queue} is not registered`); triggers = true; }
+    }
+  }
+  const routes = declared.some((r) => typeof r === "string" || (r && !r.custom_domain));
+  const live = cfg.observability || typeof cfg.logpush === "boolean" || cfg.tail_consumers ? await cf("GET", `${base}/scripts/${name}/script-settings`) : {}, patch = {};
+  const o = cfg.observability, enabled = o?.enabled ?? o?.logs?.enabled;
+  if (o && ((enabled !== undefined && live.observability?.enabled !== enabled) || (o.head_sampling_rate !== undefined && live.observability?.head_sampling_rate !== o.head_sampling_rate))) {
+    patch.observability = o;
+    drift.push(`observability enabled=${live.observability?.enabled ?? false} -> ${enabled}`);
+  }
+  if (typeof cfg.logpush === "boolean" && (live.logpush ?? false) !== cfg.logpush) { patch.logpush = cfg.logpush; drift.push(`logpush ${live.logpush ?? false} -> ${cfg.logpush}`); }
+  if (Array.isArray(cfg.tail_consumers)) {
+    const want = cfg.tail_consumers.map((t) => t.service), have = (live.tail_consumers ?? []).map((t) => t.service);
+    if (!sameSet(have, want)) { patch.tail_consumers = cfg.tail_consumers; drift.push(`tail consumers [${have}] -> [${want}]`); }
+  }
+  return { drift, triggers: triggers || routes, routes, patch: Object.keys(patch).length ? patch : null };
+}
 
 // Sentry: when the build has the SENTRY_AUTH_TOKEN secret and the repo was set up with sentry-setup (the public DSN it commits
 // is in the Worker config), create the release for the commit after the Worker uploads succeeded and upload the source maps of
@@ -257,6 +325,13 @@ async function deploy() {
     }
     const builtProduction = buildProductionConfigs(std, pkg, [{ file: configFile, cfg, primary: true }, ...extras]);
     productionConfigs.push(...builtProduction);
+    // A Worker whose Durable Object lifecycle differs from production's live state cannot be uploaded as a version: promote deploys it.
+    const account = cfg.account_id || env.CLOUDFLARE_ACCOUNT_ID, noUpload = new Map();
+    const productionNames = [productionName, ...extras.map((w) => w.cfg.name)];
+    for (const [i, c] of builtProduction.entries()) {
+      const why = await needsFullDeploy(account, productionNames[i], c);
+      if (why) noUpload.set(productionNames[i], why);
+    }
     if (!staged) {
       const preview = builtProduction[0].previews ?? {};
       const isolation = resourceFindings({ ...preview, migrations: preview.migrations ?? builtProduction[0].migrations }, productionConfigs);
@@ -275,7 +350,7 @@ async function deploy() {
       return { ...worker, resolved, name, configArgs, names };
     });
     state.stagingPlan = [...targets.map((t) => t.name), ...(staged ? [] : ["the staging Preview"])];
-    state.productionPlan = [...extras.map((w) => w.cfg.name), productionName];
+    state.productionPlan = [...extras.map((w) => w.cfg.name), productionName].filter((n) => !noUpload.has(n));
     const f = await secretsFile(dir), sf = f ? ["--secrets-file", f] : [];
     for (let i = 0; i < targets.length; i++) {
       const target = targets[i];
@@ -320,6 +395,7 @@ async function deploy() {
     const outdir = sentry ? mkdtempSync(join(tmpdir(), "release-bundle-")) : null;
     if (outdir) process.on("exit", () => rmSync(outdir, { recursive: true, force: true }));
     const upload = (name, a) => {
+      if (noUpload.has(name)) { console.log(`release: no production version uploaded for ${name}: ${noUpload.get(name)}; promote deploys it in full`); return; }
       const r = wrangler(a, { capture: true });
       process.stdout.write(r.out);
       if (r.status) process.exit(r.status);
@@ -333,8 +409,106 @@ async function deploy() {
     upload(productionName, ["versions", "upload", ...(outdir ? ["--outdir", outdir, "--upload-source-maps"] : []), ...tags]);
     secretCheck("the production Worker", ["secret", "list", "--name", productionName, "--format", "json"]);
     state.done = true;
+    // Settings a version upload never applies: warn where live production differs from the config (read-only; promote applies them).
+    if (!env.CLOUDFLARE_API_TOKEN) console.log("release: settings drift not checked: no CLOUDFLARE_API_TOKEN in this build");
+    else for (const [i, c] of builtProduction.entries()) {
+      if (noUpload.has(productionNames[i])) continue;
+      try {
+        const d = await settingsDrift(account, productionNames[i], c);
+        if (d.drift.length) console.log(`::warning::production ${productionNames[i]} differs from its config: ${d.drift.join("; ")} | fix: promotion applies these (wrangler triggers deploy, Worker settings API)`);
+      } catch (e) { console.log(`::warning::production ${productionNames[i]} settings drift not checked: ${e.message}`); }
+    }
     if (sentry) await sentryRelease(sha, sentry, outdir);
   }
+}
+
+// promote <sha>: the "Promote production" Workers Builds trigger (manual builds only; a person approved the commit in the portal). The
+// build has checked out and built the approved commit with this Worker's own Builds variables; nothing is rebuilt here. Everything is
+// verified and validated before the first remote change; then the pending production D1 migrations are applied, and each Worker is
+// deployed (supporting Workers in release_workers order, the primary last): a version deploy of the version main uploaded for this
+// commit, or a full `wrangler deploy` where production's live Durable Object state needs one; then its triggers and settings.
+async function promote() {
+  const sha = args[0] ?? "";
+  if (!/^[0-9a-f]{40}$/.test(sha)) fail(`promote needs the approved commit's full 40-character lowercase hex sha (got ${JSON.stringify(sha)})`, 'release.mjs promote "$WORKERS_CI_COMMIT_SHA"');
+  if (env.WORKERS_CI_COMMIT_SHA !== sha || execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim() !== sha)
+    fail(`promote runs only in the Promote production Workers Builds build of ${sha.slice(0, 7)}, which checks out and builds that commit`, "start the build for the approved commit (Builds API manual build of the Promote production trigger)");
+  config();
+  const short = sha.slice(0, 7), primary = effectiveConfig(configFile);
+  const extras = workerFiles(std, configFile).map((file) => ({ file, cfg: effectiveConfig(file, false, { redirect: false }).cfg }));
+  assertReleaseAccounts(primary.cfg, [primary.cfg, ...extras.map((w) => w.cfg)]);
+  const account = primary.cfg.account_id || env.CLOUDFLARE_ACCOUNT_ID;
+  if (!account) fail("no Cloudflare account id (account_id in the config or CLOUDFLARE_ACCOUNT_ID)", "set CLOUDFLARE_ACCOUNT_ID on the Promote trigger");
+  const workers = [...extras.map((w) => ({ name: w.cfg.name, cfg: w.cfg, file: w.file, cfgArgs: ["--config", w.file] })),
+    { name: env.WRANGLER_CI_OVERRIDE_NAME || primary.cfg.name, cfg: primary.cfg, file: primary.file, cfgArgs: [], primary: true }];
+
+  // 1. The commit is on the default branch, its release-check passed where the repo ships one, and main uploaded its version.
+  const repo = env.GITHUB_REPOSITORY, token = env.GH_TOKEN || env.GITHUB_TOKEN;
+  if (!repo || !token) fail("promote needs GITHUB_REPOSITORY and GH_TOKEN to confirm the commit is on the default branch", "set the Builds variable GITHUB_REPOSITORY and a read-only GH_TOKEN secret on the Promote trigger");
+  const gh = async (path) => { const r = await fetch(`${env.GITHUB_API_URL || "https://api.github.com"}/repos/${repo}${path}`, { headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" } }); if (!r.ok) fail(`GET ${path || "/"}: ${r.status}`, "check the GH_TOKEN can read the repository"); return r.json(); };
+  const def = (await gh("")).default_branch, cmp = await gh(`/compare/${def}...${sha}`);
+  if (!["identical", "behind"].includes(cmp.status)) fail(`${short} is not on the default branch (${def})`, "approve a commit that was merged to the default branch");
+  if (existsSync(".github/workflows/std-release-check.yml")) {
+    const r = spawnSync(process.execPath, [fileURLToPath(import.meta.url), "verify-release-check", sha], { stdio: "inherit", env });
+    if (r.status) process.exit(r.status);
+  }
+  const plan = [];
+  for (const w of workers) {
+    const full = await needsFullDeploy(account, w.name, w.cfg);
+    let version = null;
+    if (!full) {
+      const r = wrangler(["versions", "list", "--name", w.name, "--json"], { capture: true, primary: w.primary });
+      let list = [];
+      try { list = JSON.parse(r.out.slice(r.out.indexOf("["), r.out.lastIndexOf("]") + 1)); } catch {}
+      version = r.status ? null : list.find((v) => v?.annotations?.["workers/tag"] === sha)?.id ?? null;
+      if (!version) fail(`${w.name} has no uploaded version for ${short}`, "the main release uploads it; approve a commit whose main build succeeded");
+    }
+    plan.push({ ...w, full, version });
+  }
+
+  // 2. Every Worker's bundle validates (wrangler deploy --dry-run, production config) and every live read succeeds before anything changes.
+  for (const w of plan) {
+    const r = wrangler(["deploy", "--dry-run", ...w.cfgArgs, "--name", w.name], { capture: true, primary: w.primary });
+    if (r.status) { process.stdout.write(r.out); fail(`${w.name} does not bundle with its production config; nothing was deployed`, "fix the build and approve a new commit"); }
+    if (!w.full) w.settings = await settingsDrift(account, w.name, w.cfg);
+  }
+
+  const done = [], report = [];
+  process.on("exit", (code) => {
+    if (code && done.length) console.log(`::error::promotion incomplete: Workers are in a mixed state\n  promoted: ${done.join(", ")}\n  not promoted: ${plan.map((w) => w.name).filter((n) => !done.includes(n)).join(", ")}\n  Re-running the Promote build for ${short} promotes the rest; nothing was rolled back.`);
+  });
+
+  // 3. Pending production D1 migrations, before any code that needs them.
+  for (const w of plan) for (const d of Array.isArray(w.cfg.d1_databases) ? w.cfg.d1_databases : []) {
+    if (!d?.binding || !existsSync(resolve(dirname(w.file), d.migrations_dir ?? "migrations"))) continue;
+    const r = wrangler(["d1", "migrations", "apply", d.binding, ...w.cfgArgs, "--remote"], { capture: true });
+    process.stdout.write(r.out);
+    if (r.status) process.exit(r.status);
+    report.push(`${w.name}: D1 ${d.binding}: ${/No migrations to apply/i.test(r.out) ? "no pending migrations" : "migrations applied"}`);
+  }
+
+  // 4. Supporting Workers first, then the primary: a version deploy (or a full deploy), then triggers and settings.
+  for (const w of plan) {
+    if (w.full) {
+      const tags = ["--tag", sha, "--message", `promote ${sha}`, "--var", `SENTRY_RELEASE:${sha}`];
+      const r = wrangler(["deploy", ...w.cfgArgs, "--name", w.name, ...tags], { capture: true, primary: w.primary });
+      process.stdout.write(r.out);
+      if (r.status) process.exit(r.status);
+      report.push(`${w.name}: full wrangler deploy of ${short} (${w.full}); triggers and settings applied by the deploy`);
+    } else {
+      must(["versions", "deploy", `${w.version}@100%`, ...w.cfgArgs, "--name", w.name, "--yes", "--message", `promote ${sha}`]);
+      report.push(`${w.name}: version ${w.version} deployed`);
+      const s = w.settings;
+      if (s.triggers) {
+        const r = wrangler(["triggers", "deploy", ...w.cfgArgs, "--name", w.name], { capture: true, primary: w.primary });
+        process.stdout.write(r.out);
+        if (r.status) process.exit(r.status);
+      }
+      if (s.patch) await cf("PATCH", `/accounts/${account}/workers/scripts/${w.name}/script-settings`, s.patch);
+      report.push(`${w.name}: ${s.drift.length ? `applied ${s.drift.join("; ")}` : "settings already match"}${s.routes ? "; routes re-applied" : ""}`);
+    }
+    done.push(w.name);
+  }
+  console.log(`release: promoted ${short} to production\n  ${report.join("\n  ")}`);
 }
 
 // Delete Previews whose pull request closed: one branch's (--pr-branch), or every pull request closed in the last 30
@@ -376,5 +550,5 @@ async function cleanup() {
   console.log(`cleanup: ${names.size ? "done" : "no closed pull requests"}`);
 }
 
-try { await (cmd === "cleanup" ? cleanup() : deploy()); }
-catch (e) { fail(e.message, "fix the build/config before retrying; staging must target only <production name>-staging with no production routes or custom domains"); }
+try { await (cmd === "cleanup" ? cleanup() : cmd === "promote" ? promote() : deploy()); }
+catch (e) { fail(e.message, cmd === "promote" ? "nothing was deployed unless the report above says so; fix the cause and re-run the Promote build" : "fix the build/config before retrying; staging must target only <production name>-staging with no production routes or custom domains"); }

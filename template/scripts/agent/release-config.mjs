@@ -164,6 +164,15 @@ export function verifyGeneratedBuild(std, pkg, root = rootFile()) {
   }
 }
 
+// The Durable Object lifecycle a production config declares: any `durable-object` entry in the declarative `exports`, or the
+// last tag of the legacy `migrations` array. Cloudflare cannot upload a version carrying either
+// (https://developers.cloudflare.com/workers/versions-and-deployments/deployment-management/#durable-object-migrations).
+export function doLifecycle(cfg) {
+  const exp = cfg.exports && typeof cfg.exports === "object" ? Object.values(cfg.exports).some((e) => e?.type === "durable-object") : false;
+  const migrations = Array.isArray(cfg.migrations) ? cfg.migrations : [];
+  return { exports: exp, tag: migrations.length ? String(migrations[migrations.length - 1]?.tag ?? "") : null };
+}
+
 // Additional Workers are explicit repo-owned config paths, never shell commands or external files.
 export function workerFiles(std, primary = rootFile()) {
   const files = std.release_workers === undefined ? [] : std.release_workers;
