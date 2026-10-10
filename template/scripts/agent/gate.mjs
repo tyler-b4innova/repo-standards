@@ -419,7 +419,10 @@ if (cmd === "local") {
   const sync = () => syncTip !== undefined ? syncTip : (syncTip = (() => {
     try {
       const v = git("show", "HEAD:standards.lock").split("\n")[0].match(/^# \S+ v([0-9][0-9A-Za-z.+-]*) /)?.[1];
-      return v ? git("rev-parse", "--verify", "-q", `refs/remotes/origin/standards/v${v}^{commit}`).trim() : null;
+      const tip = v ? git("rev-parse", "--verify", "-q", `refs/remotes/origin/standards/v${v}^{commit}`).trim() : null;
+      // the pull request must descend from the tip: a left-over older branch cannot authorise a downgrade
+      if (tip) git("merge-base", "--is-ancestor", tip, "HEAD");
+      return tip;
     } catch { return null; }
   })());
   // --local also judges uncommitted edits, which the committed head below does not show: a dirty AGENTS.md gets no exemption.
