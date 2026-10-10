@@ -422,7 +422,9 @@ if (cmd === "local") {
       return v ? git("rev-parse", "--verify", "-q", `refs/remotes/origin/standards/v${v}^{commit}`).trim() : null;
     } catch { return null; }
   })());
-  if (bad.has("AGENTS.md") && sync()) {
+  // --local also judges uncommitted edits, which the committed head below does not show: a dirty AGENTS.md gets no exemption.
+  const dirtyAgents = args.includes("--local") && git("status", "--porcelain", "--", "AGENTS.md").trim() !== "";
+  if (bad.has("AGENTS.md") && !dirtyAgents && sync()) {
     const at = (rev, path) => { try { return git("show", `${rev}:${path}`); } catch { return null; } };
     const parts = (t) => { const i = t.search(/<!-- std:begin [a-z0-9-]+ -->/), j = i < 0 ? -1 : t.indexOf("<!-- std:end -->", i); return j < 0 ? null : [t.slice(0, i), t.slice(i, j + 16), t.slice(j + 16)]; };
     const head = /^100644 blob /.test(git("ls-tree", "HEAD", "--", "AGENTS.md")) ? at("HEAD", "AGENTS.md") : null, tip = at(sync(), "AGENTS.md");
