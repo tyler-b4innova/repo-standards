@@ -197,7 +197,7 @@ export function workerFiles(std, primary = rootFile(), base = ".") {
 // exactly one, or {"config": <file or directory>, "release_workers": [...]} for a primary with supporting Workers. Primaries are declared,
 // never discovered: a config that is not listed is not a primary, and nothing falls back to another directory. null when the key is absent
 // (the repository's root config, and the top-level release_workers, keep their meaning). Every problem throws; none is skipped.
-// Returns [{ file, name, cfg, extras (absolute supporting config paths), extraConfigs }], `file` relative to base as Wrangler's -c takes it.
+// "build" replaces standards.json build for that Worker's release. Returns [{ file, name, cfg, build, extras (absolute supporting config paths), extraConfigs }], `file` relative to base as Wrangler's -c takes it.
 export function declaredWorkers(std, base = ".") {
   if (std?.workers === undefined) return null;
   if (!Array.isArray(std.workers) || !std.workers.length)
@@ -214,7 +214,8 @@ export function declaredWorkers(std, base = ".") {
   };
   return std.workers.map((entry) => {
     const object = entry && typeof entry === "object" && !Array.isArray(entry);
-    if (object && Object.keys(entry).some((k) => !["config", "release_workers"].includes(k))) throw new Error(`workers entry has an unknown key (config, release_workers): ${JSON.stringify(entry)}`);
+    if (object && Object.keys(entry).some((k) => !["config", "release_workers", "build"].includes(k))) throw new Error(`workers entry has an unknown key (config, release_workers, build): ${JSON.stringify(entry)}`);
+    if (object && entry.build !== undefined && (typeof entry.build !== "string" || !entry.build.trim())) throw new Error(`workers entry build must be a non-empty command string: ${JSON.stringify(entry)}`);
     const path = object ? entry.config : entry;
     if (typeof path !== "string" || !path || isAbsolute(path) || path.split(/[\\/]/).includes("..")) throw new Error(`workers entry must be a relative path within this repo: ${JSON.stringify(path)}`);
     if (!existsSync(join(base, path))) throw new Error(`workers: ${path} does not exist`);
@@ -233,7 +234,7 @@ export function declaredWorkers(std, base = ".") {
       claim(f, c, relative(repo, f));
       return c;
     });
-    return { file, name: cfg.name, cfg, extras, extraConfigs };
+    return { file, name: cfg.name, cfg, extras, extraConfigs, build: object ? entry.build : undefined };
   });
 }
 

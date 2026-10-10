@@ -396,7 +396,7 @@ else {
   // Declared Workers (standards.json workers) are the repository's primaries: validated like the root config, never discovered.
   let primaries = null;
   try { primaries = declaredWorkers(std ?? {}); }
-  catch (e) { fail(e.message, 'standards.json workers: each entry a Wrangler config file or a directory holding one (or {"config": ..., "release_workers": [...]}), with distinct Worker names; no top-level release_workers'); }
+  catch (e) { fail(e.message, 'standards.json workers: each entry a Wrangler config file or a directory holding one (or {"config": ..., "release_workers": [...], "build": "<command>"}), with distinct Worker names; no top-level release_workers'); }
   const declaredKey = std?.workers !== undefined;
   if (primaries && Array.isArray(sec?.required) && sec.required.length)
     fail("standards.json secrets.required with workers declared", "list each declared Worker's required secrets in its own wrangler config secrets.required; keep secrets.store here");
