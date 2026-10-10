@@ -31,6 +31,9 @@ export function render(overlay) {
   if (oa.push_app_bypass !== undefined) throw new Error("overlay org_admin.push_app_bypass is gone (the App never bypasses push hygiene: a pack landing adds no secret or large file); remove it before running org-apply");
   if (oa.require_extra_approval_for_unattributed_changes !== undefined && typeof oa.require_extra_approval_for_unattributed_changes !== "boolean")
     throw new Error("overlay org_admin.require_extra_approval_for_unattributed_changes must be true or false when set");
+  // The portal App that creates release/<sha> branches (a production release): optional, and without it nobody may create them.
+  if (oa.release_app !== undefined && !(Number.isInteger(oa.release_app?.id) && oa.release_app.id > 0))
+    throw new Error("overlay org_admin.release_app.id must be a positive number when release_app is set");
   const vars = {
     strict_status_checks: oa.strict_status_checks === true,
     gate_integration_id: oa.gate_integration_id ?? null, // null: `gate` is accepted from any source
@@ -54,7 +57,10 @@ export function render(overlay) {
   // landings can commit onto default branches, and a pack never adds a secret or a large file.
   const app = { actor_id: oa.app.id, actor_type: "Integration", bypass_mode: "always" };
   const admin = { actor_id: null, actor_type: "OrganizationAdmin", bypass_mode: "pull_request" };
-  const bypass = (r) => (r.target === "push" ? [] : [app, admin]);
+  // A ref-protection ruleset (`bypass` in org/rulesets.json) has one bypass actor and no admin: the org standards App, or the portal App
+  // (none when the overlay sets no release_app, so nobody can create the branches).
+  const only = { app: [app], release_app: oa.release_app ? [{ actor_id: oa.release_app.id, actor_type: "Integration", bypass_mode: "always" }] : [] };
+  const bypass = (r) => (r.bypass ? only[r.bypass] : r.target === "push" ? [] : [app, admin]);
   // Unset, extra approval for unattributed changes keeps each live ruleset's value (plan fills it in).
   const prDefaults = { required_review_thread_resolution: true,
     ...(oa.require_extra_approval_for_unattributed_changes !== undefined && { require_extra_approval_for_unattributed_changes: oa.require_extra_approval_for_unattributed_changes }) };
@@ -62,7 +68,7 @@ export function render(overlay) {
   const external = oa.push_ruleset === "external";
   return {
     external,
-    rulesets: DEF.rulesets.filter((r) => !(external && r.target === "push")).map((r) => canon({ ...fill(r), enforcement: "active", bypass_actors: bypass(r) }, prDefaults)),
+    rulesets: DEF.rulesets.filter((r) => !(external && r.target === "push")).map((r) => canon({ ...fill(r), bypass: undefined, enforcement: "active", bypass_actors: bypass(r) }, prDefaults)),
   };
 }
 

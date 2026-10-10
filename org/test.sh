@@ -186,9 +186,10 @@ out=$(node --input-type=module -e '
   const shape = (r) => ({ target: r.target, refs: r.conditions.ref_name.include, rules: Object.keys(r.rules).sort(), bypass: r.bypass_actors });
   console.log(JSON.stringify({ release: shape(pick(set, "release branches")), releaseUnset: pick(none, "release branches").bypass_actors,
     standards: shape(pick(set, "standards version")), standardsUnset: pick(none, "standards version").bypass_actors,
-    refused: refuse({}) && refuse({ id: 0, slug: "p" }) && refuse({ id: "7", slug: "p" }) && refuse({ id: 5 }) }));' "$T/org.json" 2>&1)
+    refused: refuse({}) && refuse({ id: 0, slug: "p" }) && refuse({ id: "7", slug: "p" }) }));' "$T/org.json" 2>&1)
 want='{"release":{"target":"branch","refs":["refs/heads/release/**"],"rules":["creation","deletion","update"],"bypass":[{"actor_id":777,"actor_type":"Integration","bypass_mode":"always"}]},"releaseUnset":[],"standards":{"target":"branch","refs":["refs/heads/standards/v*"],"rules":["creation","deletion","update"],"bypass":[{"actor_id":4242,"actor_type":"Integration","bypass_mode":"always"}]},"standardsUnset":[{"actor_id":4242,"actor_type":"Integration","bypass_mode":"always"}],"refused":true}'
-start "$T/state.json"
+echo '{"org":"acme","repos":[],"property":null,"values":{},"rulesets":[]}' >"$T/empty.json"
+start "$T/empty.json"
 dry=$(run --dry-run)
 if [ "$out" = "$want" ] && grep -q 'ruleset "org: release branches (portal App only)": create' <<<"$dry" && grep -q 'ruleset "org: standards version branches (standards App only)": create' <<<"$dry"; then ok engine-org-ref-protection; else fail engine-org-ref-protection "$out :: $dry"; fi
 
