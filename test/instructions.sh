@@ -109,4 +109,43 @@ variant 1 "hand edit inside the block" "sed -i.bak 's/^- Silo:/- Silo (edited):/
 variant 1 "hand edit outside the block" "echo '- outside' >> AGENTS.md"
 variant 1 "block edited without the template changing" "sed -i.bak 's/^- Done = /- Done (edited) = /' AGENTS.md && rm AGENTS.md.bak"
 if [ -z "$why" ]; then ok gate-instructions-regenerated-block; else fail gate-instructions-regenerated-block "$why"; fi
+
+# A person's PR that joins the standards: each changed instruction file must equal that file at the tip of the sync
+# App's own standards/v<standards.lock version> branch (read from the checkout; no network, no token).
+why=""
+OVB=$T/ovb.json; node -e 'const o=require(process.argv[1]);o.agents_md="block-only";require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$OVB"
+# join <want exit> <needle> <label> <overlay> <changes on the person's branch>: main holds a workflow the sync cannot
+# land beside (and no pack); refs/remotes/origin/standards/v0.1.0 is the App's render; the person branches from it.
+join() {
+  local R o s base; R=$(mktemp -d "$T/j.XXXXXX")
+  git -C "$R" init -q -b main && mkdir -p "$R/.github/workflows" && echo "name: ci" >"$R/.github/workflows/ci.yml" && echo "# Demo" >"$R/AGENTS.md" && echo "* @acme/web" >"$R/.github/CODEOWNERS"
+  gc -C "$R" add -A && gc -C "$R" commit -qm base; base=$(git -C "$R" rev-parse HEAD)
+  gc -C "$R" switch -qc standards/v0.1.0 && node "$ENGINE/bin/repo-standards.mjs" apply --target "$R" --overlay "$4" --version 0.1.0 >/dev/null
+  gc -C "$R" add -A && gc -C "$R" commit -qm "chore: standards v0.1.0"
+  git -C "$R" update-ref refs/remotes/origin/standards/v0.1.0 HEAD
+  # JOINNEWER: the default branch already carries the sync tip plus a later change to AGENTS.md
+  if [ -n "${JOINNEWER:-}" ]; then echo "- newer" >>"$R/AGENTS.md"; gc -C "$R" commit -qam newer; base=$(git -C "$R" rev-parse HEAD); fi
+  gc -C "$R" switch -qc fix/join
+  (cd "$R" && eval "$5") && gc -C "$R" add -A && gc -C "$R" commit -qm fix
+  printf '{"pull_request":{"number":7,"user":{"login":"alice"},"base":{"sha":"%s","ref":"main"},"head":{"sha":"%s","ref":"fix/join"}}}' "$base" "$(git -C "$R" rev-parse HEAD)" >"$R/.git/event.json"
+  LASTR=$R; o=$(G "$R"); s=$?
+  [ "$s" -eq "$1" ] && has "$2" "$o" || why="$why; $3 (exit $s): $o"
+}
+for OVX in "$OV" "$OVB"; do
+  join 0 "no instruction file" "pack plus the removed workflow ($(basename $OVX))" "$OVX" 'git rm -q .github/workflows/ci.yml'
+  join 1 "AGENTS.md" "one extra line ($(basename $OVX))" "$OVX" 'git rm -q .github/workflows/ci.yml; echo "- extra" >> AGENTS.md'
+  join 1 "AGENTS.md" "a hand edit inside the block ($(basename $OVX))" "$OVX" 'sed -i.bak "s/^- Silo:/- Silo (edited):/" AGENTS.md && rm AGENTS.md.bak'
+done
+join 1 "AGENTS.md" "lock names a version with no sync branch" "$OV" 'sed -i.bak "1s/ v0.1.0 / v0.2.0 /" standards.lock && rm standards.lock.bak'
+join 1 "AGENTS.md" "lock names a version that renders differently" "$OV" 'git switch -q --detach HEAD && echo "- other" >> AGENTS.md && git -c user.name=t -c user.email=t@t commit -qam other && git update-ref refs/remotes/origin/standards/v0.2.0 HEAD && git switch -q fix/join && sed -i.bak "1s/ v0.1.0 / v0.2.0 /" standards.lock && rm standards.lock.bak'
+join 1 ".github/CODEOWNERS (managed std block" "an edited CODEOWNERS block" "$OV" 'sed -i.bak "s#@acme/leads#@acme/someone#" .github/CODEOWNERS && rm .github/CODEOWNERS.bak'
+join 1 "AGENTS.md" "a sync tip the PR does not descend from (a left-over branch)" "$OV" 'git rm -q .github/workflows/ci.yml && git update-ref refs/remotes/origin/standards/v0.1.0 $(git -c user.name=t -c user.email=t@t commit-tree HEAD^{tree} -m old)'
+JOINNEWER=1 join 1 "AGENTS.md" "a sync tip already in the PR's base" "$OVB" 'git checkout -q refs/remotes/origin/standards/v0.1.0 -- AGENTS.md'
+join 1 "CLAUDE.md" "another instruction file" "$OV" 'echo "rule" > CLAUDE.md'
+# the local gate also judges uncommitted edits: a dirty AGENTS.md on a join branch is not the sync branch's file
+join 0 "no instruction file" "uncommitted edit, before" "$OV" 'git rm -q .github/workflows/ci.yml'
+echo "- uncommitted" >> "$LASTR/AGENTS.md"
+o=$(cd "$LASTR" && GITHUB_EVENT_PATH=$LASTR/.git/event.json node scripts/agent/gate.mjs instructions --local 2>&1); s=$?
+[ "$s" -eq 1 ] && has "AGENTS.md" "$o" || why="$why; uncommitted AGENTS.md edit (exit $s): $o"
+if [ -z "$why" ]; then ok gate-instructions-join; else fail gate-instructions-join "$why"; fi
 done_cases

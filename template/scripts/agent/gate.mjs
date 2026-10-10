@@ -410,12 +410,47 @@ if (cmd === "local") {
       } finally { rmSync(dir, { recursive: true, force: true }); }
     }
   }
+  // A person's PR that joins the standards (the sync's "needs a person" fallback) may carry the pack's own AGENTS.md and
+  // managed CODEOWNERS block: each must equal that file at the tip of the sync App's standards/v<standards.lock version>
+  // branch, read from this checkout (fetch-depth 0; no network, no token). Trusted data, not trusted code: only the org
+  // App may push standards/v* (the org ruleset), and nothing the pull request supplies is run. A missing branch, a lock
+  // naming another version, or any difference is refused as before. Only the root AGENTS.md qualifies.
+  let syncTip;
+  const sync = () => syncTip !== undefined ? syncTip : (syncTip = (() => {
+    try {
+      const v = git("show", "HEAD:standards.lock").split("\n")[0].match(/^# \S+ v([0-9][0-9A-Za-z.+-]*) /)?.[1];
+      const tip = v ? git("rev-parse", "--verify", "-q", `refs/remotes/origin/standards/v${v}^{commit}`).trim() : null;
+      // the pull request must descend from the tip: a left-over older branch cannot authorise a downgrade
+      if (tip) git("merge-base", "--is-ancestor", tip, "HEAD");
+      // ... and must not already be in the base: a tip the default branch carries was merged (or superseded) before
+      if (tip && prBase()) { try { git("merge-base", "--is-ancestor", tip, prBase()); return null; } catch {} }
+      return tip;
+    } catch { return null; }
+  })());
+  // --local also judges uncommitted edits, which the committed head below does not show: a dirty AGENTS.md gets no exemption.
+  const dirtyAgents = args.includes("--local") && git("status", "--porcelain", "--", "AGENTS.md").trim() !== "";
+  if (bad.has("AGENTS.md") && !dirtyAgents && sync()) {
+    const at = (rev, path) => { try { return git("show", `${rev}:${path}`); } catch { return null; } };
+    const parts = (t) => { const i = t.search(/<!-- std:begin [a-z0-9-]+ -->/), j = i < 0 ? -1 : t.indexOf("<!-- std:end -->", i); return j < 0 ? null : [t.slice(0, i), t.slice(i, j + 16), t.slice(j + 16)]; };
+    const head = /^100644 blob /.test(git("ls-tree", "HEAD", "--", "AGENTS.md")) ? at("HEAD", "AGENTS.md") : null, tip = at(sync(), "AGENTS.md");
+    if (head !== null && tip !== null) {
+      let ok;
+      if (json_(at(sync(), "scripts/agent/pack.json"))?.agents_md === "block-only") ok = head === tip; // the whole file, as setup --check reads it
+      else {
+        const [h, t, b] = [parts(head), parts(tip), prBase() ? at(prBase(), "AGENTS.md") : null].map((x) => (typeof x === "string" ? parts(x) : x));
+        // only the managed block must match; the text around it is the repository's own and stays as the base has it
+        ok = !!h && !!t && h[1] === t[1] && (b ? h[0] === b[0] && h[2] === b[2] : h[0] === t[0] && h[2] === t[2]);
+      }
+      if (ok) bad.delete("AGENTS.md");
+    }
+  }
   if (files.some((f) => CODEOWNERS.includes(f))) {
     const [before, after] = [ownersBlock(prBase()), ownersBlock("HEAD")];
-    if (before.block !== after.block) bad.add(`${after.path ?? before.path} (managed std block${after.path !== before.path ? `, now read from ${after.path ?? "no CODEOWNERS"}` : ""})`);
+    const tipOwners = sync() ? ownersBlock(sync()) : null;
+    if (before.block !== after.block && !(tipOwners && tipOwners.path === after.path && tipOwners.block === after.block)) bad.add(`${after.path ?? before.path} (managed std block${after.path !== before.path ? `, now read from ${after.path ?? "no CODEOWNERS"}` : ""})`);
   }
   if (bad.size) fail(`instruction files changed by ${author || "this pull request"} (${ref}):\n  ${[...bad].join("\n  ")}`,
-    "agents never change instruction files; only the org App's standards-sync (standards/v*) and approved retro (retro/*) pull requests may. Revert these files; a rule change goes through the weekly retro.");
+    "agents never change instruction files; only the org App's standards-sync (standards/v*) and approved retro (retro/*) pull requests may, and a person's PR that carries exactly the pack's AGENTS.md and CODEOWNERS block from the standards/v<standards.lock version> branch. Revert these files; a rule change goes through the weekly retro.");
   console.log("instructions: no instruction file or managed CODEOWNERS block changed");
 } else if (cmd === "verdict") {
   // The required `gate` job: the checks job and the test job (NEEDS, the workflow's needs as JSON) each succeeded on a
