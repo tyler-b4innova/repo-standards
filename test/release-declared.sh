@@ -94,4 +94,27 @@ has "exit=0" "$out" && [ "$(printf '%s\n' "$changes" | cut -d' ' -f1-3 | tr '\n'
 has "exit=1" "$out" && [ -z "$(calls)" ] || why="$why; unknown: $out // $(calls)"
 if [ -z "$why" ]; then ok release-declared-promote; else fail release-declared-promote "$why"; fi
 
+# ---- a declared primary's Preview never binds production resources, its own or another declared Worker's: the preview trigger refuses
+# before any remote command, and setup --check refuses the same configuration; a clean one deploys with its own --config
+why=""
+repo prev
+D1='"d1_databases": [{ "binding": "DB", "database_name": "web-prod", "database_id": "web-prod-id" }]'
+printf '{ "name": "api", "main": "src/index.js", "d1_databases": [{ "binding": "AUTH", "database_name": "auth-prod", "database_id": "auth-prod-id" }], %s }\n' "$STAGING" >"$R/wrangler.api.jsonc"
+prev() { # prev <previews block for web>: web's config with that previews block
+  printf '{ "name": "web", "main": "../../src/index.js", %s, "env": { "staging": { "routes": [], "workers_dev": true, "d1_databases": [{ "binding": "DB", "database_name": "web-stg", "database_id": "web-stg-id" }] } }, "previews": %s }\n' "$D1" "$1" >"$R/workers/web/wrangler.jsonc"; }
+preview() { (cd "$R" && WRANGLER_CI_OVERRIDE_NAME=web WORKERS_CI_BRANCH=feat/x node scripts/agent/release.mjs preview 2>&1); echo "exit=$?"; }
+check() { (cd "$R" && scripts/agent/setup.sh --check 2>&1); echo "exit=$?"; }
+prev '{ "d1_databases": [{ "binding": "DB", "database_name": "web-stg", "database_id": "web-stg-id" }] }'; commit clean
+: >"$RELEASE_LOG"; out=$(preview)
+has "exit=0" "$out" && [ "$(calls)" = "preview --name feat-x --config workers/web/wrangler.jsonc" ] || why="clean preview: $out // $(calls)"
+out=$(check); has "exit=0" "$out" || why="$why; clean check: $out"
+for bad in '{ "d1_databases": [{ "binding": "DB", "database_name": "web-prod", "database_id": "web-prod-id" }] }' \
+           '{ "d1_databases": [{ "binding": "DB", "database_name": "web-stg", "database_id": "web-stg-id" }, { "binding": "AUTH", "database_name": "auth-prod", "database_id": "auth-prod-id" }] }'; do
+  prev "$bad"; commit bad
+  : >"$RELEASE_LOG"; out=$(preview)
+  has "exit=1" "$out" && has "names the production resource" "$out" && [ -z "$(calls)" ] || why="$why; preview with $bad: $out // $(calls)"
+  out=$(check); has "exit=1" "$out" && has "names the production resource" "$out" || why="$why; check with $bad: $out"
+done
+if [ -z "$why" ]; then ok release-declared-preview-isolation; else fail release-declared-preview-isolation "$why"; fi
+
 done_cases
