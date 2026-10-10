@@ -169,7 +169,7 @@ m4=$(mark)
 out4=$(sync --version 0.2.0 --repo acme/beta); rc4=$?
 w4=$(writes_since "$m4")
 if [ "$b1" = "$b0" ] && [ "$beta_pr1" = '[[1,"open","standards/v0.1.0","chore: standards v0.1.0 (needs a person)",null]]' ] \
-  && [ -n "$(printf '%s' "$beta_body1" | grep 'offline check failed')" ] && [ -n "$(printf '%s' "$beta_body1" | grep -F '.mcp.json is committed')" ] && [ -n "$fixc" ] && [ "$(printf '%s' "$fixed" | tail -1)" = "$fixwant" ] \
+  && [ -n "$(printf '%s' "$beta_body1" | grep 'offline check failed')" ] && has_text 'leave AGENTS.md' "$beta_body1" && has_text '`gate` accepts' "$beta_body1"  && [ -n "$(printf '%s' "$beta_body1" | grep -F '.mcp.json is committed')" ] && [ -n "$fixc" ] && [ "$(printf '%s' "$fixed" | tail -1)" = "$fixwant" ] \
   && [ -z "$(grep enablePullRequestAutoMerge "$LOG")" ] && [ -n "$(printf '%s' "$beta_row1" | grep -F '| PR #1: offline check failed |')" ] \
   && [ "$(q acme/beta "JSON.stringify($prs.map(p => [p.number, p.state, p.head]))")" = '[[1,"closed","standards/v0.1.0"],[2,"closed","standards/v0.2.0"]]' ] \
   && [ -n "$(printf '%s' "$beta_row2" | grep -F '| PR #2: offline check failed |')" ] && [ "$(sha acme/beta main)" = "$b0" ] \
