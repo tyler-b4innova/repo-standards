@@ -20,7 +20,7 @@ const HOSTS = new Set([
   "registry.npmjs.org", "www.npmjs.com", "npmjs.com",
   "code.claude.com", "docs.anthropic.com", "claude.ai",
   "learn.chatgpt.com", "developers.openai.com", "chatgpt.com",
-  "developers.cloudflare.com", "challenges.cloudflare.com", "cache.agilebits.com", "json-schema.org", "docs.sentry.io", "sentry.io",
+  "developers.cloudflare.com", "api.cloudflare.com", "challenges.cloudflare.com", "cache.agilebits.com", "json-schema.org", "docs.sentry.io", "sentry.io",
   "example.com", "example.org", "example.net",
   "octocoders.io", // the example org host in GitHub's documented webhook payloads
 ]);
