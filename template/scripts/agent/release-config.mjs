@@ -1,12 +1,13 @@
 // Resolve and check the configuration used by a release, including adapter-generated redirects.
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
-import { dirname, isAbsolute, relative, resolve, sep, join } from "node:path";
+import { existsSync, readFileSync, realpathSync, mkdtempSync, mkdirSync, statSync, writeFileSync, rmSync } from "node:fs";
+import { dirname, isAbsolute, normalize, relative, resolve, sep, join } from "node:path";
 import { tmpdir } from "node:os";
 import { parse, resourceFindings } from "./staging.mjs";
 
 export const redirectFile = ".wrangler/deploy/config.json";
-export const rootFile = () => ["wrangler.json", "wrangler.jsonc", "wrangler.toml"].find(existsSync);
+const CONFIGS = ["wrangler.json", "wrangler.jsonc", "wrangler.toml"];
+export const rootFile = () => CONFIGS.find(existsSync);
 const read = (file) => readFileSync(file, "utf8");
 
 // TOML is parsed by the standard-library parser, not by regexes that could miss a route or a quoted env table.
@@ -132,7 +133,7 @@ export function build(std, pkg, staging = false, { quiet = false, command = buil
 export function buildProductionConfigs(std, pkg, workers, { quiet = false, ...options } = {}) {
   build(std, pkg, false, { quiet, ...options });
   const configs = workers.map((worker) => {
-    const resolved = effectiveConfig(worker.file, false, { redirect: Boolean(worker.primary) });
+    const resolved = effectiveConfig(worker.file, false, { redirect: worker.redirect ?? Boolean(worker.primary) });
     if (resolved.cfg.name !== worker.cfg.name) throw new Error(`production build does not target ${worker.cfg.name}`);
     return resolved.cfg;
   });
@@ -174,15 +175,15 @@ export function doLifecycle(cfg) {
 }
 
 // Additional Workers are explicit repo-owned config paths, never shell commands or external files.
-export function workerFiles(std, primary = rootFile()) {
+export function workerFiles(std, primary = rootFile(), base = ".") {
   const files = std.release_workers === undefined ? [] : std.release_workers;
   if (!Array.isArray(files) || files.some((f) => typeof f !== "string" || !f || isAbsolute(f) || f.split(/[\\/]/).includes("..") || !/\.(jsonc?|toml)$/.test(f)))
     throw new Error("standards.json release_workers must be a list of relative Wrangler config paths within this repo");
   if (!files.length) return [];
   if (!primary) throw new Error("release_workers requires a primary root Wrangler config");
-  const repo = realpathSync("."), seen = new Set([realpathSync(primary)]), names = new Set([readConfig(primary).name]);
+  const repo = realpathSync(base), seen = new Set([realpathSync(join(base, primary))]), names = new Set([readConfig(join(base, primary)).name]);
   return files.map((file) => {
-    const path = realpathSync(file), rel = relative(repo, path);
+    const path = realpathSync(join(base, file)), rel = relative(repo, path);
     if ((rel === ".." || rel.startsWith(`..${sep}`)) || isAbsolute(rel) || seen.has(path)) throw new Error(`release_workers has an external or duplicate config: ${file}`);
     seen.add(path);
     const cfg = readConfig(path);
@@ -190,4 +191,56 @@ export function workerFiles(std, primary = rootFile()) {
     names.add(cfg.name);
     return path;
   });
+}
+
+// Declared Workers: standards.json "workers" lists a repository's primary Workers, each a Wrangler config file or a directory holding
+// exactly one, or {"config": <file or directory>, "release_workers": [...]} for a primary with supporting Workers. Primaries are declared,
+// never discovered: a config that is not listed is not a primary, and nothing falls back to another directory. null when the key is absent
+// (the repository's root config, and the top-level release_workers, keep their meaning). Every problem throws; none is skipped.
+// Returns [{ file, name, cfg, extras (absolute supporting config paths), extraConfigs }], `file` relative to base as Wrangler's -c takes it.
+export function declaredWorkers(std, base = ".") {
+  if (std?.workers === undefined) return null;
+  if (!Array.isArray(std.workers) || !std.workers.length)
+    throw new Error('standards.json workers must be a non-empty list of Wrangler config files or directories, or {"config": ..., "release_workers": [...]}');
+  if (std.release_workers !== undefined)
+    throw new Error('standards.json has workers and release_workers: give each declared Worker its own, {"config": ..., "release_workers": [...]}');
+  const repo = realpathSync(base), within = (path) => { const rel = relative(repo, path); return !(rel === ".." || rel.startsWith(`..${sep}`)) && !isAbsolute(rel); };
+  const seen = new Set(), names = new Map();
+  const claim = (path, cfg, what) => {
+    if (seen.has(path)) throw new Error(`workers has a duplicate config: ${what}`);
+    seen.add(path);
+    if (typeof cfg.name !== "string" || !cfg.name || names.has(cfg.name)) throw new Error(`workers must use distinct production Worker names: ${what}`);
+    names.set(cfg.name, what);
+  };
+  return std.workers.map((entry) => {
+    const object = entry && typeof entry === "object" && !Array.isArray(entry);
+    if (object && Object.keys(entry).some((k) => !["config", "release_workers"].includes(k))) throw new Error(`workers entry has an unknown key (config, release_workers): ${JSON.stringify(entry)}`);
+    const path = object ? entry.config : entry;
+    if (typeof path !== "string" || !path || isAbsolute(path) || path.split(/[\\/]/).includes("..")) throw new Error(`workers entry must be a relative path within this repo: ${JSON.stringify(path)}`);
+    if (!existsSync(join(base, path))) throw new Error(`workers: ${path} does not exist`);
+    const real = realpathSync(join(base, path));
+    if (!within(real)) throw new Error(`workers: ${path} is outside this repo`);
+    let configPath = real;
+    if (statSync(real).isDirectory()) {
+      const found = CONFIGS.filter((name) => existsSync(join(real, name)));
+      if (found.length !== 1) throw new Error(`workers: ${path} must hold exactly one of ${CONFIGS.join(", ")} (found ${found.length ? found.join(", ") : "none"}); declare the config file itself to choose`);
+      configPath = join(real, found[0]);
+    } else if (!/\.(jsonc?|toml)$/.test(real)) throw new Error(`workers: ${path} is not a Wrangler config (.json, .jsonc, .toml) or a directory`);
+    const file = normalize(relative(repo, configPath)), cfg = readConfig(configPath);
+    claim(configPath, cfg, file);
+    const extras = workerFiles({ release_workers: object ? entry.release_workers : undefined }, file, base), extraConfigs = extras.map((f) => {
+      const c = readConfig(f);
+      claim(f, c, relative(repo, f));
+      return c;
+    });
+    return { file, name: cfg.name, cfg, extras, extraConfigs };
+  });
+}
+
+// The one declared Worker a build is for: Workers Builds names it (WRANGLER_CI_OVERRIDE_NAME, the Worker's name), a local run says --worker <name>.
+export function selectDeclared(workers, name) {
+  if (!name) throw new Error("this repository declares several Workers and the build does not say which: Workers Builds sets WRANGLER_CI_OVERRIDE_NAME; a local run passes --worker <name>");
+  const hit = workers.filter((w) => w.name === name);
+  if (hit.length !== 1) throw new Error(hit.length ? `${hit.length} declared Workers are named ${name}` : `no declared Worker is named ${name} (declared: ${workers.map((w) => w.name).join(", ")}); a supporting Worker is not one`);
+  return hit[0];
 }
