@@ -49,6 +49,10 @@ if (process.env.REAL_WRANGLER && process.env.MALICIOUS_DOTENV && ["deploy", "ver
   name = deployed.worker_name;
 }
 appendFileSync(process.env.RELEASE_LOG, JSON.stringify({ args, controlledEmpty, account: process.env.CLOUDFLARE_ACCOUNT_ID ?? null, name, configName: cfg.name, env: process.env.CLOUDFLARE_ENV ?? null, overrideName: process.env.WRANGLER_CI_OVERRIDE_NAME ?? null, matchTag: process.env.WRANGLER_CI_MATCH_TAG ?? null, routes: cfg.routes }) + "\n");
+if (args[0] === "deploy" && args.includes("--dry-run") && process.env.FAIL_DRYRUN === name) { console.error("simulated bundle failure"); process.exit(1); }
+// promote: the versions main uploaded (RELEASE_VERSIONS: { <worker>: [{ id, annotations }] }), a version deploy, triggers, D1
+if (args[0] === "versions" && args[1] === "list") { console.log(JSON.stringify(process.env.RELEASE_VERSIONS ? JSON.parse(readFileSync(process.env.RELEASE_VERSIONS, "utf8"))[name] ?? [] : [])); process.exit(0); }
+if (args[0] === "d1") { console.log(process.env.D1_PENDING ? "Migrations to be applied: 0002.sql" : "No migrations to apply!"); process.exit(0); }
 if (args[0] === "deploy" && process.env.FAIL_DEPLOY === name) { console.error("simulated deploy failure"); process.exit(1); }
 if (args[0] === "versions" && args[1] === "upload") {
   if (process.env.FAIL_UPLOAD === name) { console.error("simulated upload failure"); process.exit(1); }
