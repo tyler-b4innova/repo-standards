@@ -148,7 +148,7 @@ async function needsFullDeploy(name, cfg) {
 // consumers, routes, custom domains) are applied by `wrangler triggers deploy`; observability, logpush and tail consumers by the Worker
 // settings API (https://developers.cloudflare.com/workers/configuration/multipart-upload-metadata/ lists logpush and tail_consumers as
 // not available to version uploads; https://developers.cloudflare.com/workers/versions-and-deployments/deployment-management/ sends
-// routes, domains and crons to `triggers deploy`). Routes cannot be read without a zone, so a Worker that declares them always re-applies.
+// routes, domains and crons to `triggers deploy`). Routes cannot be read without a zone, so a Worker that declares them, or declares an empty `routes`, always re-applies.
 async function settingsDrift(name, cfg) {
   const account = await accountOf(cfg), drift = [], base = `/accounts/${account}/workers`;
   let triggers = false;
@@ -158,7 +158,9 @@ async function settingsDrift(name, cfg) {
   }
   const declared = [...(cfg.routes ?? []), ...(cfg.route ? [cfg.route] : [])];
   const domains = declared.filter((r) => r?.custom_domain).map((r) => r.pattern);
-  if (domains.length) {
+  // `routes`/`route` present in the config, even empty, is the source of truth: removals must reach production too.
+  const explicit = "routes" in cfg || "route" in cfg;
+  if (domains.length || explicit) {
     const live = (await cf("GET", `${base}/domains?service=${encodeURIComponent(name)}`)).map((d) => d.hostname);
     if (!sameSet(live, domains)) { drift.push(`custom domains [${live}] -> [${domains}]`); triggers = true; }
   }
@@ -171,7 +173,8 @@ async function settingsDrift(name, cfg) {
       if (!has) { drift.push(`queue consumer for ${queue} is not registered`); triggers = true; }
     }
   }
-  const routes = declared.some((r) => typeof r === "string" || (r && !r.custom_domain));
+  // Zone routes cannot be read without a zone: a declared one, or an explicitly empty list (a removal), always re-applies.
+  const routes = declared.some((r) => typeof r === "string" || (r && !r.custom_domain)) || (explicit && declared.length === 0);
   const live = cfg.observability || typeof cfg.logpush === "boolean" || cfg.tail_consumers ? await cf("GET", `${base}/scripts/${name}/script-settings`) : {}, patch = {};
   const o = cfg.observability, enabled = o?.enabled ?? o?.logs?.enabled;
   if (o && ((enabled !== undefined && live.observability?.enabled !== enabled) || (o.head_sampling_rate !== undefined && live.observability?.head_sampling_rate !== o.head_sampling_rate))) {
