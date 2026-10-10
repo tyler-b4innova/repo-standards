@@ -18,7 +18,7 @@ jset() { node -e 'const fs=require("fs"),f=process.argv[1],o=JSON.parse(fs.readF
 STAGING='"env": { "staging": { "routes": [], "workers_dev": true } }, "previews": {}'
 commit() { gc -C "$R" add -A && gc -C "$R" commit -qm "${1:-change}"; }
 sha() { git -C "$R" rev-parse HEAD; }
-calls() { node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n").filter(Boolean).map(JSON.parse).filter(x=>x.args);console.log(l.map(x=>x.args.join(" ").split(process.argv[2]+"/").join("")).join("\n"))' "$RELEASE_LOG" "$R"; }
+calls() { node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n").filter(Boolean).map(JSON.parse).filter(x=>x.args);console.log(l.map(x=>x.args.join(" ").split(require("fs").realpathSync(process.argv[2])+"/").join("").split(process.argv[2]+"/").join("")).join("\n"))' "$RELEASE_LOG" "$R"; }
 # names <first-arg> [second-arg]: the Worker each call of that kind targeted, in order
 names() { node -e 'const l=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n").filter(Boolean).map(JSON.parse).filter(x=>x.args&&x.args[0]===process.argv[2]&&(!process.argv[3]||x.args[1]===process.argv[3]));console.log(l.map(x=>x.name).join(","))' "$RELEASE_LOG" "$1" "${2:-}"; }
 # repo <name>: a git repo with the pack applied and three Worker configs: wrangler.api.jsonc (a named file at the root) with the supporting
@@ -197,5 +197,18 @@ repo plain; rm -f "$R"/wrangler.api.jsonc; printf '{ "name": "site", "main": "sr
 has "exit=0" "$out" && [ "$(calls)" = "preview delete --name feat-login --skip-confirmation" ] || why="$why; root repo: $out // $(calls)"
 kill $GH_PID 2>/dev/null
 if [ -z "$why" ]; then ok release-declared-cleanup; else fail release-declared-cleanup "$why"; fi
+
+# ---- a root-config repository is unchanged: the same Worker config and release_workers, no --config on the primary's commands,
+# WRANGLER_CI_OVERRIDE_NAME needs no declaration, and a preview deploys exactly as before
+why=""
+repo rootcfg; rm -f "$R"/wrangler.api.jsonc; printf '{ "name": "site", "main": "src/index.js", %s }\n' "$STAGING" >"$R/wrangler.jsonc"
+jset "$R/standards.json" 'delete o.workers; o.release_workers=["workers/jobs/wrangler.jsonc"]'; commit root
+: >"$RELEASE_LOG"; out=$(main)
+want=$(printf 'deploy --env staging --config workers/jobs/wrangler.jsonc --name jobs-staging\ndeploy --env staging --config wrangler.jsonc --name site-staging\nversions upload -c workers/jobs/wrangler.jsonc --name jobs\nversions upload')
+got=$(calls | grep -vE '^secret list' | sed -E 's/--tag [0-9a-f]{40}.*//; s/ +$//')
+[ "$got" = "$want" ] && has "exit=0" "$out" || why="root release: $out // $got"
+: >"$RELEASE_LOG"; out=$(cd "$R" && WORKERS_CI_BRANCH=feat/x node scripts/agent/release.mjs preview 2>&1)
+[ "$(calls)" = "preview --name feat-x" ] || why="$why; root preview: $(calls)"
+if [ -z "$why" ]; then ok release-root-unchanged; else fail release-root-unchanged "$why"; fi
 
 done_cases
