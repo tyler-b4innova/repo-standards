@@ -36,7 +36,7 @@ echo "$line" >>"$FAKE/npx.log"
 case "$line" in *"deploy --env staging"*) echo "deploy --env staging: ${WRANGLER_CI_OVERRIDE_NAME:--} ${WRANGLER_CI_MATCH_TAG:--}" >>"$FAKE/envlog" ;; *"versions upload"*) echo "versions upload: ${WRANGLER_CI_OVERRIDE_NAME:--} ${WRANGLER_CI_MATCH_TAG:--}" >>"$FAKE/envlog" ;; esac
 case "$line" in
   *"deploy --env staging"*) echo "Uploaded site-staging (1.0 sec)"; echo "Deployed site-staging triggers (1.0 sec)" ;;
-  *"secret list"*) echo "⛅️ wrangler 4.147.0"; echo "[WARNING] beta"; cat "$FAKE/listed" ;;
+  *"secret list"*) echo "⛅️ wrangler 4.147.0"; echo "[WARNING] beta"; cat "$FAKE/listed"; cat "$FAKE/after" 2>/dev/null ;;
   *"preview delete"*) for n in $(cat "$FAKE/gone" 2>/dev/null); do case "$line" in *"--name $n "*) echo "X [ERROR] The Preview \"$n\" was not found." >&2; exit 1 ;; esac; done
     for n in $(cat "$FAKE/broken" 2>/dev/null); do case "$line" in *"--name $n "*) echo "X [ERROR] Authentication error" >&2; exit 1 ;; esac; done ;;
 esac
@@ -52,7 +52,7 @@ printf 'value-of-%s' "$name"
 EOF
 chmod +x "$T/bin/npx" "$T/bin/op"
 export FAKE=$T PATH="$T/bin:$PATH"
-reset() { rm -f "$T/npx.log" "$T/files" "$T/gone" "$T/broken" "$T/failon" "$T/opmissing"; printf '%s' "${1:-[]}" >"$T/listed"; }
+reset() { rm -f "$T/after" "$T/npx.log" "$T/files" "$T/gone" "$T/broken" "$T/failon" "$T/opmissing"; printf '%s' "${1:-[]}" >"$T/listed"; }
 rel() { (cd "$1" && shift && node scripts/agent/release.mjs "$@" 2>&1); echo "exit=$?"; }
 log() { cat "$T/npx.log" 2>/dev/null; }
 
@@ -110,6 +110,19 @@ reset; o=$(rel "$C" main); has "exit=0" "$o" && ! has "secrets-file" "$(log)" &&
 # no secrets declared: no file, no check
 reset; o=$(rel "$R" preview); ! has "secrets-file" "$(log)" && ! has "secret list" "$(log)" || why="$why; none declared: $(log)"
 if [ -z "$why" ]; then ok release-secrets-resupplied; else fail release-secrets-resupplied "$why"; fi
+
+# ---- the secret list is found wherever Wrangler prints it: after a warning, before one (a config key Wrangler's schema does not know
+# makes it print a warning box after the JSON), and an unreadable output is shown (names only) so the failure can be diagnosed
+why=""
+L=$(site listparse); jset "$L/standards.json" 'o.secrets={required:["MAIL_KEY"],store:"1password"}'; commit "$L"
+reset '[{"name":"MAIL_KEY","type":"secret_text"}]'
+printf '\n\n▲ [WARNING] Processing wrangler.jsonc configuration:\n\n    - "previews" field has unexpected fields: "secrets" [ignored]\n\n' >"$T/after"
+o=$(rel "$L" main); has "exit=0" "$o" && has "has its 1 required secret" "$o" || why="warning after the list: $o"
+printf '[{"name":"OTHER"}]' >"$T/listed"; o=$(rel "$L" main); has "exit=1" "$o" && has "missing required secret(s): MAIL_KEY" "$o" || why="$why; a listed name is not the required one: $o"
+reset 'no list here'; printf '▲ [WARNING] only a warning\n' >"$T/after"
+o=$(rel "$L" main); has "exit=1" "$o" && has "could not read the secret list" "$o" && has "only a warning" "$o" || why="$why; unreadable output not shown: $o"
+reset
+if [ -z "$why" ]; then ok release-secret-list-parse; else fail release-secret-list-parse "$why"; fi
 
 # ---- post-deploy: a deployed Worker without a required secret fails the build, naming it (never a value)
 why=""

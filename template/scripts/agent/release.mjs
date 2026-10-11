@@ -308,13 +308,16 @@ function secretCheck(what, a, namesRequired = required) {
   if (store === "secrets_store") { console.log(`release: ${what}: secrets are Secrets Store bindings (checked offline by setup.sh --check)`); return; }
   const r = wrangler(a, { capture: true });
   if (r.status) { process.stdout.write(r.out); fail(`could not list the secrets of ${what}`, "re-run the build; the deploy itself succeeded"); }
+  // The JSON list may sit anywhere in the output, before or after a banner or a "▲ [WARNING]" box: the longest complete JSON array of
+  // {name} objects from any "[" (a warning's own brackets never parse as one).
   let names;
-  // The JSON list may follow a banner or warnings ("[WARNING] ..."): the first "[" from which the rest parses.
-  const end = r.out.lastIndexOf("]") + 1;
   for (let i = r.out.indexOf("["); i >= 0 && !names; i = r.out.indexOf("[", i + 1)) {
-    try { const v = JSON.parse(r.out.slice(i, end)); if (Array.isArray(v)) names = v.map((s) => s?.name); } catch {}
+    for (let e = r.out.lastIndexOf("]"); e > i && !names; e = r.out.lastIndexOf("]", e - 1)) {
+      try { const v = JSON.parse(r.out.slice(i, e + 1)); if (Array.isArray(v) && v.every((s) => typeof s?.name === "string")) names = v.map((s) => s.name); } catch {}
+    }
   }
-  if (!names) fail(`could not read the secret list of ${what}`, "re-run the build");
+  // The list holds names only, never values, so the output is safe to show.
+  if (!names) { process.stdout.write(r.out); fail(`could not read the secret list of ${what}`, "re-run the build"); }
   const missing = namesRequired.filter((n) => !names.includes(n));
   if (missing.length) fail(`${what} is missing required secret(s): ${missing.join(", ")}`,
     store === "1password" && what !== "the production Worker" ? `add them to the "staging" item of vault ${env.OP_VAULT ?? "(OP_VAULT)"}` : "set them on the production Worker once: npx wrangler secret put <NAME>");
