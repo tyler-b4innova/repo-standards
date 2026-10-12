@@ -317,9 +317,53 @@ export function rollbackFindings({ built = false } = {}) {
       pairs.push({ label: `${file} resolved production`, afile: a?.file ?? file, bfile: b?.file ?? file, a: a?.cfg ?? {}, b: b?.cfg ?? {} });
     }
     const dirs = new Set();
+    // The migration folders of a config's D1 databases, relative to the repository root.
+    const migrationDirs = (label, path, c) => entries(c, "d1_databases").map((db) => {
+      const dir = db.migrations_dir ?? c.migrations_dir ?? "migrations";
+      if (typeof dir !== "string") throw new Error(`${label}: invalid migrations_dir`);
+      return posix.normalize(posix.join(dirname(path), dir));
+    });
+    const migrations = (root, list) => {
+      const found = [];
+      const walk = (dir) => {
+        if (posix.isAbsolute(dir) || dir === ".." || dir.startsWith("../")) throw new Error(`migration directory is outside the repository: ${dir}`);
+        if (!existsSync(join(root, dir))) return;
+        for (const entry of readdirSync(join(root, dir), { withFileTypes: true })) {
+          const file = posix.join(dir, entry.name);
+          if (entry.isDirectory()) walk(file);
+          else if (entry.isFile() && file.endsWith(".sql")) found.push(file);
+          else if (entry.isSymbolicLink()) throw new Error(`cannot safely inventory migration symlink: ${file}`);
+        }
+      };
+      for (const dir of list) walk(dir);
+      return [...new Set(found)].sort();
+    };
+    // A Worker deleted whole: its Wrangler config is gone from the head, no migration file is left in any folder its D1 databases used,
+    // and no other config in the head carries its name (a moved config is the same Worker, not a deletion). One that standards.json
+    // does not declare (not the repository's root config either, which is the primary Worker unless `workers` lists others) was never
+    // released by the gate, so no previous release can need its bindings or migrations: they are not compared, and a note names it.
+    // A declared one (in the comparison base's standards.json) is a release the previous deploy still runs, so deleting it whole fails: the declaration goes first.
+    const baseStd = JSON.parse(before(base, "standards.json") ?? "{}");
+    const normal = (p) => posix.normalize(String(p).split("\\").join("/")).replace(/\/+$/, "");
+    const declaredBy = (file) => {
+      const listed = [...(Array.isArray(baseStd.release_workers) ? baseStd.release_workers.map((p) => ["release_workers", p]) : []),
+        ...(Array.isArray(baseStd.workers) ? baseStd.workers.flatMap((w) => w && typeof w === "object" ? [["workers", w.config], ...(Array.isArray(w.release_workers) ? w.release_workers.map((p) => ["release_workers", p]) : [])] : [["workers", w]]) : [])];
+      for (const [key, p] of listed) if (typeof p === "string" && [file, dirname(file)].includes(normal(p))) return `standards.json ${key}`;
+      return baseStd.workers === undefined && file === ["wrangler.json", "wrangler.jsonc", "wrangler.toml"].find((f) => before(base, f) !== null) ? "the root Wrangler config, the primary Worker" : null;
+    };
+    const headNames = new Set(pairs.flatMap((p) => typeof p.b.name === "string" ? [p.b.name] : []));
+    const dropped = new Set();
+    for (const p of pairs.slice(0, configs.length)) {
+      if (before(base, p.label) === null || read(p.label) !== null || (typeof p.a.name === "string" && headNames.has(p.a.name))) continue;
+      const mine = [...new Set([...migrationDirs(p.label, p.afile, p.a), ...migrationDirs(p.label, p.afile, p.a.env?.production ?? {})])];
+      if (migrations(".", mine).length) continue;
+      const by = declaredBy(p.label), worker = typeof p.a.name === "string" ? p.a.name : p.label;
+      if (by) errors.push(`${p.label}: Worker ${worker} is deleted whole, but it is declared (${by}), so the previous release still runs it; remove the declaration in an earlier change and release first, then delete the Worker`);
+      else { dropped.add(p.label); notes.push(`Worker ${worker} deleted whole (${p.label}${mine.length ? `, migrations ${mine.join(", ")}` : ""}); not declared in standards.json workers or release_workers, so its bindings and migrations are not compared`); }
+    }
     // Both release inventories contribute references, including callers of another Worker.
     const dependencies = new Map();
-    for (const { a, b } of pairs) for (const cfg of [a, b]) for (const c of [cfg, productionEnv(cfg)]) {
+    for (const { label, a, b } of pairs) if (!dropped.has(label)) for (const cfg of [a, b]) for (const c of [cfg, productionEnv(cfg)]) {
       for (const binding of entries(c, "durable_objects.bindings")) {
         const host = binding.script_name ?? c.name;
         if (!host || typeof binding.class_name !== "string") throw new Error("cannot resolve production Durable Object dependency");
@@ -349,12 +393,9 @@ export function rollbackFindings({ built = false } = {}) {
       return names;
     };
     for (const { label: file, afile, bfile, a, b } of pairs) {
-      for (const [path, c] of [[afile, a], [bfile, b], [afile, a.env?.production ?? {}], [bfile, b.env?.production ?? {}]]) for (const db of entries(c, "d1_databases")) {
-        const dir = db.migrations_dir ?? c.migrations_dir ?? "migrations";
-        if (typeof dir !== "string") throw new Error(`${file}: invalid migrations_dir`);
-        dirs.add(posix.normalize(posix.join(dirname(path), dir)));
-      }
-      for (const [label, oldConfig, newConfig] of [[file, a, b], [`${file} env.production`, a.env?.production ?? {}, b.env?.production ?? {}]]) {
+      const gone = dropped.has(file);
+      if (!gone) for (const [path, c] of [[afile, a], [bfile, b], [afile, a.env?.production ?? {}], [bfile, b.env?.production ?? {}]]) for (const dir of migrationDirs(file, path, c)) dirs.add(dir);
+      for (const [label, oldConfig, newConfig] of gone ? [] : [[file, a, b], [`${file} env.production`, a.env?.production ?? {}, b.env?.production ?? {}]]) {
         for (const kind of kinds) {
           const present = new Set(entries(newConfig, kind).map(bindingName));
           for (const binding of entries(oldConfig, kind)) if (!present.has(bindingName(binding))) errors.push(`${label}: removed production binding ${kind} ${bindingName(binding)}`);
@@ -375,22 +416,7 @@ export function rollbackFindings({ built = false } = {}) {
     const freshTables = new Set(), freshColumns = new Set();
     // New tables/columns are expand targets only when absent from all base migration history.
     const oldTables = new Set(), oldColumns = new Set(), replacingTables = new Set();
-    const migrations = (root) => {
-      const found = [];
-      const walk = (dir) => {
-        if (posix.isAbsolute(dir) || dir === ".." || dir.startsWith("../")) throw new Error(`migration directory is outside the repository: ${dir}`);
-        if (!existsSync(join(root, dir))) return;
-        for (const entry of readdirSync(join(root, dir), { withFileTypes: true })) {
-          const file = posix.join(dir, entry.name);
-          if (entry.isDirectory()) walk(file);
-          else if (entry.isFile() && file.endsWith(".sql")) found.push(file);
-          else if (entry.isSymbolicLink()) throw new Error(`cannot safely inventory migration symlink: ${file}`);
-        }
-      };
-      for (const dir of dirs) walk(dir);
-      return [...new Set(found)].sort();
-    };
-    const oldMigrations = migrations(baseDirectory), newMigrations = migrations(".");
+    const oldMigrations = migrations(baseDirectory, dirs), newMigrations = migrations(".", dirs);
     // Policies belong to names across all history, regardless of recreation or statement order.
     for (const f of oldMigrations) recordReplacingTables(read(join(baseDirectory, f)), replacingTables);
     for (const f of newMigrations) recordReplacingTables(read(f), replacingTables);
