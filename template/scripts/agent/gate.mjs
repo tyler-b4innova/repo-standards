@@ -15,6 +15,10 @@ import { rootFile, verifyGeneratedBuild } from "./release-config.mjs";
 import { describe as describeSelection, listFor, plan as planSelection, summarize } from "./select.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
+// `gate.mjs local` hands each of its own steps a file to say why it ran nothing; the repo's commands never inherit it.
+const skipFile = env.GATE_SKIP_FILE; delete env.GATE_SKIP_FILE;
+// A step that ran nothing prints its notice as before and, under `local`, records why: the summary then says SKIP (reason), not PASS.
+const ranNothing = (reason, notice) => { console.log(notice); if (skipFile) writeFileSync(skipFile, `${reason}\n`); };
 const SUBS = ["local", "verdict", "plan", "classify", "install", "playwright", "run", "preview", "release", "release-start", "release-verify", "release-report", "e2e", "secrets", "syntax", "instructions"], ok = SUBS.includes(cmd);
 if (!ok || args.includes("--help")) {
   console.log(rd(new URL(import.meta.url), "utf8").split("\n").slice(1, 6).map((l) => l.slice(3)).join("\n"));
@@ -276,7 +280,7 @@ if (cmd === "local") {
         throw new Error(`local: credential-bearing ${path} refused; remove Cloudflare credentials before running the local gate`);
     }
   };
-  const dir = mkdtempSync(`${tmpdir()}/gate-local-`), eventFile = `${dir}/event.json`;
+  const dir = mkdtempSync(`${tmpdir()}/gate-local-`), eventFile = `${dir}/event.json`, skipPath = `${dir}/skipped`;
   writeFileSync(eventFile, JSON.stringify({ pull_request: { number: 1, base: { sha: base }, head: { sha: head, ref: git("branch", "--show-current").trim() }, user: { login: "local" } } }));
   const localEnv = { ...env, CI: "true", GITHUB_EVENT_NAME: "pull_request", GITHUB_EVENT_PATH: eventFile, GITHUB_SHA: head,
     PATH: `${process.cwd()}/node_modules/.bin:${env.PATH}`, GATE_BROWSERS: "chromium", WRANGLER_SEND_METRICS: "false", WRANGLER_CHECK_FOR_UPDATES: "false", WRANGLER_HOME: `${dir}/wrangler`, HOME: dir, USERPROFILE: dir, XDG_CONFIG_HOME: `${dir}/xdg` };
@@ -311,11 +315,15 @@ if (cmd === "local") {
     noDotenvCredentials();
     console.log(`local: ${name} starting`);
     results.set(name, "FAIL");
-    const child = active = spawn(command, argv, { stdio: "inherit", env: localEnv, detached: true });
+    rmSync(skipPath, { force: true });
+    // only the gate's own steps (node gate.mjs ...) can report that they ran nothing; gate.local.sh is the repo's
+    const child = active = spawn(command, argv, { stdio: "inherit", env: command === process.execPath ? { ...localEnv, GATE_SKIP_FILE: skipPath } : localEnv, detached: true });
     const code = await new Promise((resolve) => { child.once("error", () => resolve(1)); child.once("exit", (c) => resolve(c ?? 1)); });
     await stop(child); active = null;
     if (code || interrupted) throw new Error(`${name} failed (exit ${code})`);
-    results.set(name, "PASS"); console.log(`local: ${name} PASS`);
+    // the step that ran nothing supplied its reason; this runner knows no skip condition itself
+    const why = has(skipPath) ? rd(skipPath, "utf8").trim() : null, result = why === null ? "PASS" : why ? `SKIP (${why})` : "SKIP";
+    results.set(name, result); console.log(`local: ${name} ${result}`);
   };
   const execute = async () => {
     await run("setup --check", "scripts/agent/setup.sh", ["--check"]);
@@ -632,7 +640,7 @@ if (cmd === "local") {
   const version = v?.status === 0 ? (v.stdout.match(/\d+\.\d+\.\d+\S*/) ?? [""])[0] : "";
   output("key", version ? `playwright-${process.platform}-${process.arch}-${version}-${[...browsers()].sort().join("+")}` : "");
 } else if (cmd === "install") {
-  if (!pkg) console.log("notice: no package.json; nothing to install");
+  if (!pkg) ranNothing("no package.json", "notice: no package.json; nothing to install");
   else {
     if (!args.includes("--browsers-only")) {
       if (pm !== "npm") must("corepack", ["enable"]);
@@ -652,7 +660,7 @@ if (cmd === "local") {
 } else if (cmd === "run") {
   const s = args.find((x) => pkg?.scripts?.[x]);
   if (!args.length) fail("no script named", "gate.mjs run <script>...");
-  if (!s) console.log(`notice: no ${args.join(" or ")} script in package.json; skipped`);
+  if (!s) ranNothing(`no ${args.join(" or ")} script in package.json`, `notice: no ${args.join(" or ")} script in package.json; skipped`);
   else {
     console.log(`run: ${pm} run ${s}`); must(pm, ["run", s]);
     if (s === "build") {
@@ -669,7 +677,7 @@ if (cmd === "local") {
   }
 } else if (cmd === "e2e") {
   // "e2e": false skips this step and the preview step (docs and static repos, and repos whose Workers Builds run on every PR without an e2e suite).
-  if (std.e2e === false) { console.log('::warning::e2e skipped; standards.json sets "e2e": false'); process.exit(0); }
+  if (std.e2e === false) { ranNothing('standards.json sets "e2e": false', '::warning::e2e skipped; standards.json sets "e2e": false'); process.exit(0); }
   const docs = args.includes("--local") ? null : docOnly();
   if (docs) { docSkip("e2e", docs); process.exit(0); }
   // standards.json "e2e": "<command>" names the suite; else a script, a tests/e2e or e2e dir, or a root Playwright config.

@@ -209,5 +209,27 @@ git -C "$N" add -A && git -C "$N" commit -qm base; git -C "$N" checkout -q -b fe
 rec=$(git -C "$N" rev-parse --git-path std-local-gate); [ "${rec#/}" = "$rec" ] && rec=$N/$rec
 if [ "$nw" -eq 0 ] && grep -qF 'worker=SKIP (no Worker)' "$T/nowork.log" && [ "$(cat "$rec" 2>/dev/null)" = "$(git -C "$N" rev-parse HEAD)" ]; then ok gate-local-no-worker
 else fail gate-local-no-worker "exit=$nw"; tail -5 "$T/nowork.log"; fi
+# gate-local-skip-not-pass: a step that ran nothing is SKIP with its own reason, in the progress line and the summary, and
+# the run still passes and writes the record; a step that ran stays PASS (the real-suite run above)
+skipsum=$(tail -1 "$T/nowork.log")
+sk_ok=1
+for want in 'install=SKIP (no package.json)' 'typecheck=SKIP (no typecheck script in package.json)' 'build=SKIP (no build script in package.json)' 'e2e=SKIP (standards.json sets "e2e": false)' 'setup --check=PASS; instructions=PASS; secrets=PASS; syntax=PASS' 'gate.local.sh=PASS'; do
+  case "$skipsum" in *"$want"*) ;; *) sk_ok=0; echo "summary lacks: $want" ;; esac
+done
+for step in install typecheck build e2e; do grep -qE "^local: $step PASS" "$T/nowork.log" && { sk_ok=0; echo "progress says $step PASS"; }; done
+grep -qF 'local: e2e SKIP (standards.json sets "e2e": false)' "$T/nowork.log" || { sk_ok=0; echo "no e2e SKIP progress line"; }
+# a package.json with no scripts: install ran (PASS), typecheck and build did not
+printf '{"name":"empty","private":true}\n' >"$N/package.json"; git -C "$N" add package.json && git -C "$N" commit -qm package
+(cd "$N" && env HOME="$T/home" USERPROFILE="$T/home" node scripts/agent/gate.mjs local --base main) >"$T/noscripts.log" 2>&1; nsx=$?
+nssum=$(tail -1 "$T/noscripts.log")
+for want in 'install=PASS' 'typecheck=SKIP (no typecheck script in package.json)' 'build=SKIP (no build script in package.json)'; do
+  case "$nssum" in *"$want"*) ;; *) sk_ok=0; echo "package.json summary lacks: $want" ;; esac
+done
+# the real-suite run: every step that ran says PASS and nothing but nothing-to-run says SKIP
+realsum=$(tail -1 "$T/default.log")
+case "$realsum" in *'install=PASS; typecheck=PASS; build=PASS; gate.local.sh=PASS; worker=PASS; e2e=PASS'*) ;; *) sk_ok=0; echo "real-suite summary: $realsum" ;; esac
+if [ "$nw" -eq 0 ] && [ "$nsx" -eq 0 ] && [ "$sk_ok" -eq 1 ] && [ "$(cat "$rec" 2>/dev/null)" = "$(git -C "$N" rev-parse HEAD)" ]; then ok gate-local-skip-not-pass
+else fail gate-local-skip-not-pass "no-package.json run=$nw summary: $skipsum | package.json without scripts run=$nsx summary: $nssum"; fi
 printf '\nLocal gate evidence (real Worker):\n'; tail -1 "$T/default.log"; tail -1 "$T/failing.log"; tail -1 "$T/optout.log"
+printf 'Local gate evidence (steps that ran nothing):\n'; echo "$skipsum"; echo "$nssum"
 done_cases
