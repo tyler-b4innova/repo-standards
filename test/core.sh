@@ -680,9 +680,15 @@ if [ $sa -eq 0 ] && has "WARN: Codex: project not trusted" "$a" && has "[project
   && [ $sb -eq 0 ] && ! grep -q '^WARN: Codex' <<<"$b" && [ ! -e "$CB/ran" ]
 then ok codex-trust-warned; else fail codex-trust-warned "untrusted=$sa $(grep Codex <<<"$a") | trusted=$sb $(grep Codex <<<"$b") | codex run: $([ -e "$CB/ran" ] && echo yes || echo no)"; fi
 
-# std-issue: one launcher-ready issue per idea, in the sections the launcher requires
+# The applied skills must not reintroduce the size stops that refused dispatched work.
 R=$(mkrepo); f=$R/.claude/skills/std-issue/SKILL.md; why=""
-[ -f "$f" ] && grep -q "  .agents/skills/std-issue/SKILL.md$" "$R/standards.lock" || why="not shipped and locked"
+for skill in std-issue std-implement; do
+  generated=$R/.claude/skills/$skill/SKILL.md
+  [ -f "$generated" ] && grep -q "  .agents/skills/$skill/SKILL.md$" "$R/standards.lock" || why="$why; $skill not shipped and locked"
+  if grep -Eq 'If it is multi-day|reviewable in one sitting|has 3\+ independent slices|more than one PR of work' "$generated"; then
+    why="$why; $skill restored a size-based dispatch blocker"
+  fi
+done
 grep -qx "name: std-issue" "$f" 2>/dev/null && grep -q '`## Goal`' "$f" && grep -q '`## Acceptance criteria`' "$f" && grep -q "never a model, subagent, lane, effort" "$f" || why="$why; content"
 if [ -z "$why" ]; then ok std-issue-shipped; else fail std-issue-shipped "$why"; fi
 
