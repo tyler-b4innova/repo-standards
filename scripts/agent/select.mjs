@@ -7,7 +7,7 @@
 // the app's whole e2e suite, as does any event but pull_request, an unknown base, "affected": false in standards.json and GATE_SELECT=full.
 // Unit tests and repo checks (gate.local.sh) always run in full.
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, appendFileSync } from "node:fs";
+import { existsSync, readFileSync, appendFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const git = (...a) => execFileSync("git", a, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 1 << 28 });
@@ -56,7 +56,13 @@ export function summarize(text, env = process.env) {
   return text;
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+/** True when the module at `url` (its import.meta.url) is the script Node was started with, whichever symlinks the path went through
+ *  (macOS /tmp is one, so is a person's alias). False, never a throw, when there is no such file: stdin (`node -`) or no argv[1]. */
+export function isEntry(url, argv1 = process.argv[1]) {
+  try { return realpathSync(fileURLToPath(url)) === realpathSync(argv1); } catch { return false; }
+}
+
+if (isEntry(import.meta.url)) {
   const a = process.argv.slice(2), opt = (n) => { const i = a.indexOf(`--${n}`); return i >= 0 ? a[i + 1] ?? "" : ""; };
   if (a[0] && a[0] !== "plan" && !a[0].startsWith("--")) { console.error("usage: select.mjs [plan] [--base <ref>] [--files a,b] [--json] | --list"); process.exit(2); }
   try { process.chdir(git("rev-parse", "--show-toplevel").trim()); } catch {}

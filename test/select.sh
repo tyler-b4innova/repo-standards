@@ -126,4 +126,15 @@ test("api project", async () => { expect(1).toBe(2); });'
   then ok affected-full-runs-every-project; else fail affected-full-runs-every-project "pr exit=$px: $po | wrong project selection:$bad"; fi
 else echo "skip affected-full-runs-every-project (no network to install Playwright)"; fi
 
+# select-symlinked-entry: started through a symlinked path (macOS /tmp, an alias, cron) select.mjs still selects, instead of printing nothing and
+# exiting 0; importing it from stdin (no file to compare) does not throw
+R11=$T/r11; fixture "$R11"; put "$R11" tests/e2e/b.spec.ts "$SPEC"; chg "$R11"
+RR=$(cd "$R11" && pwd -P); ln -s "$RR" "$T/via-link"
+direct=$(cd "$RR" && node "$RR/scripts/agent/select.mjs" --list 2>&1 | tr '\n' ' ')
+linked=$(cd "$RR" && node "$T/via-link/scripts/agent/select.mjs" --list 2>&1 | tr '\n' ' ')
+linkedtext=$(cd "$RR" && node "$T/via-link/scripts/agent/select.mjs" 2>&1)
+si=$(printf 'import * as s from "file://%s";\nconsole.log(typeof s.isEntry, s.isEntry(import.meta.url), s.isEntry("file:///nowhere/x.mjs", undefined));\n' "$RR/scripts/agent/select.mjs" | node --input-type=module - 2>&1); six=$?
+if [ "$direct" = "tests/e2e/b.spec.ts " ] && [ "$linked" = "$direct" ] && has "1 e2e spec(s)" "$linkedtext" && [ $six -eq 0 ] && [ "$si" = "function false false" ]
+then ok select-symlinked-entry; else fail select-symlinked-entry "direct=[$direct] linked=[$linked] text=[$linkedtext] stdin exit=$six: $si"; fi
+
 done_cases
