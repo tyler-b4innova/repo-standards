@@ -110,9 +110,12 @@ async function cancelRun(why) {
 const playwrightBin = () => has("node_modules/.bin/playwright") ? ["node_modules/.bin/playwright", []] : ["npx", ["--no-install", "playwright"]];
 // True when the system packages for this run's browsers must be installed (Linux only; elsewhere Playwright has none).
 // Playwright's own host validation is bundled and not callable, so Chromium gets an equivalent check: `ldd` over every
-// executable and shared library in the browser's `chrome-linux` directory, with that directory on LD_LIBRARY_PATH, as
-// Playwright does. Firefox and WebKit load libraries it also checks through a library path and dlopen (libxul.so,
-// libGLESv2.so.2, libx264.so) that this scan cannot reproduce, so they always install their packages.
+// executable and shared library in each browser's build folder, with that folder on LD_LIBRARY_PATH, as Playwright does.
+// The build folder is any `chrome-linux*` or `chrome-headless-shell-linux*`: Playwright renames it between versions and
+// architectures (chrome-linux up to 1.56; chrome-linux64 and chrome-headless-shell-linux64 on x64 from 1.57;
+// chrome-linux-arm64 on arm64 from 1.63), so no one name decides; a browser without one has nothing to scan and installs.
+// Firefox and WebKit load libraries it also checks through a library path and dlopen (libxul.so, libGLESv2.so.2,
+// libx264.so) that this scan cannot reproduce, so they always install their packages.
 function browserDepsMissing() {
   if ((env.GATE_PLATFORM || process.platform) !== "linux") return false;
   const other = browsers().filter((b) => b !== "chromium");
@@ -120,14 +123,17 @@ function browserDepsMissing() {
   const root = env.PLAYWRIGHT_BROWSERS_PATH && env.PLAYWRIGHT_BROWSERS_PATH !== "0" ? env.PLAYWRIGHT_BROWSERS_PATH : `${homedir()}/.cache/ms-playwright`;
   const dirs = (has(root) ? ls(root) : []).filter((x) => /^chromium(_headless_shell)?-/.test(x));
   if (!dirs.some((x) => /^chromium-/.test(x))) { console.log(`install: chromium not found under ${root}; installing system packages`); return true; }
+  const isDir = (p) => { try { return statSync(p).isDirectory(); } catch { return false; } };
   for (const x of dirs) {
-    const dir = `${root}/${x}/chrome-linux`;
-    if (!has(dir)) { console.log(`install: ${dir} missing; installing system packages`); return true; }
-    for (const e of ls(dir, { withFileTypes: true })) {
-      const f = `${dir}/${e.name}`;
-      if (!e.isFile() || !(/\.so(\.|$)/i.test(e.name) || (statSync(f).mode & 0o111))) continue;
-      const r = spawnSync("ldd", [f], { encoding: "utf8", cwd: dir, env: { ...env, LD_LIBRARY_PATH: [env.LD_LIBRARY_PATH, dir].filter(Boolean).join(":") } });
-      if (r.error || /=>.*not found/.test(`${r.stdout}`)) { console.log(`install: ${f} misses shared libraries; installing system packages`); return true; }
+    const builds = isDir(`${root}/${x}`) ? ls(`${root}/${x}`).filter((b) => /^chrome-(headless-shell-)?linux/.test(b) && isDir(`${root}/${x}/${b}`)) : [];
+    if (!builds.length) { console.log(`install: no chrome-linux* build folder in ${root}/${x}; installing system packages`); return true; }
+    for (const dir of builds.map((b) => `${root}/${x}/${b}`)) {
+      for (const e of ls(dir, { withFileTypes: true })) {
+        const f = `${dir}/${e.name}`;
+        if (!e.isFile() || !(/\.so(\.|$)/i.test(e.name) || (statSync(f).mode & 0o111))) continue;
+        const r = spawnSync("ldd", [f], { encoding: "utf8", cwd: dir, env: { ...env, LD_LIBRARY_PATH: [env.LD_LIBRARY_PATH, dir].filter(Boolean).join(":") } });
+        if (r.error || /=>.*not found/.test(`${r.stdout}`)) { console.log(`install: ${f} misses shared libraries; installing system packages`); return true; }
+      }
     }
   }
   console.log("install: browser system packages present");

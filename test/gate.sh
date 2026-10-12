@@ -84,13 +84,35 @@ if has "playwright test --project=chromium base=none" "$e1" && has "test --proje
 then ok e2e-chromium-default; else fail e2e-chromium-default "default=$e1 | two=$e2 | preview=$e3 | no-projects=$e4 | script=$e6 | install=$i1"; fi
 
 # ---- browser cache: the workflow caches the browsers by the exact Playwright version and this run's browsers; system
-# packages are installed only when the cached browsers' shared libraries are missing
-BR=$T/browsers; mkdir -p "$BR/chromium-1/chrome-linux"; : > "$BR/chromium-1/chrome-linux/chrome"; chmod +x "$BR/chromium-1/chrome-linux/chrome"
-: > "$BR/chromium-1/chrome-linux/libfoo.so.1"  # a bundled shared library: Playwright's own validation scans these too, not just the executable
+# packages are installed only when the cached browsers' shared libraries are missing. The fixtures are the folders
+# Playwright really unpacks (its registry's EXECUTABLE_PATHS), whose names change between versions and architectures:
+# chrome-linux for both builds up to 1.56 and on arm64 from 1.57 to 1.60; chrome-linux64 and chrome-headless-shell-linux64
+# on x64 from 1.57; chrome-linux-arm64 and chrome-headless-shell-linux-arm64 on arm64 from 1.63. Each bundles a shared
+# library: Playwright's own validation scans these too, not just the executable.
+pwlayout() { # pwlayout <browsers dir> <chromium folder> <headless shell folder> <headless shell executable>
+  mkdir -p "$1/chromium-1/$2" "$1/chromium_headless_shell-1/$3"
+  : > "$1/chromium-1/$2/chrome"; : > "$1/chromium_headless_shell-1/$3/$4"; chmod +x "$1/chromium-1/$2/chrome" "$1/chromium_headless_shell-1/$3/$4"
+  : > "$1/chromium-1/$2/libfoo.so.1"; : > "$1/chromium-1/INSTALLATION_COMPLETE"; : > "$1/chromium_headless_shell-1/INSTALLATION_COMPLETE"
+}
+pwlayout "$T/pw-linux" chrome-linux chrome-linux headless_shell
+pwlayout "$T/pw-linux64" chrome-linux64 chrome-headless-shell-linux64 chrome-headless-shell
+pwlayout "$T/pw-linux-arm64" chrome-linux-arm64 chrome-headless-shell-linux-arm64 chrome-headless-shell
+BR=$T/pw-linux64
+mkdir -p "$T/pw-unknown/chromium-1/chrome-win64" # no Linux build folder: nothing to scan is never a pass
+# Playwright's install-deps, run as a user other than root, goes through sudo (dependencies.ts); there is no sudo on this
+# PATH, as on a host without passwordless sudo, so calling it fails the run
+printf '#!/bin/sh\necho "playwright $*" >> "%s/pw.log"\n[ "$1" = install-deps ] && exec sudo sh -c "apt-get update"\nexit 0\n' "$T" > "$R/node_modules/.bin/playwright"
 LB=$T/ldd-bin; mkpath "$LB"; shim "$LB" npm 'exit 0'
 shim "$LB" ldd 'case "$1" in *"${LDD_BAD:-NONE}"*) echo "libgbm.so.1 => not found" ;; *) echo "libc.so.6 => /lib/libc.so.6" ;; esac'
-binst() { : > "$T/pw.log"; (cd "$R" && PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH="$1" LDD_BAD="$2" GATE_BROWSERS="${3:-chromium}" node scripts/agent/gate.mjs install --browsers-only) >/dev/null 2>&1; cat "$T/pw.log"; }
-bhit=$(binst "$BR" NONE); bmiss=$(binst "$BR" chrome-linux/chrome); bso=$(binst "$BR" libfoo.so); bnone=$(binst "$T/empty-browsers" NONE); bff=$(binst "$BR" NONE chromium,firefox)
+binst() { : > "$T/pw.log"; (cd "$R" && PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH="$1" LDD_BAD="$2" GATE_BROWSERS="${3:-chromium}" node scripts/agent/gate.mjs install --browsers-only) > "$T/binst.out" 2>&1
+  echo "exit=$? $(cat "$T/pw.log") $(grep '^install:' "$T/binst.out")"; }
+bwhy=""
+for L in linux linux64 linux-arm64; do b=$(binst "$T/pw-$L" NONE)
+  { has "exit=0" "$b" && has "playwright install chromium" "$b" && ! has "install-deps" "$b" && has "browser system packages present" "$b"; } || bwhy="$bwhy; chrome-$L, every library present: $b"; done
+for bad in chrome-linux64/chrome chrome-headless-shell-linux64/chrome-headless-shell libfoo.so; do b=$(binst "$BR" "$bad")
+  has "install-deps chromium" "$b" || bwhy="$bwhy; chrome-linux64, $bad missing a library: $b"; done
+b=$(binst "$T/pw-linux-arm64" chrome-headless-shell-linux-arm64/chrome-headless-shell); has "install-deps chromium" "$b" || bwhy="$bwhy; chrome-linux-arm64 missing a library: $b"
+bunk=$(binst "$T/pw-unknown" NONE); bnone=$(binst "$T/empty-browsers" NONE); bff=$(binst "$BR" NONE chromium,firefox)
 # the cache key: the repo's exact Playwright version and the sorted browsers; none without Playwright
 cp "$R/node_modules/.bin/playwright" "$T/pw.orig"; printf '#!/bin/sh\necho "Version 1.63.0"\n' > "$R/node_modules/.bin/playwright"
 bkey=$(cd "$R" && GATE_BROWSERS=firefox,chromium node scripts/agent/gate.mjs playwright); bkey1=$(cd "$R" && GATE_BROWSERS=chromium node scripts/agent/gate.mjs playwright)
@@ -102,9 +124,9 @@ for(const j of ["test"]){const b=body(j);
  if(!/actions\/cache\/restore@[0-9a-f]{40} # v/.test(b)||!b.includes("path: ~/.cache/ms-playwright")||!/steps\.pw\.outputs\.key/.test(b))out.push(j+" caches no browsers");
  if(!/gate\.mjs install --no-browsers/.test(b)||!/gate\.mjs install --browsers-only/.test(b)||/gate\.mjs install$/m.test(b))out.push(j+" installs browsers uncached")}
 console.log(out.join("; ")||"ok")' "$R/$WF")
-if has "install chromium" "$bhit" && ! has "install-deps" "$bhit" && has "install-deps chromium" "$bmiss" && has "install-deps chromium" "$bso" && has "install-deps chromium" "$bnone" && has "install-deps chromium firefox" "$bff" \
+if [ -z "$bwhy" ] && has "install-deps chromium" "$bunk" && has "install-deps chromium" "$bnone" && has "install-deps chromium firefox" "$bff" \
   && has "key=playwright-" "$bkey" && has "-1.63.0-chromium+firefox" "$bkey" && has "-1.63.0-chromium" "$bkey1" && ! has "firefox" "$bkey1" && [ "$bnokey" = "key=" ] && [ "$bwf" = ok ]
-then ok gate-browser-cache; else fail gate-browser-cache "hit=$bhit | miss=$bmiss | so=$bso | firefox=$bff | none=$bnone | key=$bkey | $bkey1 | nokey=$bnokey | workflow=$bwf"; fi
+then ok gate-browser-cache; else fail gate-browser-cache "layouts=${bwhy#; } | unknown=$bunk | firefox=$bff | none=$bnone | key=$bkey | $bkey1 | nokey=$bnokey | workflow=$bwf"; fi
 
 # ---- the gate never writes a cache: a re-gate on the default branch (workflow_dispatch) runs a pull request's tree, so
 # a cache saved there would be seeded by that tree. Only std-cache-warm (pushes to the default branch, no PR code) saves.
