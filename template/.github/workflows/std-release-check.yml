@@ -10,7 +10,8 @@
 #   suite  (untrusted, contents: read only) checks out the sha and runs the repo's FULL suite (e2e and
 #          scripts/agent/gate.local.sh), every configured browser, against staging (standards.json staging_url);
 #   post   (trusted) re-checks supersession, then completes the verdict once: success or failure from the suite's result.
-# Never started by a push, a check-run or a schedule; the timeouts are runaway protection only, not a quality signal.
+# Never started by a push, a check-run or a schedule. Every job's timeout is the overlay's gate.timeout_minutes, the org's
+# one job timeout: runaway protection only, not a quality signal.
 # Not a required check.
 name: std-release-check
 run-name: release-check ${{ inputs.sha }}
@@ -32,7 +33,7 @@ jobs:
   pre:
     name: pre
     runs-on: ${{ vars.STD_GATE_RUNNER || 'ubuntu-24.04' }}
-    timeout-minutes: 90
+    timeout-minutes: {gate_timeout_minutes}
     permissions:
       actions: write # cancels the run when a newer commit replaces staging, or there is nothing to certify
       checks: write # creates and completes the check-run release-check on the commit
@@ -87,7 +88,7 @@ jobs:
     needs: pre
     if: ${{ needs.pre.result == 'success' && needs.pre.outputs.skip != 'true' }}
     runs-on: ${{ vars.STD_GATE_RUNNER || 'ubuntu-24.04' }}
-    timeout-minutes: 90
+    timeout-minutes: {gate_timeout_minutes}
     permissions:
       contents: read # nothing else: the dispatched commit's code holds no write token
     steps:
@@ -134,7 +135,7 @@ jobs:
     # runs after a failing, skipped or cancelled suite too, whenever the verdict check-run exists
     if: ${{ always() && needs.pre.outputs.check_id != '' }}
     runs-on: ${{ vars.STD_GATE_RUNNER || 'ubuntu-24.04' }}
-    timeout-minutes: 30
+    timeout-minutes: {gate_timeout_minutes}
     permissions:
       actions: write
       checks: write

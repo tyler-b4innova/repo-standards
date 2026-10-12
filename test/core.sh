@@ -270,6 +270,9 @@ jobs:
   shared:
     uses: ./.github/workflows/other.yml'; out=$(cr "$R") && why="$why; a job without timeout passed"
 has "manual.yml job once has no timeout-minutes" "$out" && ! has "job shared" "$out" || why="$why; [$out]"
+# the fix points at the org's one setting and teaches no minutes of its own
+fix=$(printf '%s\n' "$out" | sed -n 's/.*job once has no timeout-minutes.*| fix: //p')
+has "gate.timeout_minutes" "$fix" && ! printf '%s' "$fix" | grep -q '[0-9]' || why="$why; fix: [$fix]"
 sed -i.bak 's/    runs-on: ubuntu-24.04/    runs-on: ubuntu-24.04\n    timeout-minutes: 5/' "$R/.github/workflows/manual.yml" && rm "$R/.github/workflows/manual.yml.bak"
 node -e 'const f=process.argv[1],y=require("fs").readFileSync(f,"utf8");require("fs").writeFileSync(f,y.replace("    runs-on: ubuntu-24.04\n","    runs-on: ubuntu-24.04\n    timeout-minutes: 5\n"))' "$R/.github/workflows/manual.yml"
 out=$(cr "$R") || why="$why; with a timeout it still failed: $out"
@@ -499,15 +502,32 @@ R=$(OVERLAY=$BIG mkrepo client); cout=$(check "$R"); cst=$?
 if [ $st -eq 0 ] && [ "$size" -gt 1800 ] && [ -n "$R" ] && [ $cst -eq 0 ] && grep -q "xxxxxxxxxx" "$R/AGENTS.md"; then ok agents-block-no-size-limit
 else fail agents-block-no-size-limit "st=$st size=$size $cout"; fi
 
-# ---- gate job timeout: 30 minutes unless the overlay's gate.timeout_minutes (an integer from 5 to 120) says otherwise
+# ---- one job timeout: every job of every managed workflow takes the overlay's gate.timeout_minutes (default 30); any
+# positive integer is accepted (GitHub itself cancels a job at its runner's limit), anything else is refused
 why=""
 d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; apply "$d" >/dev/null; has "    timeout-minutes: 30" "$(cat "$d/.github/workflows/std-gate.yml")" || why="$why; default is not 30"
-GT=$T/gate-timeout.json; node -e 'const o=require(process.argv[1]);o.gate={...o.gate,timeout_minutes:45};require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$GT"
-d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; OVERLAY=$GT apply "$d" >/dev/null; has "    timeout-minutes: 45" "$(cat "$d/.github/workflows/std-gate.yml")" || why="$why; overlay value not rendered"
+GT=$T/gate-timeout.json; node -e 'const o=require(process.argv[1]);o.gate={...o.gate,timeout_minutes:45};o.cloud_env={action:"example-org/cloud-tool@v1.2.3",token_ref:null};require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$GT"
+# a Worker with an https staging_url and a cloud-env.json receives every managed workflow
+d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; printf '{\n  "name": "site",\n  "main": "src/index.ts",\n}\n' >"$d/wrangler.jsonc"; echo '{}' >"$d/cloud-env.json"
+OVERLAY=$GT apply "$d" >/dev/null; jset "$d/standards.json" 'o.staging_url="https://staging.example.com/"'; OVERLAY=$GT apply "$d" >/dev/null
+for w in "$ENGINE"/template/.github/workflows/*.yml; do w=${w##*/}; f=$d/.github/workflows/$w
+  [ -f "$f" ] || { why="$why; $w not shipped"; continue; }
+  # each job (a two-space key under jobs:) must carry exactly the overlay's value
+  bad=$(node -e 'const L=require("fs").readFileSync(process.argv[1],"utf8").split("\n"),jobs={};let on=false,j=null;
+for(const l of L){if(/^jobs:/.test(l)){on=true;continue}if(!on)continue;if(/^\S/.test(l))break;const m=l.match(/^  ([\w-]+):\s*$/);if(m){j=m[1];jobs[j]=[];continue}const t=l.match(/^    timeout-minutes:\s*(.*)$/);if(j&&t)jobs[j].push(t[1].trim())}
+const out=Object.entries(jobs).filter(([,v])=>v.join()!=="45").map(([k,v])=>k+"="+(v.join()||"none"));console.log(Object.keys(jobs).length?out.join(" "):"no jobs")' "$f")
+  [ -z "$bad" ] || why="$why; $w: $bad"
+done
 commit "$d" init; out=$(check "$d") || why="$why; check failed on a custom timeout: $out"
-for v in 4 121 30.5 '"30"'; do
+# values the old 5-to-120 bounds refused are rendered as written
+for v in 4 121 400; do
+  node -e 'const o=require(process.argv[1]);o.gate={timeout_minutes:JSON.parse(process.argv[3])};require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$T/gt.json" "$v"
+  d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; out=$(OVERLAY=$T/gt.json apply "$d" 2>&1) || why="$why; $v refused: $out"
+  has "    timeout-minutes: $v" "$(cat "$d/.github/workflows/std-gate.yml" 2>/dev/null)" || why="$why; $v not rendered"
+done
+for v in 0 -5 30.5 '"30"' null; do
   node -e 'const o=require(process.argv[1]);o.gate={timeout_minutes:JSON.parse(process.argv[3])};require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$T/bad-gt.json" "$v"
-  d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; out=$(OVERLAY=$T/bad-gt.json apply "$d" 2>&1) && why="$why; $v accepted"; has "gate.timeout_minutes must be an integer from 5 to 120" "$out" || why="$why; $v: $out"
+  d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; out=$(OVERLAY=$T/bad-gt.json apply "$d" 2>&1) && why="$why; $v accepted"; has "gate.timeout_minutes must be a positive integer" "$out" || why="$why; $v: $out"
 done
 if [ -z "$why" ]; then ok gate-timeout-overlay; else fail gate-timeout-overlay "$why"; fi
 
