@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { client } from "../lib/sync.mjs";
-import { launcherErrors, launcherNotices } from "../lib/engine.mjs";
+import { loadOverlay, orgAdminErrors } from "../lib/engine.mjs";
 
 const DEF = JSON.parse(readFileSync(new URL("./rulesets.json", import.meta.url), "utf8"));
 const MANIFEST = JSON.parse(readFileSync(new URL("./app-manifest.json", import.meta.url), "utf8"));
@@ -20,20 +20,10 @@ const sorted = (a) => [...(a ?? [])].map(keysSorted).sort((x, y) => byName(JSON.
 // Fill `$` placeholders from overlay.org_admin; a placeholder inside an array spreads a list value.
 export function render(overlay) {
   const oa = overlay.org_admin ?? {};
-  if (!Number.isInteger(oa.app?.id) || oa.app.id <= 0 || !oa.app?.slug) throw new Error("overlay org_admin.app.id (a positive number, not the example's 0) and org_admin.app.slug are required");
-  if (oa.gate_integration_id !== undefined && !(Number.isInteger(oa.gate_integration_id) && oa.gate_integration_id > 0)) throw new Error("overlay org_admin.gate_integration_id must be a positive number when set");
-  // Removed settings: `gate` is the only required check, and every PR ruleset requires resolved review threads.
-  for (const k of ["codex_verdict_status", "review_status", "review_thread_resolution"])
-    if (oa[k] !== undefined) throw new Error(`overlay org_admin.${k} is gone (gate is the only required check and review threads must always be resolved); remove it before running org-apply`);
-  // The staged flow is retired: one branch, main.
-  if (oa.staged !== undefined || oa.extra_checks?.staged_main !== undefined || oa.extra_checks?.staging !== undefined)
-    throw new Error("overlay org_admin.staged, extra_checks.staged_main and extra_checks.staging are gone (the staged flow is retired: one branch, main); remove them before running org-apply");
-  if (oa.push_app_bypass !== undefined) throw new Error("overlay org_admin.push_app_bypass is gone (the App never bypasses push hygiene: a pack landing adds no secret or large file); remove it before running org-apply");
-  if (oa.require_extra_approval_for_unattributed_changes !== undefined && typeof oa.require_extra_approval_for_unattributed_changes !== "boolean")
-    throw new Error("overlay org_admin.require_extra_approval_for_unattributed_changes must be true or false when set");
-  // The portal App that creates release/<sha> branches (a production release): optional, and without it nobody may create them.
-  if (oa.release_app !== undefined && !(Number.isInteger(oa.release_app?.id) && oa.release_app.id > 0))
-    throw new Error("overlay org_admin.release_app.id must be a positive number when release_app is set");
+  // The rules live in one place, lib/engine.mjs orgAdminErrors, which the overlay load runs too (there the App id and slug are only
+  // checked when set, because create-app runs before the App exists); here reconcile also requires them.
+  const bad = orgAdminErrors(oa, { requireApp: true });
+  if (bad.length) throw new Error(bad.join("\n"));
   const vars = {
     strict_status_checks: oa.strict_status_checks === true,
     gate_integration_id: oa.gate_integration_id ?? null, // null: `gate` is accepted from any source
@@ -239,10 +229,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const cmd = positionals[0] ?? "reconcile";
   try {
     if (!o.overlay) throw new Error("--overlay <org.json> is required");
-    const overlay = JSON.parse(readFileSync(o.overlay, "utf8"));
-    const lbad = overlay.launcher === undefined ? [] : launcherErrors(overlay.launcher);
-    if (overlay.launcher !== undefined) launcherNotices(overlay.launcher).forEach((n) => console.error(`notice: ${n}`));
-    if (lbad.length) throw new Error(`overlay ${o.overlay}:\n  ${lbad.join("\n  ")}`);
+    const overlay = loadOverlay(o.overlay); // the same load as the repo-standards command: shapes, launcher, org_admin
     if (!["create-app", "reconcile"].includes(cmd)) throw new Error(`unknown command ${cmd}`);
     await run({ overlay, dryRun: o["dry-run"], cmd });
   } catch (e) {

@@ -19,7 +19,8 @@ writes() { grep -vc '"method":"GET"' "$T/log"; }
 
 cat >"$T/org.json" <<'JSON'
 { "schema": 1, "pack": "example", "title": "Example", "org": "acme", "standards_repo": "acme/standards",
-  "sync": { "app_client_id_var": "STANDARDS_APP_CLIENT_ID", "app_key_secret": "STANDARDS_APP_PRIVATE_KEY" },
+  "sync": { "app_client_id_var": "STANDARDS_APP_CLIENT_ID", "app_key_secret": "STANDARDS_APP_PRIVATE_KEY", "app_login": "acme-sync[bot]" },
+  "profiles": { "internal": {}, "client": {} },
   "org_admin": { "app": { "id": 4242, "slug": "acme-bot", "name": "acme-bot" }, "gate_integration_id": 42,
                  "extra_restricted_paths": ["vault/**"] } }
 JSON
@@ -199,5 +200,51 @@ if [ "$out" = "$want" ] && grep -q 'ruleset "org: release branches (portal App o
 link=$(run create-app | grep -o 'https://github.com/organizations/[^ ]*')
 got=$(node -e 'const u=new URL(process.argv[1]); const q=Object.fromEntries(u.searchParams); const perms=Object.keys(q).filter(k=>!["name","url","description","public","webhook_active"].includes(k)).sort().map(k=>k+"="+q[k]).join(","); console.log(u.pathname, q.name, q.public, q.webhook_active, perms)' "$link" 2>&1)
 [ "$got" = "/organizations/acme/settings/apps/new acme-bot false false actions=write,checks=read,contents=write,issues=write,metadata=read,pull_requests=write,statuses=read,workflows=write" ] && ok engine-org-app-link || fail engine-org-app-link "$got"
+
+# org-admin-overlay-validated: org_admin is checked by the overlay load, with the rules and messages render applies (one function), in both ways of
+# running org-apply: the standalone node org/apply.mjs and `repo-standards org-apply`. `create-app` never renders, so a refusal there comes from the
+# load alone, before any request. An App id and slug that are absent still load (create-app runs before the App exists); a present null is refused,
+# and reconcile still requires both.
+why=""
+badoa() { # badoa <js edit of org_admin> <needle>: the standalone and the bin refuse create-app with the needle, send nothing, and render says the same
+  node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));(new Function("oa",process.argv[2]))(o.org_admin);require("fs").writeFileSync(f+".oa",JSON.stringify(o))' "$T/org.json" "$1"
+  : >"$T/log"
+  local sa bin msg
+  sa=$(node org/apply.mjs create-app --overlay "$T/org.json.oa" 2>&1) && why="$why; [$1] standalone accepted"
+  bin=$(node bin/repo-standards.mjs org-apply create-app --overlay "$T/org.json.oa" 2>&1) && why="$why; [$1] bin accepted"
+  # render is the second caller of the same function: its message is the load's line
+  msg=$(node --input-type=module -e 'import { render } from "./org/apply.mjs"; import { readFileSync } from "node:fs"; try { render(JSON.parse(readFileSync(process.argv[1], "utf8"))); } catch (e) { console.log(e.message); }' "$T/org.json.oa")
+  [[ "$sa" == *"$2"* && "$bin" == *"$2"* && -n "$msg" && "$sa" == *"$msg"* && "$bin" == *"$msg"* && ! -s "$T/log" ]] || why="$why; [$1] standalone: $sa :: bin: $bin :: render: $msg"
+}
+badoa 'oa.gate_integration_id="abc"' 'org_admin.gate_integration_id must be a positive number when set (got "abc")'
+badoa 'oa.gate_integration_id=null' 'org_admin.gate_integration_id must be a positive number when set (got null)'
+badoa 'oa["app"].id=null' 'org_admin.app.id (a positive number, not the example'"'"'s 0) and org_admin.app.slug are required (got {"id":null'
+badoa 'oa["app"].id=0' 'org_admin.app.id (a positive number, not the example'"'"'s 0) and org_admin.app.slug are required (got {"id":0'
+badoa 'oa["app"].slug=""' 'org_admin.app.slug are required (got {"id":4242,"slug":""'
+badoa 'oa["app"]="acme-bot"' 'org_admin.app.slug are required (got "acme-bot")'
+for k in codex_verdict_status review_status review_thread_resolution; do badoa "oa.$k=true" "org_admin.$k is gone (gate is the only required check and review threads must always be resolved)"; done
+for k in 'oa.staged=["site"]' 'oa.extra_checks={staged_main:[]}' 'oa.extra_checks={staging:[]}'; do badoa "$k" "org_admin.staged, extra_checks.staged_main and extra_checks.staging are gone"; done
+badoa 'oa.push_app_bypass=false' 'org_admin.push_app_bypass is gone'
+badoa 'oa.require_extra_approval_for_unattributed_changes=1' 'org_admin.require_extra_approval_for_unattributed_changes must be true or false when set (got 1)'
+badoa 'oa.release_app={id:0,slug:"portal"}' 'org_admin.release_app.id must be a positive number when release_app is set (got {"id":0'
+badoa 'oa.release_app={}' 'org_admin.release_app.id must be a positive number when release_app is set (got {})'
+# the load adds one message for org_admin.review_status, not two (it once also said "gone: gate checks code only")
+node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.org_admin.review_status=true;require("fs").writeFileSync(f+".rs",JSON.stringify(o))' "$T/org.json"
+[ "$(node org/apply.mjs create-app --overlay "$T/org.json.rs" 2>&1 | grep -c review_status)" = 1 ] || why="$why; review_status reported more than once"
+# org_admin that is not an object
+node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.org_admin=[];require("fs").writeFileSync(f+".arr",JSON.stringify(o))' "$T/org.json"
+out=$(node org/apply.mjs create-app --overlay "$T/org.json.arr" 2>&1) && why="$why; org_admin [] accepted"
+[[ "$out" == *"org_admin must be an object (got [])"* ]] || why="$why; org_admin []: $out"
+# App id and slug absent: create-app and the load accept it, reconcile still refuses it, before any request
+node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.org_admin={app:{name:"acme-bot"}};require("fs").writeFileSync(f+".new",JSON.stringify(o))' "$T/org.json"
+: >"$T/log"
+sa=$(node org/apply.mjs create-app --overlay "$T/org.json.new" 2>&1) || why="$why; create-app without an App id refused: $sa"
+bin=$(node bin/repo-standards.mjs org-apply create-app --overlay "$T/org.json.new" 2>&1) || why="$why; bin create-app without an App id refused: $bin"
+[[ "$sa" == *"settings/apps/new?name=acme-bot"* && "$bin" == *"settings/apps/new?name=acme-bot"* ]] || why="$why; no registration link: $sa :: $bin"
+sa=$(node org/apply.mjs --overlay "$T/org.json.new" --dry-run 2>&1) && why="$why; reconcile accepted an overlay without an App id"
+[[ "$sa" == *"org_admin.app.id (a positive number, not the example's 0) and org_admin.app.slug are required (got {\"name\":\"acme-bot\"})"* && ! -s "$T/log" ]] || why="$why; reconcile without an App id: $sa"
+# the fixed overlay loads through both
+sa=$(node org/apply.mjs create-app --overlay "$T/org.json" 2>&1) && bin=$(node bin/repo-standards.mjs org-apply create-app --overlay "$T/org.json" 2>&1) || why="$why; a valid org_admin refused: $sa :: $bin"
+if [ -z "$why" ]; then ok org-admin-overlay-validated; else fail org-admin-overlay-validated "$why"; fi
 
 done_cases

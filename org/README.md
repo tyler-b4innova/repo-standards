@@ -28,9 +28,9 @@ Overlay:
 
 ```json
 "org_admin": {
-  "app": { "id": 0, "slug": "<app slug>", "name": "<App name>" },
-  "release_app": { "id": 0, "slug": "<portal App slug>" },
-  "gate_integration_id": 0,
+  "app": { "id": <App id>, "slug": "<app slug>", "name": "<App name>" },
+  "release_app": { "id": <portal App id>, "slug": "<portal App slug>" },
+  "gate_integration_id": <check-run App id>,
   "strict_status_checks": false,
   "extra_checks": { "default": [] },
   "extra_restricted_paths": [],
@@ -41,6 +41,8 @@ Overlay:
 ```
 
 `release_app` is optional: the portal's GitHub App, the only actor that may create `release/**` branches (a positive `id` is required when it is set; the example's `0` is refused). Leave it out and nobody can create them.
+
+The overlay load checks `org_admin` for every command, with the rules and messages `org-apply` applies (one function): `gate_integration_id`, `release_app.id` and `app.id` are positive numbers (`null`, `0` and `"abc"` are refused), `require_extra_approval_for_unattributed_changes` is true or false, the removed settings are refused, and `org_admin` is an object. **Leave `app.id` and `app.slug` out until the App exists**: `org-apply create-app` runs first and needs only `app.name`, so the load accepts an `app` without an id and slug (a present `id` that is not a positive number is refused), and `org-apply` itself still requires both before it touches a ruleset. Either entry point, `repo-standards org-apply` or `node org/apply.mjs`, loads the overlay first and prints the same messages.
 
 `strict_status_checks` defaults to `false`; `gate` is required either way, and when on, it makes `gate` strict on the squash-merge ruleset. Every pull-request ruleset requires resolved review threads, and `gate` is the only required check (plus `extra_checks`). Code-owner review is required on the default branch and `main`, which with the pack's managed CODEOWNERS block (overlay `ui_owners`) is the approval for UI changes. App permissions are listed with their callers in `app-manifest.json`; the App has no webhook because the launcher polls.
 
