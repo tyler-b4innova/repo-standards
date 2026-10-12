@@ -48,7 +48,8 @@ export function plan({ env = process.env, base = "", files = "", affected } = {}
   return { mode: "scoped", why: "only e2e spec files changed", specs: rows.map((r) => r[1]).sort(), rows };
 }
 
-// The path rule for every changed-file decision (ui_paths, non-deployable paths, macOS suites): ** any depth, * one segment, {a,b} either.
+// The path rule gate.mjs and check.mjs use (ui_paths, non-deployable and forbidden paths, macOS suites): ** any depth, * one
+// segment, {a,b} either. review.mjs, a package export of its own, keeps an identical copy.
 export const glob = (g) => new RegExp("^" + g.replace(/[.+^$()|[\]\\]/g, "\\$&").replace(/\{([^}]+)\}/g, (_, a) => `(${a.split(",").join("|")})`)
   .replace(/\*\*\//g, "\0").replace(/\*\*/g, "\x01").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]").replace(/\0/g, "(.*/)?").replace(/\x01/g, ".*") + "$");
 

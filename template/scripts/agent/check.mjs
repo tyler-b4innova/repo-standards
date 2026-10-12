@@ -12,7 +12,7 @@ import { localConfig } from "./local.mjs";
 import { claudePins, codexPins } from "./pins.mjs";
 import { verifyGeneratedBuild, workerFiles, declaredWorkers, readConfig, effectiveConfig, assertStaging, assertReleaseAccounts } from "./release-config.mjs";
 import { findings as stagingFindings, parse as parseWrangler } from "./staging.mjs";
-import { MACOS_FIX, macosSuites } from "./select.mjs";
+import { glob, MACOS_FIX, macosSuites } from "./select.mjs";
 
 if (process.argv.includes("--help")) {
   console.log("usage: node scripts/agent/check.mjs   (offline standards self-check; exit 1 on failure)");
@@ -23,8 +23,6 @@ process.chdir(git("rev-parse", "--show-toplevel").trim());
 const read = (f) => { try { return readFileSync(f, "utf8"); } catch { return null; } };
 const json = (f) => { try { return JSON.parse(read(f)); } catch { return null; } };
 const sha = (s) => createHash("sha256").update(s).digest("hex");
-const glob = (g) => new RegExp("^" + g.replace(/[.+^$()|[\]\\]/g, "\\$&").replace(/\{([^}]+)\}/g, (_, a) => `(${a.split(",").join("|")})`)
-  .replace(/\*\*\//g, "\0").replace(/\*\*/g, "\x01").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]").replace(/\0/g, "(.*/)?").replace(/\x01/g, ".*") + "$");
 // A real production-host guard in (comment-free) source: the request hostname tested for membership in a list or set of
 // quoted hosts (.includes / .has), or compared with a quoted host (=== / !==). Reading or logging the hostname is not one.
 const HOST = /["'`](?:[a-z0-9-]+\.)+[a-z]{2,}["'`]/i;
