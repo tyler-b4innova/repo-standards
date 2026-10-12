@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Steps of the `gate` job (std-gate.yml), also runnable locally:
-//   local [--base <ref>] | plan | release-start | release-verify | release-report | classify [base] | install [--no-browsers|--browsers-only] | playwright | run <script>... | preview | release | e2e | secrets | syntax | instructions | verdict
+//   local [--base <ref>] | plan | release-start | release-verify | release-report | classify [base] | install [--no-browsers|--browsers-only] | playwright | run <script>... | preview | release | e2e | macos <suite> | secrets | syntax | instructions | verdict
 // UI paths: pack.json defaults; standards.json "ui_paths" as a list replaces the include globs,
 // as {include, ignore} replaces include and adds ignore. e2e: none fails unless "e2e": false.
 import { execFileSync as ex, spawn, spawnSync } from "node:child_process";
@@ -12,10 +12,10 @@ import { localConfig, localWorkerConfig } from "./local.mjs";
 import { scan } from "./jsscan.mjs";
 import { rollbackFindings } from "./rollback.mjs";
 import { rootFile, verifyGeneratedBuild } from "./release-config.mjs";
-import { describe as describeSelection, listFor, plan as planSelection, summarize } from "./select.mjs";
+import { describe as describeSelection, glob, listFor, MACOS_FIX, macosPlan, macosSuites, plan as planSelection, summarize } from "./select.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
-const SUBS = ["local", "verdict", "plan", "classify", "install", "playwright", "run", "preview", "release", "release-start", "release-verify", "release-report", "e2e", "secrets", "syntax", "instructions"], ok = SUBS.includes(cmd);
+const SUBS = ["local", "verdict", "plan", "classify", "install", "playwright", "run", "preview", "release", "release-start", "release-verify", "release-report", "e2e", "macos", "secrets", "syntax", "instructions"], ok = SUBS.includes(cmd);
 if (!ok || args.includes("--help")) {
   console.log(rd(new URL(import.meta.url), "utf8").split("\n").slice(1, 6).map((l) => l.slice(3)).join("\n"));
   process.exit(ok || cmd === "--help" ? 0 : 2);
@@ -31,8 +31,6 @@ const pm = has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : "npm";
 const fail = (msg, fix) => { console.log(`::error::${msg}\nfix: ${fix}`); process.exit(1); };
 const sh = (c, a) => spawnSync(c, a, { stdio: "inherit" }).status ?? 1;
 const must = (c, a) => { const s = sh(c, a); if (s) process.exit(s); };
-const glob = (g) => new RegExp("^" + g.replace(/[.+^$()|[\]\\]/g, "\\$&").replace(/\{([^}]+)\}/g, (_, a) => `(${a.split(",").join("|")})`)
-  .replace(/\*\*\//g, "\0").replace(/\*\*/g, "\x01").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]").replace(/\0/g, "(.*/)?").replace(/\x01/g, ".*") + "$");
 // The pull request this run is for: the event's, or a workflow_dispatch re-gate's `pr` input (base retargets).
 const event = env.GITHUB_EVENT_PATH ? json(env.GITHUB_EVENT_PATH) ?? {} : {};
 const prNumber = event.pull_request?.number ?? (env.GITHUB_EVENT_NAME === "workflow_dispatch" && /^\d+$/.test(event.inputs?.pr ?? "") ? Number(event.inputs.pr) : null);
@@ -242,7 +240,10 @@ function ownersBlock(rev) {
 }
 
 if (cmd === "local") {
-  const steps = ["setup --check", "instructions", "secrets", "syntax", "install", "typecheck", "build", "gate.local.sh", "worker", "e2e"], results = new Map(steps.map((s) => [s, "not run"]));
+  // Declared macOS suites (standards.json macos) run last, each as its own step, on a Mac only; a malformed declaration
+  // fails the setup --check step first.
+  const macSuites = (() => { try { return macosSuites(std); } catch { return []; } })(), mac = env.GATE_PLATFORM || process.platform;
+  const steps = ["setup --check", "instructions", "secrets", "syntax", "install", "typecheck", "build", "gate.local.sh", "worker", "e2e", ...macSuites.map((s) => `macos ${s.name}`)], results = new Map(steps.map((s) => [s, "not run"]));
   const head = git("rev-parse", "HEAD").trim();
   // pr.sh ready reads this: written only when every step passed on a clean tree at this HEAD, cleared at the start of each run.
   const passFile = git("rev-parse", "--git-path", "std-local-gate").trim();
@@ -351,6 +352,10 @@ if (cmd === "local") {
     }
     await run("e2e", process.execPath, ["scripts/agent/gate.mjs", "e2e", "--local"]);
     if (worker && (worker.exitCode !== null || worker.signalCode !== null)) { results.set("worker", "FAIL"); throw new Error("local Worker exited during e2e"); }
+    for (const s of macSuites) {
+      if (mac === "darwin") { await run(`macos ${s.name}`, process.execPath, ["scripts/agent/gate.mjs", "macos", s.name]); continue; }
+      results.set(`macos ${s.name}`, "SKIP (needs macOS)"); console.log(`local: macos ${s.name} SKIP (needs macOS; CI runs it on ${s.runner})`);
+    }
   };
   try { await Promise.race([execute(), cancelled]); } catch (e) { console.error(`local: ${e.message}`); process.exitCode = interrupted || 1; }
   finally {
@@ -466,8 +471,12 @@ if (cmd === "local") {
     const r = needs[j]?.result ?? "missing";
     if (r !== "success") bad.push(`${j}: ${r}`);
   }
+  // The macos job counts only when the plan listed macOS suites (checks output macos); then it must have succeeded.
+  const raw = needs.checks?.outputs?.macos || "[]", mac = json_(raw), names = Array.isArray(mac) ? mac.map((s) => s?.name).join(", ") : "";
+  if (!Array.isArray(mac)) bad.push(`checks: unreadable macos plan ${JSON.stringify(raw)}`);
+  else if (mac.length && needs.macos?.result !== "success") bad.push(`macos (${names}): ${needs.macos?.result ?? "missing"}`);
   if (bad.length) fail(`gate: ${bad.join(", ")}`, "open the failed job's log; a skipped or cancelled job never passes gate");
-  console.log("gate: checks and the test job passed");
+  console.log(Array.isArray(mac) && mac.length ? `gate: checks, the test job and the macOS suites (${names}) passed` : "gate: checks and the test job passed");
 } else if (cmd === "plan") {
   // full: build and test this head. cheap: a consumer draft (checks, secrets and syntax);
   // consumer drafts run the full gate from ready_for_review.
@@ -494,6 +503,21 @@ if (cmd === "local") {
   try { rollbackBase = prBase(); } catch {} // --check reports an unavailable comparison base.
   output("rollback_base", rollbackBase || event.pull_request?.base?.sha || event.merge_group?.base_sha || pr?.base?.sha || "");
   output("browsers", "chromium");
+  // macOS suites (standards.json macos) run beside the test job, each on its own runner, only in a ready pull request's
+  // full gate (a re-gate on its merge ref decides the same way) and only when the change touches the suite's paths; the
+  // merge queue does not repeat them. The macos job runs only for a non-empty list, so nothing else is billed.
+  let suites;
+  try { suites = macosSuites(std); } catch (e) { fail(e.message, MACOS_FIX); }
+  let planned = [];
+  if (suites.length) {
+    const why = !prNumber ? `${env.GITHUB_EVENT_NAME ? `a ${env.GITHUB_EVENT_NAME} run` : "a run with no GITHUB_EVENT_NAME"} is not a pull request` : mode !== "full" || pr?.draft ? "not a ready pull request's full gate" : null;
+    if (why) console.log(`plan: macOS suites not run (${why})`);
+    else for (const s of macosPlan(std, prFiles())) {
+      console.log(`plan: macos ${s.name} ${s.run ? `runs on ${s.runner}` : "not needed"} (${s.why})`);
+      if (s.run) planned.push({ name: s.name, runner: s.runner });
+    }
+  }
+  output("macos", JSON.stringify(planned));
 } else if (cmd === "syntax") {
   // The cheap gate's stand-in for building: managed scripts and workflows must at least parse.
   const bad = [], yaml = spawnSync("python3", ["-c", "import yaml"]).status === 0;
@@ -733,6 +757,19 @@ if (cmd === "local") {
   }
   else fail("no e2e suite (test:e2e or e2e script; tests/e2e/ or e2e/ with playwright.config.* or *.test.*js)",
     'add an end-to-end suite through the real entry point; docs/static repos (or Builds-only repos) only: "e2e": false in standards.json');
+} else if (cmd === "macos") {
+  // One declared macOS suite (standards.json macos): its command, from the repository root, on macOS. The gate's macos job
+  // and gate.mjs local both run it through here, so CI and a Mac run the same command.
+  let suites;
+  try { suites = macosSuites(std); } catch (e) { fail(e.message, MACOS_FIX); }
+  const suite = suites.find((s) => s.name === args[0]);
+  if (!suite) fail(`no macOS suite named ${args[0] ?? "(none)"} in standards.json macos${suites.length ? ` (${suites.map((s) => s.name).join(", ")})` : ""}`, "gate.mjs macos <suite>, naming a declared suite");
+  const platform = env.GATE_PLATFORM || process.platform;
+  if (platform !== "darwin") fail(`macos ${suite.name} needs macOS; this host is ${platform}`, `declare a macOS runner label as its runner (now ${suite.runner})`);
+  console.log(`macos ${suite.name}: bash -c ${JSON.stringify(suite.command)}`);
+  const r = spawnSync("bash", ["-c", suite.command], { stdio: "inherit", env });
+  if (r.error || r.signal) fail(`macos ${suite.name} did not finish: ${r.error?.message ?? r.signal}`, "re-run gate");
+  if (r.status) process.exit(r.status);
 } else if (cmd === "secrets") {
   const V = "8.30.1", local = env.GATE_GITLEAKS_ARCHIVE;
   const platform = `${process.platform}_${process.arch}`;

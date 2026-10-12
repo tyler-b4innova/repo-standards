@@ -12,6 +12,7 @@ import { localConfig } from "./local.mjs";
 import { claudePins, codexPins } from "./pins.mjs";
 import { verifyGeneratedBuild, workerFiles, declaredWorkers, readConfig, effectiveConfig, assertStaging, assertReleaseAccounts } from "./release-config.mjs";
 import { findings as stagingFindings, parse as parseWrangler } from "./staging.mjs";
+import { MACOS_FIX, macosSuites } from "./select.mjs";
 
 if (process.argv.includes("--help")) {
   console.log("usage: node scripts/agent/check.mjs   (offline standards self-check; exit 1 on failure)");
@@ -134,6 +135,8 @@ else {
     if (!(globs(ui) || (ui && typeof ui === "object" && globs(ui.include) && globs(ui.ignore))))
       fail("standards.json ui_paths must be a glob list or {include, ignore}", "fix it, or delete it for the engine defaults");
     if (!globs(std.risk_paths)) fail("standards.json risk_paths must be a glob list", "fix it, delete it for the engine defaults, or [] for none");
+    // macOS suites: declared, never discovered; gate runs each on its runner when a pull request changes its paths.
+    try { macosSuites(std); } catch (e) { fail(e.message, MACOS_FIX); }
     // staging_url: where the release check runs the full suite (extra browsers named make it required) (the staging Preview), required when any are named
     // and the repository has not opted out with "e2e": false (then no release check ships)
     const extra = e !== false && ((Array.isArray(e?.browsers) && e.browsers.length > 0) || (pack.e2e_release_browsers ?? []).length > 0);

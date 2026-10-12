@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Which e2e specs a pull request runs.
+// Which e2e specs a pull request runs, and which declared macOS suites (standards.json macos) it needs, by one path rule (glob).
 //   select.mjs [plan] [--base <ref>] [--files a,b] [--json]   what runs and why
 //   select.mjs --list                                          ALL (the whole e2e suite), or the selected spec files, one per line
 // One narrowing case, nothing else: every changed file of a pull_request is an added or modified spec file (*.spec.* / *.test.*) under an e2e/
@@ -46,6 +46,39 @@ export function plan({ env = process.env, base = "", files = "", affected } = {}
   if (other) return full(`${other[1]} ${other[0] === "D" ? "was deleted" : "is not an added or modified e2e spec"}`);
   if (!rows.length) return full("no changed file was found");
   return { mode: "scoped", why: "only e2e spec files changed", specs: rows.map((r) => r[1]).sort(), rows };
+}
+
+// The path rule for every changed-file decision (ui_paths, non-deployable paths, macOS suites): ** any depth, * one segment, {a,b} either.
+export const glob = (g) => new RegExp("^" + g.replace(/[.+^$()|[\]\\]/g, "\\$&").replace(/\{([^}]+)\}/g, (_, a) => `(${a.split(",").join("|")})`)
+  .replace(/\*\*\//g, "\0").replace(/\*\*/g, "\x01").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]").replace(/\0/g, "(.*/)?").replace(/\x01/g, ".*") + "$");
+
+// macOS suites (standards.json "macos"): tests that need macOS, declared and never discovered. Each names the suite, the path
+// globs whose change runs it, the runner label it runs on and the command run from the repository root.
+const MACOS_KEYS = ["name", "paths", "runner", "command"];
+export const MACOS_FIX = 'standards.json macos: a non-empty list of {"name": "<suite>", "paths": ["<glob>"], "runner": "<macOS runner label>", "command": "<command run from the repository root>"}, each name once; omit macos for none';
+/** The declared macOS suites ([] when there is no declaration); throws on a malformed one. */
+export function macosSuites(std) {
+  const list = std?.macos;
+  if (list === undefined) return [];
+  if (!Array.isArray(list) || !list.length) throw new Error(`standards.json macos must be a non-empty list of suites: ${JSON.stringify(list)}`);
+  const names = new Set(), text = (v) => typeof v === "string" && v.trim() !== "";
+  return list.map((s) => {
+    if (!s || typeof s !== "object" || Array.isArray(s)) throw new Error(`standards.json macos entry must be an object {${MACOS_KEYS.join(", ")}}: ${JSON.stringify(s)}`);
+    const unknown = Object.keys(s).filter((k) => !MACOS_KEYS.includes(k));
+    if (unknown.length) throw new Error(`standards.json macos entry has an unknown key ${unknown.join(", ")} (${MACOS_KEYS.join(", ")}): ${JSON.stringify(s)}`);
+    for (const k of ["name", "runner", "command"]) if (!text(s[k])) throw new Error(`standards.json macos entry ${k} must be a non-empty string: ${JSON.stringify(s)}`);
+    if (!Array.isArray(s.paths) || !s.paths.length || !s.paths.every(text)) throw new Error(`standards.json macos entry paths must be a non-empty list of globs: ${JSON.stringify(s)}`);
+    if (names.has(s.name)) throw new Error(`standards.json macos suite name ${s.name} is repeated`);
+    names.add(s.name);
+    return { name: s.name, paths: s.paths, runner: s.runner, command: s.command };
+  });
+}
+/** Which declared macOS suites a change needs: those with a changed file under their paths; every one when the changed files are unknown (null). */
+export function macosPlan(std, files) {
+  return macosSuites(std).map((s) => {
+    const paths = s.paths.map(glob), hit = files?.find((f) => paths.some((r) => r.test(f)));
+    return { ...s, run: !files || !!hit, why: !files ? "the pull request's base cannot be found, so every suite runs" : hit ? `${hit} changed` : `nothing changed under ${s.paths.join(", ")}` };
+  });
 }
 
 export const describe = (r) => `select: ${r.mode === "full" ? "the whole e2e suite" : `${r.specs.length} e2e spec(s)`} (${r.why}); ${r.rows.length} changed file(s)${r.mode === "scoped" ? "\n" + r.specs.map((s) => `  ${s}`).join("\n") : ""}`;

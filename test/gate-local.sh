@@ -209,5 +209,17 @@ git -C "$N" add -A && git -C "$N" commit -qm base; git -C "$N" checkout -q -b fe
 rec=$(git -C "$N" rev-parse --git-path std-local-gate); [ "${rec#/}" = "$rec" ] && rec=$N/$rec
 if [ "$nw" -eq 0 ] && grep -qF 'worker=SKIP (no Worker)' "$T/nowork.log" && [ "$(cat "$rec" 2>/dev/null)" = "$(git -C "$N" rev-parse HEAD)" ]; then ok gate-local-no-worker
 else fail gate-local-no-worker "exit=$nw"; tail -5 "$T/nowork.log"; fi
+# macos-suite-path-scoped: gate.mjs local runs every declared macOS suite last, through the command CI runs, on a Mac
+# (GATE_PLATFORM stands in for the host); elsewhere each prints a skip naming the suite, and a failing suite fails the gate
+printf 'tv-ran.txt\n' >>"$N/.gitignore"; printf '#!/usr/bin/env bash\n[ -z "${FAIL_TV:-}" ] || exit 4\necho ran > tv-ran.txt\n' >"$N/tv.sh"
+node -e 'const fs=require("fs"),f=process.argv[1],o=JSON.parse(fs.readFileSync(f));o.macos=[{name:"tv",paths:["apps/tv/**"],runner:"xcode-27",command:"bash tv.sh"}];fs.writeFileSync(f,JSON.stringify(o))' "$N/standards.json"
+git -C "$N" add -A && git -C "$N" commit -qm "macos suite"
+mrun() { rm -f "$N/tv-ran.txt"; (cd "$N" && env HOME="$T/home" USERPROFILE="$T/home" "$@" node scripts/agent/gate.mjs local --base main) >"$T/mac.log" 2>&1; echo $?; }
+mlast() { tail -1 "$T/mac.log"; }
+why=""
+st=$(mrun GATE_PLATFORM=darwin); [ "$st" -eq 0 ] && [ -f "$N/tv-ran.txt" ] && mlast | grep -qF 'e2e=PASS; macos tv=PASS' || why="on a Mac: exit=$st $(mlast)"
+st=$(mrun GATE_PLATFORM=linux); [ "$st" -eq 0 ] && [ ! -f "$N/tv-ran.txt" ] && mlast | grep -qF 'macos tv=SKIP (needs macOS)' && grep -qF 'local: macos tv SKIP (needs macOS; CI runs it on xcode-27)' "$T/mac.log" || why="$why; off a Mac: exit=$st $(mlast)"
+st=$(mrun GATE_PLATFORM=darwin FAIL_TV=1); [ "$st" -ne 0 ] && mlast | grep -qF 'macos tv=FAIL' || why="$why; failing suite: exit=$st $(mlast)"
+if [ -z "$why" ]; then ok macos-suite-path-scoped; else fail macos-suite-path-scoped "$why"; tail -20 "$T/mac.log"; fi
 printf '\nLocal gate evidence (real Worker):\n'; tail -1 "$T/default.log"; tail -1 "$T/failing.log"; tail -1 "$T/optout.log"
 done_cases

@@ -146,7 +146,7 @@ for (const f of fs.readdirSync(dir)) {
   const jobs=L.slice(j+1).filter(l=>/^  [A-Za-z0-9_-]+:\s*$/.test(l)).map(l=>l.trim().slice(0,-1));
   gates+=L.slice(j+1).filter(l=>/^    name: .*\|\| .gate. \}\}\s*$/.test(l)).length;
   if (f==="std-gate.yml") {
-    if (jobs.join()!=="checks,test,gate") out.push("jobs: "+jobs.join());
+    if (jobs.join()!=="checks,test,macos,gate") out.push("jobs: "+jobs.join());
     const runs=L.slice(j+1).join("\n");
     for (const s of ["scripts/agent/setup.sh --check","gate.mjs secrets","gate.mjs install","gate.mjs run typecheck","gate.mjs run build","gate.mjs e2e","scripts/agent/gate.local.sh"])
       if (!runs.includes(s)) out.push("missing step: "+s);
@@ -159,19 +159,19 @@ if [ "$shape" = ok ]; then ok gate-fails-without-e2e; else fail gate-fails-witho
 
 # one-test-job / one-gate-run-per-push: the full gate is `checks` plus ONE `test` job that installs once and runs
 # typecheck, build, the repo checks and e2e in that order (the preview wait just before e2e); a push to a draft starts no
-# jobs and a cancelled run posts no gate; the verdict needs exactly checks and test
+# jobs and a cancelled run posts no gate; the verdict needs checks and test (and the macos job only when the plan listed macOS suites)
 why=""; WFT=$ENGINE/template/.github/workflows/std-gate.yml
 node --input-type=module - "$WFT" <<'JS' || why="$why; $?"
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 const y = readFileSync(process.argv[2], "utf8"), parts = y.slice(y.indexOf("\njobs:")).split(/^  ([\w-]+):\s*$/m), jobs = {};
 for (let i = 1; i < parts.length; i += 2) jobs[parts[i]] = parts[i + 1];
-assert.deepEqual(Object.keys(jobs), ["checks", "test", "gate"]);
+assert.deepEqual(Object.keys(jobs), ["checks", "test", "macos", "gate"]);
 assert.equal((jobs.test.match(/gate\.mjs install --no-browsers/g) ?? []).length, 1, "one install");
 assert.equal((jobs.test.match(/actions\/checkout@/g) ?? []).length, 1, "one checkout");
 const order = ["run typecheck", "run build", "gate.local.sh", "gate.mjs preview", "gate.mjs e2e"].map((k) => jobs.test.indexOf(k));
 assert.ok(order.every((n, i) => n > 0 && (i === 0 || n > order[i - 1])), "typecheck, build, repo checks, preview, e2e in order: " + order);
-assert.match(jobs.gate, /needs: \[checks, test\]/);
+assert.match(jobs.gate, /needs: \[checks, test, macos\]/);
 assert.match(jobs.checks, /^    if: github\.event\.pull_request\.draft != true$/m, "a draft starts no checks");
 assert.match(jobs.gate, /^    name: \$\{\{ \(github\.event\.pull_request\.draft == true \|\| needs\.checks\.outputs\.rollback_draft == 'true'\) && 'draft \(not gated\)' \|\| 'gate' \}\}$/m, "a draft's gate job is not named gate");
 assert.match(jobs.gate, /^    if: \$\{\{ always\(\) && !cancelled\(\) && github\.event\.pull_request\.draft != true && needs\.checks\.outputs\.rollback_draft != .true. \}\}$/m, "gate is skipped for a draft, never skipped otherwise");

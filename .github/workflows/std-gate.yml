@@ -9,7 +9,8 @@
 # cache written here could be seeded by that tree; std-cache-warm (main only) writes them.
 # Repo-owned checks go in scripts/agent/gate.local.sh. The job `gate` is the one required check: it needs the checks
 # job and the one test job (install, typecheck, build, repo checks, affected e2e) and passes only when both succeeded
-# on a ready pull request. Each job's timeout is the overlay's gate.timeout_minutes.
+# on a ready pull request, and the macos job too when the plan listed macOS suites (standards.json macos). Each job's
+# timeout is the overlay's gate.timeout_minutes.
 name: std-gate
 # The launcher parses a pull_request run's name: `gate pr=<n> base=<ref> head=<40-hex sha>` (GitHub can return an empty
 # pull_requests[] on a same-repo run); other events keep GitHub's default name.
@@ -48,6 +49,7 @@ jobs:
       browsers: ${{ steps.plan.outputs.browsers }}
       rollback_base: ${{ steps.plan.outputs.rollback_base }}
       rollback_draft: ${{ steps.plan.outputs.rollback_draft }}
+      macos: ${{ steps.plan.outputs.macos }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -156,9 +158,33 @@ jobs:
           GATE_BROWSERS: ${{ needs.checks.outputs.browsers }}
           GATE_PREVIEW_URL: ${{ steps.preview.outputs.url }}
         run: node scripts/agent/gate.mjs e2e
+  # A declared macOS suite (standards.json macos) on its own runner, beside the test job: only when the plan listed it (a
+  # ready pull request's full gate that changes the suite's paths); otherwise the job is skipped and bills nothing.
+  macos:
+    needs: checks
+    if: needs.checks.outputs.mode == 'full' && needs.checks.outputs.rollback_draft != 'true' && startsWith(needs.checks.outputs.macos, '[{')
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.checks.outputs.macos) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.checks.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          package-manager-cache: false # this workflow never writes caches; the suite's command installs what it needs
+      - name: suite
+        env:
+          GATE_MACOS_SUITE: ${{ matrix.name }}
+        run: node scripts/agent/gate.mjs macos "$GATE_MACOS_SUITE"
   gate:
     name: ${{ (github.event.pull_request.draft == true || needs.checks.outputs.rollback_draft == 'true') && 'draft (not gated)' || 'gate' }}
-    needs: [checks, test]
+    needs: [checks, test, macos]
     # Skipped for a draft: the event's (a draft push) or the plan's live state (a ready run whose PR was converted to draft
     # before plan ran), so neither posts a failing `gate`. Otherwise it runs whatever happened except a run cancelled by a newer one in the
     # group, which would post a red gate.
