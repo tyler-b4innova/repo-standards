@@ -247,7 +247,7 @@ jobs:
 has "manual.yml job once has no timeout-minutes" "$out" && has "playwright install without naming a browser" "$out" || why="$why; manual-run guardrails: $out"
 if [ -z "$why" ]; then ok no-duplicate-gate-workflows; else fail no-duplicate-gate-workflows "$why"; fi
 # the trigger alone decides: a pull request or a push to a branch of any name fails, whatever words its steps use; a tag push
-# passes however its trigger is written, and a comment after `on:` hides nothing
+# passes however its trigger is written, and neither a comment after `on:` nor a listed trigger hides one
 why=""
 R=$(mkrepo); i=0
 for step in "python -m pytest" "python -m unittest" "cargo nextest run" "go vet ./..."; do i=$((i + 1)); wf "$R" "pr$i.yml" "on:
@@ -286,9 +286,17 @@ jobs:
     timeout-minutes: 10
     steps:
       - run: npm run lint'
+wf "$R" listed.yml 'on:
+  - pull_request
+jobs:
+  t:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - run: npm test'
 out=$(cr "$R"); st=$?
 [ $st -eq 1 ] || why="exit $st"
-for f in pr1 pr2 pr3 pr4 branch release lint; do has ".github/workflows/$f.yml runs on" "$out" || why="$why; $f.yml passed"; done
+for f in pr1 pr2 pr3 pr4 branch release lint listed; do has ".github/workflows/$f.yml runs on" "$out" || why="$why; $f.yml passed"; done
 R=$(mkrepo); wf "$R" publish.yml 'on: { push: { tags: ["v*"] } }
 jobs:
   publish:

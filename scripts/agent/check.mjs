@@ -238,7 +238,7 @@ else {
     const block = (at, indent) => { const b = []; for (let i = at + 1; i < L.length && (L[i].trim() === "" || L[i].search(/\S/) > indent || L[i].trim().startsWith("#")); i++) b.push(L[i]); return b; };
     const onBlock = onAt >= 0 ? block(onAt, 0) : [];
     const triggers = inline ? inline.replace(/[[\]{}]/g, "").split(",").map((t) => t.trim().split(":")[0]).filter(Boolean)
-      : onBlock.filter((l) => /^ {2}[a-z_]+:/.test(l)).map((l) => l.trim().split(":")[0]);
+      : onBlock.map((l) => l.match(/^ {2}(?:- )?([a-z_]+)(?::|\s*(?:#.*)?$)/)?.[1]).filter(Boolean); // a key, or a sequence item
     // GitHub runs a push trigger on branch pushes unless its filters name tags only (tags or tags-ignore, no branches or branches-ignore).
     const pushAt = onBlock.findIndex((l) => /^ {2}push:/.test(l));
     const push = inline || (pushAt >= 0 ? [onBlock[pushAt].replace(/^ {2}push:/, ""), ...block(onAt + 1 + pushAt, 2)].map((l) => l.trim()).join(" ") : "");
