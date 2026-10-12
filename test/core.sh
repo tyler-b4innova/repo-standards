@@ -464,6 +464,16 @@ approval_policy = "on-request"/' "$R/.codex/config.toml" && rm "$R/.codex/config
 expect_fail agent-deny-secrets-and-force-push "$R" ".codex/config.toml engine keys changed"
 [ "$rules" != skipped ] || echo "  (codex CLI absent: std.rules decisions not evaluated)"
 
+# the person's Codex: --check warns when its config does not trust the repository folder, and judges nothing else about Codex
+R=$(mkrepo); P=$(cd "$R" && pwd -P); CH=$T/codex-home CB=$T/codex-bin; mkdir -p "$CH" "$CB"
+# an old Codex CLI on PATH that records being run
+printf '#!/bin/sh\ntouch "%s/ran"\necho "codex-cli 0.100.0"\n' "$CB" > "$CB/codex"; chmod +x "$CB/codex"
+printf '[projects."/elsewhere"]\ntrust_level = "trusted"\n' > "$CH/config.toml"; a=$(CODEX_HOME=$CH PATH=$CB:$PATH check "$R"); sa=$?
+printf '[projects."%s"]\ntrust_level = "trusted"\n' "$P" > "$CH/config.toml"; b=$(CODEX_HOME=$CH PATH=$CB:$PATH check "$R"); sb=$?
+if [ $sa -eq 0 ] && has "WARN: Codex: project not trusted" "$a" && has "[projects.\"$P\"] trust_level = \"trusted\"" "$a" \
+  && [ $sb -eq 0 ] && ! grep -q '^WARN: Codex' <<<"$b" && [ ! -e "$CB/ran" ]
+then ok codex-trust-warned; else fail codex-trust-warned "untrusted=$sa $(grep Codex <<<"$a") | trusted=$sb $(grep Codex <<<"$b") | codex run: $([ -e "$CB/ran" ] && echo yes || echo no)"; fi
+
 # std-issue: one launcher-ready issue per idea, in the sections the launcher requires
 R=$(mkrepo); f=$R/.claude/skills/std-issue/SKILL.md; why=""
 [ -f "$f" ] && grep -q "  .agents/skills/std-issue/SKILL.md$" "$R/standards.lock" || why="not shipped and locked"
