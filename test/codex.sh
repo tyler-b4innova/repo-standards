@@ -23,7 +23,7 @@ st() {
     const when = new Date(Date.now() - Number(ago) * 60000).toISOString();
     console.log(JSON.stringify({ pr: { number: 7, draft: draft === "true", user: { login: user }, head: { sha: process.argv[9], ref }, created_at: when },
       comments: { 7: sha === "none" ? [] : [sum(sha)], 3: recent === "yes" ? [sum(process.argv[10])] : [] },
-      recent: [{ number: 7 }, { number: 3 }], threads: JSON.parse(threads || "[]"), pushed: when, timeline: JSON.parse(process.env.TIMELINE || "[]"), noRuns: !!process.env.NORUNS, reviews: JSON.parse(process.env.REVIEWS || "[]"),
+      recent: [{ number: 7 }, { number: 3 }], threads: JSON.parse(threads || "[]"), reviews: JSON.parse(process.env.REVIEWS || "[]"),
       files: { "scripts/agent/pack.json": { content: require("fs").readFileSync(process.env.PACK).toString("base64") } } }));
   ' "$@" > "$T/state.json"; }
 export PACK=$R/scripts/agent/pack.json
@@ -190,10 +190,10 @@ else fail e2e-false-skips-preview "e2e-false=$w2 (want 0) still-gated=$w4 (want 
 # even when the head is this repository's default branch (there are no promotions); a stale pull.base.sha is resolved
 # through the branch. A null verdict here: no pack at the ref read.
 SUM="{user:b,updated_at:new Date().toISOString(),body:'<!-- codex-pull-request-review-summary -->\\n| 📝 **Code Review** | ✅ **Completed** now | \`${HEAD1:0:7}\` | x |'}"
-base="pr:{number:7,draft:false,state:'open',html_url:'https://github.com/acme/demo/pull/7',user:{login:'alice'},head:{sha:'$HEAD1',ref:'feat'},base:{ref:'main'}},comments:{7:[$SUM]},recent:[],pushed:new Date(Date.now()-300000).toISOString(),timeline:[],threads:[]"
+base="pr:{number:7,draft:false,state:'open',html_url:'https://github.com/acme/demo/pull/7',user:{login:'alice'},head:{sha:'$HEAD1',ref:'feat'},base:{ref:'main'}},comments:{7:[$SUM]},recent:[],timeline:[],threads:[]"
 PACKFILE="{content:Buffer.from(require('fs').readFileSync('$PACK')).toString('base64')}"
 put "{$base,files:{'scripts/agent/pack.json@feat':$PACKFILE,'scripts/agent/pack.json@$HEAD1':$PACKFILE}}"; rb1=$(rv)
-PROMO="pr:{number:7,draft:false,state:'open',html_url:'u',user:{login:'launcher[bot]'},head:{sha:'$HEAD1',ref:'staging',repo:{full_name:'acme/demo'}},base:{ref:'main'}},info:{default_branch:'staging'},comments:{7:[$SUM]},recent:[],pushed:new Date(Date.now()-300000).toISOString(),timeline:[],threads:[]"
+PROMO="pr:{number:7,draft:false,state:'open',html_url:'u',user:{login:'launcher[bot]'},head:{sha:'$HEAD1',ref:'staging',repo:{full_name:'acme/demo'}},base:{ref:'main'}},info:{default_branch:'staging'},comments:{7:[$SUM]},recent:[],timeline:[],threads:[]"
 put "{$PROMO,files:{'scripts/agent/pack.json@$HEAD1':$PACKFILE}}"; rb2=$(rv)
 put "{${PROMO/acme\/demo/someone\/demo},files:{'scripts/agent/pack.json@$HEAD1':$PACKFILE}}"; rb3=$(rv)
 put "{$base,branchHeads:{main:'$HEAD1'},files:{'scripts/agent/pack.json@$HEAD1':$PACKFILE}}"

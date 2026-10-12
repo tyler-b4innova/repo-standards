@@ -160,4 +160,4 @@ Models: repositories never pin a model or effort; each person's app (or the org 
 
 ## Develop
 
-`test/run.sh` runs every scenario in `SCENARIOS.md` (each prints `ok <id>`) plus the neutrality check over the tree and full history. Each release sets `package.json` `"breaking"`: `true` only when it can stop a consumer's gate or check from passing, otherwise `false`. After changing `template/`, re-apply to this repository: `node bin/repo-standards.mjs apply --target . --overlay examples/overlay.json --version "$(node -p 'require("./package.json").version')"`.
+`test/run.sh` runs every scenario in `SCENARIOS.md` (each prints `ok <id>`) plus the neutrality check over the tree and full history; under `CI` (which `npm run test:e2e` sets) a `skip` line fails it. Each release sets `package.json` `"breaking"`: `true` only when it can stop a consumer's gate or check from passing, otherwise `false`. After changing `template/`, re-apply to this repository: `node bin/repo-standards.mjs apply --target . --overlay examples/overlay.json --version "$(node -p 'require("./package.json").version')"`.

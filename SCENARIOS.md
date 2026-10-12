@@ -1,6 +1,6 @@
 # Engine scenarios
 
-Each scenario reproduces a failure that actually happened or a rule the owners stated, and runs through a real entry point: `apply` on a fixture repository, then `scripts/agent/setup.sh --check`, a `gate` step, the PR helper, or `sync` against a GitHub stand-in. `test/run.sh` prints `ok <id>` or `FAIL <id>` for each and fails if any id below is missing. Ids are stable; a retired id stays listed as retired.
+Each scenario reproduces a failure that actually happened or a rule the owners stated, and runs through a real entry point: `apply` on a fixture repository, then `scripts/agent/setup.sh --check`, a `gate` step, the PR helper, or `sync` against a GitHub stand-in. `test/run.sh` prints `ok <id>` or `FAIL <id>` for each and fails if any id below is missing or, under `CI`, any case prints `skip`. Ids are stable; a retired id stays listed as retired.
 
 ## Gate and evidence
 
@@ -260,6 +260,7 @@ Retired in 0.6.0 with the staged flow: `promote-no-ui-auto`, `promote-ui-needs-h
 - **`workflows-parse`**: every workflow the engine ships parses as YAML (an unquoted colon once disabled a workflow silently).
 
 - **`engine-neutral`**: no organization name, internal host, account, App or vault identifier appears in the tree or anywhere in history.
+- **`engine-coverage-skip-fails`**: under `CI`, `test/run.sh` fails its coverage line on any `skip` line and names the skipped ids, as it does for an id no case prints. A case that did not run is not coverage (rule: every test must be able to fail); an offline run's `skip affected-full-runs-every-project` used to count as covered.
 - **`gate-timeout-overlay`**: the shipped `std-gate.yml` gate job times out at 30 minutes unless the overlay sets `gate.timeout_minutes`, an integer from 5 to 120 (anything else is refused before anything is written); the repository's offline check accepts the rendered value.
 
 - **`release-controlled-dotenv`**: every release Wrangler command uses a private empty explicit env file; build-created .env files cannot reload production override names, match tags or account values onto staging or secondary uploads. Incident: stripped child variables were reloaded by Wrangler before name resolution.
