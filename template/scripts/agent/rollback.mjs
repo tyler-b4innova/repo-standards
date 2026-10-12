@@ -213,11 +213,13 @@ function productionInventory({ built = false, buildContext } = {}) {
   }));
 }
 function baseInventory(base, directory, buildContext) {
+  // The clone is this run's own directory; trust it by command-line config where the running user's config is not read (a hidden HOME).
   execFileSync("git", ["clone", "--shared", "--no-checkout", "--quiet", process.cwd(), directory], { stdio: "pipe" });
+  const own = ["-c", `safe.directory=${realpathSync(directory)}`];
   // A shallow source can hold a fetched base outside the history copied by clone.
-  try { execFileSync("git", ["-C", directory, "cat-file", "-e", `${base}^{commit}`], { stdio: "pipe" }); }
-  catch { execFileSync("git", ["-C", directory, "fetch", "--no-tags", "--depth=1", "--", process.cwd(), base], { stdio: "pipe" }); }
-  execFileSync("git", ["-C", directory, "checkout", "--detach", "--quiet", base], { stdio: "pipe" });
+  try { execFileSync("git", ["-C", directory, ...own, "cat-file", "-e", `${base}^{commit}`], { stdio: "pipe" }); }
+  catch { execFileSync("git", ["-C", directory, ...own, "fetch", "--no-tags", "--depth=1", "--", process.cwd(), base], { stdio: "pipe" }); }
+  execFileSync("git", ["-C", directory, ...own, "checkout", "--detach", "--quiet", base], { stdio: "pipe" });
   const cwd = process.cwd();
   // Reuse installed dependencies only for the same dependency manifest and lockfiles.
   const pkg = JSON.parse(read(join(directory, "package.json")) ?? "{}"), current = JSON.parse(read("package.json") ?? "{}");

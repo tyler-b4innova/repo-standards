@@ -7,6 +7,7 @@ import { execFileSync as ex, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync as has, mkdtempSync, readdirSync as ls, readFileSync as rd, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
+import { resolve as resolvePath } from "node:path";
 import { createConnection } from "node:net";
 import { localConfig, localWorkerConfig } from "./local.mjs";
 import { scan } from "./jsscan.mjs";
@@ -284,6 +285,15 @@ if (cmd === "local") {
   writeFileSync(eventFile, JSON.stringify({ pull_request: { number: 1, base: { sha: base }, head: { sha: head, ref: git("branch", "--show-current").trim() }, user: { login: "local" } } }));
   const localEnv = { ...env, CI: "true", GITHUB_EVENT_NAME: "pull_request", GITHUB_EVENT_PATH: eventFile, GITHUB_SHA: head,
     PATH: `${process.cwd()}/node_modules/.bin:${env.PATH}`, GATE_BROWSERS: "chromium", WRANGLER_SEND_METRICS: "false", WRANGLER_CHECK_FOR_UPDATES: "false", WRANGLER_HOME: `${dir}/wrangler`, HOME: dir, USERPROFILE: dir, XDG_CONFIG_HOME: `${dir}/xdg` };
+  // HOME is hidden above, and with it the user's git config, where git reads safe.directory. The trust for the repository
+  // being gated (its top level, common git dir and private worktree git dir) goes in a global config of the gate's own, which every child reads, the
+  // upload-pack a local clone forks on the source included (command-scope GIT_CONFIG_* entries do not reach that child).
+  // A global config the caller named is included, so its entries stay in force; the caller's GIT_CONFIG_* entries are untouched.
+  const trusted = [...new Set(["--show-toplevel", "--git-common-dir", "--git-dir"].map((flag) => resolvePath(git("rev-parse", flag).trim())))];
+  const quoted = (v) => `"${v.replace(/[\\"]/g, "\\$&")}"`;
+  const gitConfig = `${dir}/gitconfig`;
+  writeFileSync(gitConfig, [...(env.GIT_CONFIG_GLOBAL ? ["[include]", `\tpath = ${quoted(resolvePath(env.GIT_CONFIG_GLOBAL))}`] : []), "[safe]", ...trusted.map((p) => `\tdirectory = ${quoted(p)}`), ""].join("\n"));
+  localEnv.GIT_CONFIG_GLOBAL = gitConfig;
   for (const k of ["RELEASE_CHECK", "GH_TOKEN", "GITHUB_TOKEN", "GITHUB_OUTPUT", "GATE_PREVIEW_URL", "BASE_URL", "PLAYWRIGHT_BASE_URL", "CLOUDFLARE_ENV", "RANGE", "ROLLBACK_BASE", "ROLLBACK_DRAFT"])
     delete localEnv[k];
   for (const k of Object.keys(localEnv)) if (/^(CLOUDFLARE_|CF_)/.test(k)) delete localEnv[k];
