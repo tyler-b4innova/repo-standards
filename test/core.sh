@@ -305,9 +305,42 @@ jobs:
     timeout-minutes: 10
     steps:
       - run: npm test'
+# a quoted trigger key is the same trigger
+wf "$R" quotedpush.yml 'on:
+  "push":
+    "branches": [main]
+jobs:
+  t:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - run: npm test'
+wf "$R" quotedpr.yml "on:
+  'pull_request':
+jobs:
+  t:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - run: npm test"
+wf "$R" quotedlist.yml 'on:
+  - "pull_request"
+jobs:
+  t:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - run: npm test'
+wf "$R" quotedinline.yml 'on: { "push": { "branches": ["main"] } }
+jobs:
+  t:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - run: npm test'
 out=$(cr "$R"); st=$?
 [ $st -eq 1 ] || why="exit $st"
-for f in pr1 pr2 pr3 pr4 branch release tagged lint listed; do has ".github/workflows/$f.yml runs on" "$out" || why="$why; $f.yml passed"; done
+for f in pr1 pr2 pr3 pr4 branch release tagged lint listed quotedpush quotedpr quotedlist quotedinline; do has ".github/workflows/$f.yml runs on" "$out" || why="$why; $f.yml passed"; done
 R=$(mkrepo); wf "$R" publish.yml 'on: { push: { tags: ["v*"] } }
 jobs:
   publish:
@@ -326,6 +359,16 @@ jobs:
     timeout-minutes: 10
     steps:
       - run: npm ci && npm run build && npm publish'; out=$(cr "$R") || why="$why; a tag-push workflow with a commented branches line failed: $out"
+# a quoted tag-only push trigger is still tag-only
+R=$(mkrepo); wf "$R" publish.yml 'on:
+  "push":
+    "tags": ["v*"]
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - run: npm ci && npm run build && npm publish'; out=$(cr "$R") || why="$why; a quoted tag-push workflow failed: $out"
 if [ -z "$why" ]; then ok no-duplicate-gate-workflows; else fail no-duplicate-gate-workflows "$why: $out"; fi
 # the removed per-repo exception keys: a leftover one warns once, saying what replaced it, and is never validated
 why=""
