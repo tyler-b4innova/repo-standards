@@ -153,6 +153,9 @@ for c in 'o.fleet=[]|fleet must be an object' 'o.fleet.includes=[]|fleet.include
   'o.fleet.include=[{repo:"app",profile:"internl"}]|fleet.include[0].profile must be internal or client (got "internl")' \
   'o.fleet.include=[{repo:"app"}]|fleet.include[0].profile must be internal or client (not set)' \
   'o.fleet.exclude="app"|fleet.exclude must be a list' 'o.fleet.exclude=["acme/"]|fleet.exclude[0] must be a repository name or owner/name' \
+  'o.fleet.include=[{repo:"example-org/..",profile:"client"}]|fleet.include[0].repo must be a repository name or owner/name' 'o.fleet.include=[{repo:".",profile:"client"}]|fleet.include[0].repo must be a repository name or owner/name' \
+  'o.fleet.exclude=[".."]|fleet.exclude[0] must be a repository name or owner/name' 'o.fleet.exclude=["../app"]|fleet.exclude[0] must be a repository name or owner/name' \
+  'o.standards_repo="example-org/.."|standards_repo must be the standards repository as owner/name' 'o.standards_repo="../standards"|standards_repo must be the standards repository as owner/name' \
   'delete o.org|org must be the organization' 'o["org"]=7|org must be the organization'"'"'s login, a non-empty string (got 7)' \
   'delete o.standards_repo|standards_repo must be the standards repository as owner/name (letters, digits, dot, underscore and hyphen) (not set)' 'o.standards_repo="example-org"|standards_repo must be the standards repository as owner/name' \
   'delete o.sync|sync must be an object' 'o.sync=[]|sync must be an object' 'delete o.sync["app_login"]|sync.app_login must be' \
@@ -177,7 +180,7 @@ done
 out=$(kbad 'delete o.sync'); [ "$(printf '%s\n' "$out" | grep -c '^  sync')" = 1 ] || why="$why; deleted sync: $out"
 out=$(kbad 'o["org_admin"]={review_status:true}'); [ "$(printf '%s\n' "$out" | grep -c review_status)" = 1 ] || why="$why; review_status: $out"
 # the same overlay with the input fixed loads (and applies)
-for c in 'delete o.fleet' 'o.fleet={}' 'o.fleet={mode:"discover"}' 'o.fleet={mode:"list",include:[{repo:"example-org/app",profile:"client"},{repo:"web.v2_site",profile:"internal"}],exclude:["example-org/old","old-2"]}' \
+for c in 'delete o.fleet' 'o.fleet={}' 'o.fleet={mode:"discover"}' 'o.fleet={mode:"list",include:[{repo:"example-org/app",profile:"client"},{repo:"web.v2_site",profile:"internal"},{repo:"example-org/.github",profile:"internal"}],exclude:["example-org/old","old-2",".github"]}' 'o.standards_repo="example-org/.github"' \
   'delete o.expiring_credentials' 'o.expiring_credentials=[]' 'o.expiring_credentials=[{name:"Deploy token",issued_var:"DEPLOY_TOKEN_ISSUED",max_days:90},{name:"Key",issued_var:"_KEY2",max_days:365}]' \
   'delete o.sync.compliance_issue_title' 'o.sync.schedule=17;o.sync.anything_the_workflow_reads={x:1}' \
   'o["org_admin"]={}' 'o["org_admin"]={app:{name:"example-sync"}}' 'o["org_admin"]={app:{id:42,slug:"example-sync",name:"example-sync"},gate_integration_id:15368,release_app:{id:7,slug:"portal"},require_extra_approval_for_unattributed_changes:true}'; do
