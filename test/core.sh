@@ -139,6 +139,65 @@ for c in "l.retro={$R0,cadence:\"weekly\"}|launcher.retro.cadence is not a launc
 done
 if [ -z "$why" ]; then ok overlay-launcher-validated; else fail overlay-launcher-validated "$why"; fi
 
+# overlay-keys-validated: the load refuses a wrong fleet, org, standards_repo, sync, expiring_credentials or org_admin setting, and a dispatch that
+# names a workflow missing from the overlay's own folder, with the key and the value, before anything is written. The same overlay with the
+# input fixed loads. (Each org_admin rule has its case in org/test.sh, through the standalone org-apply and the bin.)
+why=""
+kedit() { node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));(new Function("o",process.argv[3]))(o);require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$T/kov.json" "$1"; }
+kapply() { # kapply <overlay file>: apply it to an empty repository; ACCEPTED when it exits 0, WROTE when the repository changed
+  local d; d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; OVERLAY="$1" apply "$d" 2>&1 && echo "ACCEPTED"; [ -z "$(ls -A "$d" | grep -v '^.git$')" ] || echo "WROTE"; }
+kbad() { kedit "$1"; kapply "$T/kov.json"; }
+for c in 'o.fleet=[]|fleet must be an object' 'o.fleet.includes=[]|fleet.includes is not a fleet setting' \
+  'o.fleet.mode="lisst"|fleet.mode must be "discover" or "list" (got "lisst")' 'o.fleet.include="app"|fleet.include must be a list' \
+  'o.fleet.include=["app"]|fleet.include[0] must be an object' 'o.fleet.include=[{repo:"acme/",profile:"client"}]|fleet.include[0].repo must be a repository name or owner/name' \
+  'o.fleet.include=[{repo:"app",profile:"internl"}]|fleet.include[0].profile must be internal or client (got "internl")' \
+  'o.fleet.include=[{repo:"app"}]|fleet.include[0].profile must be internal or client (not set)' \
+  'o.fleet.exclude="app"|fleet.exclude must be a list' 'o.fleet.exclude=["acme/"]|fleet.exclude[0] must be a repository name or owner/name' \
+  'o.fleet.include=[{repo:"example-org/..",profile:"client"}]|fleet.include[0].repo must be a repository name or owner/name' 'o.fleet.include=[{repo:".",profile:"client"}]|fleet.include[0].repo must be a repository name or owner/name' \
+  'o.fleet.exclude=[".."]|fleet.exclude[0] must be a repository name or owner/name' 'o.fleet.exclude=["../app"]|fleet.exclude[0] must be a repository name or owner/name' \
+  'o.standards_repo="example-org/.."|standards_repo must be the standards repository as owner/name' 'o.standards_repo="../standards"|standards_repo must be the standards repository as owner/name' \
+  'delete o.org|org must be the organization' 'o["org"]=7|org must be the organization'"'"'s login, a non-empty string (got 7)' \
+  'delete o.standards_repo|standards_repo must be the standards repository as owner/name (letters, digits, dot, underscore and hyphen) (not set)' 'o.standards_repo="example-org"|standards_repo must be the standards repository as owner/name' \
+  'delete o.sync|sync must be an object' 'o.sync=[]|sync must be an object' 'delete o.sync["app_login"]|sync.app_login must be' \
+  'o.sync.compliance_issue_title=""|sync.compliance_issue_title must be a non-empty string when set' \
+  'o.expiring_credentials={}|expiring_credentials must be a list' 'o.expiring_credentials=[7]|expiring_credentials[0] must be an object' \
+  'o.expiring_credentials=[{name:"Deploy token"}]|expiring_credentials[0].issued_var must be the name of the variable' \
+  'o.expiring_credentials=[{name:"Deploy token"}]|expiring_credentials[0].max_days must be a positive integer (days) (not set)' \
+  'o.expiring_credentials=[{name:"Deploy token",issued_var:"DEPLOY_ISSUED"}]|expiring_credentials[0].max_days must be a positive integer (days) (not set)' \
+  'o.expiring_credentials=[{name:"Deploy token",issued_var:"DEPLOY_ISSUED",max_days:"90"}]|max_days must be a positive integer (days) (got "90")' \
+  'o.expiring_credentials=[{name:"Deploy token",issued_var:"DEPLOY_ISSUED",max_days:0}]|max_days must be a positive integer (days) (got 0)' \
+  'o.expiring_credentials=[{name:"Deploy token",issued_var:"DEPLOY_ISSUED",max_days:1.5}]|max_days must be a positive integer (days) (got 1.5)' \
+  'o.expiring_credentials=[{name:"Deploy token",issued_var:"1ISSUED",max_days:90}]|expiring_credentials[0].issued_var must be the name of the variable that holds the issue date (letters, digits and underscores, not starting with a digit) (got "1ISSUED")' \
+  'o.expiring_credentials=[{name:"Deploy token",issued_var:"DEPLOY-ISSUED",max_days:90}]|issued_var must be the name of the variable' \
+  'o.expiring_credentials=[{name:" ",issued_var:"DEPLOY_ISSUED",max_days:90}]|expiring_credentials[0].name must be a non-empty string' \
+  'o.expiring_credentials=[{name:"Deploy token",issued_var:"DEPLOY_ISSUED",max_days:90,rotate:true}]|expiring_credentials[0].rotate is not an expiring credential setting' \
+  'o["org_admin"]={gate_integration_id:"abc"}|org_admin.gate_integration_id must be a positive number when set (got "abc")' \
+  'o["org_admin"]={app:{id:null,slug:"example-sync"}}|org_admin.app.id (a positive number, not the example'"'"'s 0) and org_admin.app.slug are required (got {"id":null' \
+  'o["org_admin"]="admin"|org_admin must be an object (got "admin")'; do
+  out=$(kbad "${c%%|*}"); has "${c#*|}" "$out" && ! has ACCEPTED "$out" && ! has WROTE "$out" || why="$why; [${c%%|*}] $out"
+done
+# one message per problem: a deleted sync is one message (not also one about app_login), and org_admin.review_status once
+out=$(kbad 'delete o.sync'); [ "$(printf '%s\n' "$out" | grep -c '^  sync')" = 1 ] || why="$why; deleted sync: $out"
+out=$(kbad 'o["org_admin"]={review_status:true}'); [ "$(printf '%s\n' "$out" | grep -c review_status)" = 1 ] || why="$why; review_status: $out"
+# the same overlay with the input fixed loads (and applies)
+for c in 'delete o.fleet' 'o.fleet={}' 'o.fleet={mode:"discover"}' 'o.fleet={mode:"list",include:[{repo:"example-org/app",profile:"client"},{repo:"web.v2_site",profile:"internal"},{repo:"example-org/.github",profile:"internal"}],exclude:["example-org/old","old-2",".github"]}' 'o.standards_repo="example-org/.github"' \
+  'delete o.expiring_credentials' 'o.expiring_credentials=[]' 'o.expiring_credentials=[{name:"Deploy token",issued_var:"DEPLOY_TOKEN_ISSUED",max_days:90},{name:"Key",issued_var:"_KEY2",max_days:365}]' \
+  'delete o.sync.compliance_issue_title' 'o.sync.schedule=17;o.sync.anything_the_workflow_reads={x:1}' \
+  'o["org_admin"]={}' 'o["org_admin"]={app:{name:"example-sync"}}' 'o["org_admin"]={app:{id:42,slug:"example-sync",name:"example-sync"},gate_integration_id:15368,release_app:{id:7,slug:"portal"},require_extra_approval_for_unattributed_changes:true}'; do
+  out=$(kbad "$c"); has ACCEPTED "$out" || why="$why; [$c] refused: $out"
+done
+# a dispatch for this standards repository names a workflow that exists in .github/workflows of the folder that holds the overlay (checked when that folder exists)
+D=$T/standards-folder; mkdir -p "$D/.github/workflows"; cp "$OV" "$D/org.json"
+out=$(kapply "$D/org.json"); { has 'launcher.dispatch[0] dispatches workflow "sync.yml" in "standards", this standards repository, but' "$out" && has "$D/.github/workflows/sync.yml is not a file" "$out" && ! has ACCEPTED "$out" && ! has WROTE "$out"; } || why="$why; missing dispatch workflow: $out"
+: >"$D/.github/workflows/sync.yml"; out=$(kapply "$D/org.json"); has ACCEPTED "$out" || why="$why; existing dispatch workflow refused: $out"
+node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.launcher.dispatch[0].workflow="sync.yaml";require("fs").writeFileSync(f,JSON.stringify(o))' "$D/org.json"
+out=$(kapply "$D/org.json"); { has 'launcher.dispatch[0] dispatches workflow "sync.yaml"' "$out" && ! has ACCEPTED "$out"; } || why="$why; wrong workflow extension: $out"
+node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.launcher.dispatch[0].workflow="sync.yml";o.launcher.dispatch.push({repo:"other-repo",workflow:"not-here.yml",every:"1d"});require("fs").writeFileSync(f,JSON.stringify(o))' "$D/org.json"
+out=$(kapply "$D/org.json"); has ACCEPTED "$out" || why="$why; a dispatch for another repository was checked: $out"
+rm -rf "$D/.github"; node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));o.launcher.dispatch[0].workflow="never-added.yml";require("fs").writeFileSync(f,JSON.stringify(o))' "$D/org.json"
+out=$(kapply "$D/org.json"); has ACCEPTED "$out" || why="$why; an overlay in a folder without .github/workflows was checked: $out"
+if [ -z "$why" ]; then ok overlay-keys-validated; else fail overlay-keys-validated "$why"; fi
+
 # launcher-lanes-dashboard-owned: lanes, models, effort, the reviewer and the unassigned lanes are set on the launcher dashboard,
 # never in standards: an overlay carrying launcher.lanes, launcher.review or launcher.unassigned is refused with one plain message
 # (nothing written); an overlay without them, with no t3 lane and no review, passes (the example has none)
@@ -161,9 +220,11 @@ else fail launcher-body-budget-removed "exit=$st: $err"; fi
 # with the reason, before anything is written
 why=""
 for k in 'o.review={status:true}' 'Object.assign(o.org_admin ??= {}, {review_status:true})' 'o.codex={verdict:"status"}'; do
+  # org_admin.review_status is refused with org-apply's other removed settings (one message, shared with org-apply)
+  gone="is gone: gate checks code only"; case "$k" in *review_status*) gone="org_admin.review_status is gone (gate is the only required check and review threads must always be resolved)" ;; esac
   node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f,"utf8"));(new Function("o",process.argv[3]))(o);require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$T/legacy.json" "$k"
   d=$(mktemp -d "$T/r.XXXXXX"); git -C "$d" init -q -b main; out=$(OVERLAY="$T/legacy.json" apply "$d" 2>&1) && why="$why; [$k] accepted"
-  has "is gone: gate checks code only" "$out" && [ -z "$(ls -A "$d" | grep -v '^.git$')" ] || why="$why; [$k] $out"
+  has "$gone" "$out" && [ -z "$(ls -A "$d" | grep -v '^.git$')" ] || why="$why; [$k] $out"
 done
 if [ -z "$why" ]; then ok review-settings-removed; else fail review-settings-removed "$why"; fi
 
