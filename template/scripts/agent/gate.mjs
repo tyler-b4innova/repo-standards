@@ -501,7 +501,7 @@ if (cmd === "local") {
   output("rollback_base", rollbackBase || event.pull_request?.base?.sha || event.merge_group?.base_sha || pr?.base?.sha || "");
   output("browsers", "chromium");
 } else if (cmd === "syntax") {
-  // The cheap gate's stand-in for building: managed scripts and workflows must at least parse.
+  // Managed scripts and workflows must at least parse: the checks job runs this on every gated run.
   const bad = [], yaml = spawnSync("python3", ["-c", "import yaml"]).status === 0;
   if (!yaml) console.log("notice: python3 with PyYAML is not on this runner; workflows are not parsed here");
   for (const f of git("ls-files", "scripts/agent", ".github/workflows").split("\n").filter(Boolean)) {

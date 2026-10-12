@@ -82,7 +82,6 @@ jobs:
       - name: secrets
         run: node scripts/agent/gate.mjs secrets
       - name: syntax
-        if: steps.plan.outputs.mode == 'cheap'
         run: node scripts/agent/gate.mjs syntax
   # One test job for the full gate: one checkout, one install, then typecheck, build, the repo's checks and the
   # affected e2e, so the setup is paid (and billed) once.
