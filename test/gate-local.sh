@@ -230,6 +230,31 @@ realsum=$(tail -1 "$T/default.log")
 case "$realsum" in *'install=PASS; typecheck=PASS; build=PASS; gate.local.sh=PASS; worker=PASS; e2e=PASS'*) ;; *) sk_ok=0; echo "real-suite summary: $realsum" ;; esac
 if [ "$nw" -eq 0 ] && [ "$nsx" -eq 0 ] && [ "$sk_ok" -eq 1 ] && [ "$(cat "$rec" 2>/dev/null)" = "$(git -C "$N" rev-parse HEAD)" ]; then ok gate-local-skip-not-pass
 else fail gate-local-skip-not-pass "no-package.json run=$nw summary: $skipsum | package.json without scripts run=$nsx summary: $nssum"; fi
+# gate-local-trusts-checkout: hide the host's trusted HOME from children and disable a runner's system-wide trust.
+# The first run has no explicit global config, so the gate must supply trust itself; the second proves a caller's
+# named global config still reaches the stages. Both preserve command-scope config (for example a credential helper).
+# A build reaches the real rollback clone; a linked worktree needs its private git dir trusted as well.
+printf '{"name":"empty","private":true,"scripts":{"build":"node -e 0"}}\n' >"$N/package.json"
+OWN=$T/ownerhome; mkdir "$OWN"; printf '[safe]\n\tdirectory = *\n[gatetest]\n\tglobal = kept\n' >"$OWN/.gitconfig"
+cat >"$N/scripts/agent/gate.local.sh" <<'SH'
+#!/usr/bin/env bash
+[ "$(git config --get gatetest.marker)" = kept ] || { echo "caller git config entry lost"; exit 1; }
+if [ "${EXPECT_GLOBAL_CONFIG:-}" = 1 ]; then
+  [ "$(git config --get gatetest.global)" = kept ] || { echo "caller global git config lost"; exit 1; }
+fi
+git rev-parse --git-dir >/dev/null
+SH
+git -C "$N" add -A && git -C "$N" commit -qm "gate.local.sh reads the caller git config"
+scrubbed=$(env -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_COUNT -u XDG_CONFIG_HOME HOME="$T/scrubbed" GIT_CONFIG_NOSYSTEM=1 GIT_TEST_ASSUME_DIFFERENT_OWNER=1 git -C "$N" rev-parse --git-dir 2>&1)
+trust() { local name=$1 repo=$2; shift 2; (cd "$repo" && env -u GIT_CONFIG_GLOBAL -u XDG_CONFIG_HOME HOME="$OWN" USERPROFILE="$OWN" GIT_CONFIG_NOSYSTEM=1 GIT_TEST_ASSUME_DIFFERENT_OWNER=1 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=gatetest.marker GIT_CONFIG_VALUE_0=kept "$@" node scripts/agent/gate.mjs local --base main) >"$T/$name.log" 2>&1; }
+trust trust "$N"; tc=$?
+trust trust-global "$N" GIT_CONFIG_GLOBAL="$OWN/.gitconfig" EXPECT_GLOBAL_CONFIG=1; tg=$?
+L=$T/linked; git -C "$N" worktree add --detach -q "$L" HEAD
+trust trust-linked "$L"; tl=$?
+tsum=$(tail -1 "$T/trust.log"); gsum=$(tail -1 "$T/trust-global.log"); lsum=$(tail -1 "$T/trust-linked.log")
+case "$scrubbed" in *'dubious ownership'*) knob=1 ;; *) knob=0 ;; esac
+if [ "$knob" -eq 1 ] && [ "$tc" -eq 0 ] && [ "$tg" -eq 0 ] && [ "$tl" -eq 0 ] && has 'setup --check=PASS' trust && has 'build=PASS' trust && has 'gate.local.sh=PASS' trust-global && has 'build=PASS; gate.local.sh=PASS' trust-linked && ! has 'dubious ownership' trust && ! has 'dubious ownership' trust-linked; then ok gate-local-trusts-checkout
+else fail gate-local-trusts-checkout "scrubbed-home git (knob works: $knob): $scrubbed | exit=$tc summary: $tsum | caller global exit=$tg summary: $gsum | linked worktree exit=$tl summary: $lsum"; grep -m3 -i 'dubious\|caller.*git' "$T/trust.log" "$T/trust-global.log" "$T/trust-linked.log"; fi
 printf '\nLocal gate evidence (real Worker):\n'; tail -1 "$T/default.log"; tail -1 "$T/failing.log"; tail -1 "$T/optout.log"
 printf 'Local gate evidence (steps that ran nothing):\n'; echo "$skipsum"; echo "$nssum"
 done_cases
