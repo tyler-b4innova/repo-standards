@@ -2,8 +2,8 @@
 a0c77c6efd3cc4b30580c5338cecb407fe062c10c98e1468ea637937bbb0012e  .agents/skills/std-babysit/SKILL.md
 7b3f303cf40757fb9b4ad56f45d276255c261875bddfcf583ea418f90fc05c60  .agents/skills/std-evidence/SKILL.md
 f198214f0a63fe4bf8d24b178e5aa79819474180532048a67e8837a19d9014a4  .agents/skills/std-file-pr/SKILL.md
-6055019195b4ddf40bdfac4080df53bcbd2d6e336ba316d5c5762b834963384f  .agents/skills/std-implement/SKILL.md
-e02d698f6c0bbff613617c79f89cdcad864701c77ec922c4b141498173be6c0f  .agents/skills/std-issue/SKILL.md
+a483e4b55245ab6be0f99f37ca26b15d6ee24e5453b09ea6bac83f35095703c5  .agents/skills/std-implement/SKILL.md
+a31163dac434b8cb246d7878e34807e0d7ce4653fec81d60f1eec9824552b967  .agents/skills/std-issue/SKILL.md
 2e5914fef279b5645fe25e61dc87213967d1e9c638923927066bd7b3042f13a8  .codex/rules/std.rules
 d5c1db5cda8fddb1912f91c9976ce4a4a23cb538293ae984e3161264c7835236  .github/ISSUE_TEMPLATE/agent-task.md
 99499e30b5010b701e2af5883fce336685c093979f756ebde2b4dcc95db2ff84  .github/PULL_REQUEST_TEMPLATE.md
