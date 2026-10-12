@@ -417,4 +417,60 @@ git -C "$R" add -A; git -C "$R" commit -qm production; BASE=$(git -C "$R" rev-pa
 node -e 'const fs=require("fs"),f=process.argv[1],o=JSON.parse(fs.readFileSync(f));delete o.d1_databases;fs.writeFileSync(f,JSON.stringify(o))' "$R/wrangler.jsonc"
 out=$(check); [ "$?" -eq 1 ] && [[ "$out" == *'removed production binding d1_databases'* ]] || why="$why; root binding hidden by env.production: $out"
 if [ -z "$why" ]; then ok rollback-hazards; else fail rollback-hazards "$why"; fi
+
+# rollback-deleted-worker: a Worker deleted whole (its Wrangler config and every migration file of its D1 databases) that standards.json does not
+# declare was never released by the gate: one note names it and the check passes. A declared Worker (workers or release_workers in the base's
+# standards.json, or the root config, the primary Worker), a config that moved, a config left behind, a migration or a single binding removed
+# from a Worker that still exists all fail as before.
+why=""
+proto() { # a second Worker beside the primary: its config with a D1 database and a KV namespace, two migrations; and a KV-only Worker
+  mkdir -p "$R/proto/migrations" "$R/proto/src" "$R/solo/src"
+  echo 'export default {};' > "$R/proto/src/index.js"; echo 'export default {};' > "$R/solo/src/index.js"
+  echo '{"name":"proto","main":"src/index.js","d1_databases":[{"binding":"PDB","database_id":"proto-db"}],"kv_namespaces":[{"binding":"CACHE","id":"kv1"}]}' > "$R/proto/wrangler.jsonc"
+  echo '{"name":"solo","main":"src/index.js","kv_namespaces":[{"binding":"CACHE","id":"kv2"}]}' > "$R/solo/wrangler.jsonc"
+  echo 'CREATE TABLE notes (id INTEGER);' > "$R/proto/migrations/0001.sql"
+  echo 'ALTER TABLE notes ADD COLUMN body TEXT;' > "$R/proto/migrations/0002.sql"
+  git -C "$R" add -A; git -C "$R" commit -qm proto; BASE=$(git -C "$R" rev-parse HEAD)
+}
+declare_workers() { node -e 'const fs=require("fs"),f=process.argv[1],o=JSON.parse(fs.readFileSync(f));(new Function("o",process.argv[2]))(o);fs.writeFileSync(f,JSON.stringify(o,null,2))' "$R/standards.json" "$1"; git -C "$R" add -A; git -C "$R" commit -qm declare; BASE=$(git -C "$R" rev-parse HEAD); }
+expect() { # expect <exit> <needle> <label>: the real --check after `git add -A`
+  git -C "$R" add -A; out=$(check); rc=$?
+  { [ "$rc" -eq "$1" ] && [[ "$out" == *"$2"* ]]; } || why="$why; $3 (exit $rc, wanted $1 with '$2'): $out"
+}
+repo deleted-worker; proto
+rm -r "$R/proto" "$R/solo"
+expect 0 'NOTE: Worker proto deleted whole (proto/wrangler.jsonc, migrations proto/migrations); not declared in standards.json workers or release_workers' "undeclared Worker deleted whole"
+[[ "$out" == *'NOTE: Worker solo deleted whole (solo/wrangler.jsonc);'* && "$out" == *'rollback-safe ok'* ]] || why="$why; the note for a Worker without migrations, or rollback-safe ok, is missing: $out"
+repo declared-release-workers; proto
+declare_workers 'o.release_workers=["proto/wrangler.jsonc"]'
+rm -r "$R/proto"; node -e 'const fs=require("fs"),f=process.argv[1],o=JSON.parse(fs.readFileSync(f));delete o.release_workers;fs.writeFileSync(f,JSON.stringify(o,null,2))' "$R/standards.json"
+expect 1 'rollback: proto/wrangler.jsonc: Worker proto is deleted whole, but it is declared (standards.json release_workers), so the previous release still runs it; remove the declaration in an earlier change and release first' "release_workers Worker deleted whole"
+repo declared-workers; proto
+declare_workers 'o.workers=["proto", {"config":"solo/wrangler.jsonc"}]'
+rm -r "$R/proto" "$R/solo"; node -e 'const fs=require("fs"),f=process.argv[1],o=JSON.parse(fs.readFileSync(f));delete o.workers;fs.writeFileSync(f,JSON.stringify(o,null,2))' "$R/standards.json"
+expect 1 'Worker proto is deleted whole, but it is declared (standards.json workers)' "workers directory entry deleted whole"
+expect 1 'Worker solo is deleted whole, but it is declared (standards.json workers)' "workers config entry deleted whole"
+repo declared-root
+git -C "$R" rm -rq wrangler.jsonc db
+expect 1 'Worker app is deleted whole, but it is declared (the root Wrangler config, the primary Worker)' "root Worker deleted whole"
+repo config-left-behind; proto
+rm "$R/proto/wrangler.jsonc"
+expect 1 'removed production binding d1_databases PDB' "config deleted, migrations left"
+repo migration-removed; proto
+rm "$R/proto/migrations/0002.sql"
+expect 1 'historical D1 migration removed' "one migration removed from a Worker that still exists"
+repo binding-removed; proto
+node -e 'const fs=require("fs"),f=process.argv[1],o=JSON.parse(fs.readFileSync(f));delete o.kv_namespaces;fs.writeFileSync(f,JSON.stringify(o))' "$R/proto/wrangler.jsonc"
+node -e 'const fs=require("fs"),f=process.argv[1],o=JSON.parse(fs.readFileSync(f));delete o.kv_namespaces;fs.writeFileSync(f,JSON.stringify(o))' "$R/solo/wrangler.jsonc"
+expect 1 'proto/wrangler.jsonc: removed production binding kv_namespaces CACHE' "binding removed from a Worker with migrations"
+[[ "$out" == *'solo/wrangler.jsonc: removed production binding kv_namespaces CACHE'* && "$out" != *'deleted whole'* ]] || why="$why; a binding removed from a Worker without migrations: $out"
+repo renamed-worker; proto
+node -e 'const fs=require("fs"),f=process.argv[1],o=JSON.parse(fs.readFileSync(f));delete o.kv_namespaces;o.name="solo-renamed";fs.writeFileSync(f,JSON.stringify(o))' "$R/solo/wrangler.jsonc"
+expect 1 'solo/wrangler.jsonc: removed production binding kv_namespaces CACHE' "binding removed from a Worker renamed in place"
+[[ "$out" != *'deleted whole'* ]] || why="$why; a Worker renamed in place was called deleted: $out"
+repo moved-worker; proto
+git -C "$R" mv proto proto-new
+expect 1 'historical D1 migration removed' "Worker moved to another folder"
+[[ "$out" != *'deleted whole'* ]] || why="$why; a moved Worker was called deleted: $out"
+if [ -z "$why" ]; then ok rollback-deleted-worker; else fail rollback-deleted-worker "$why"; fi
 done_cases
