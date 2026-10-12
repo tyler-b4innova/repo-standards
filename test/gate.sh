@@ -148,13 +148,21 @@ if [ $bx -eq 0 ] && ! has "budget" "$bo" && has "e2e.budget is ignored" "$bc" &&
   && ! grep -q "gate_budget\|PW_GLOBAL_TIMEOUT\|-minute budget" "$ENGINE/template/scripts/agent/gate.mjs" "$ENGINE/defaults.json" "$ENGINE/lib/engine.mjs"
 then ok e2e-budget-removed; else fail e2e-budget-removed "run=$bx in $((t1 - t0))s: $bo | check: $bc | overlay=$gx: $gerr"; fi
 
-# draft-cheap-ready-full (syntax): the cheap gate's syntax pass fails a broken script and, without PyYAML, skips workflows
+# draft-cheap-ready-full (syntax): the syntax step runs on every gated run; it fails a broken script and, with a YAML parser, a broken
+# workflow file; without PyYAML it says so and skips workflows. The workflow case needs PyYAML on the machine: no skip is allowed under CI.
 R=$(mkrepo); sy1=$(cd "$R" && node scripts/agent/gate.mjs syntax 2>&1); sx1=$?
 YB=$T/noyaml-bin; mkpath "$YB"; shim "$YB" python3 'exit 1'
 sy2=$(cd "$R" && PATH="$YB" node scripts/agent/gate.mjs syntax 2>&1); sx2=$?
 printf 'if then\n' > "$R/scripts/agent/broken.sh" && git -C "$R" add scripts/agent/broken.sh; sy3=$(cd "$R" && node scripts/agent/gate.mjs syntax 2>&1); sx3=$?
-if [ $sx1 -eq 0 ] && [ $sx2 -eq 0 ] && has "PyYAML is not on this runner" "$sy2" && [ $sx3 -eq 1 ] && has "scripts/agent/broken.sh" "$sy3"; then ok draft-cheap-ready-full
-else fail draft-cheap-ready-full "clean=$sx1 noyaml=$sx2 broken=$sx3: $sy1 | $sy2 | $sy3"; fi
+haveyaml=0; python3 -c "import yaml" 2>/dev/null && haveyaml=1
+sx4=none sy4=""
+if [ $haveyaml -eq 1 ]; then
+  WR=$(mkrepo); printf 'on: [unclosed\n' > "$WR/.github/workflows/broken.yml" && git -C "$WR" add .github/workflows/broken.yml; sy4=$(cd "$WR" && node scripts/agent/gate.mjs syntax 2>&1); sx4=$?
+fi
+scripts_ok=0; [ $sx1 -eq 0 ] && has "syntax: scripts and workflows parse" "$sy1" && [ $sx2 -eq 0 ] && has "PyYAML is not on this runner" "$sy2" && [ $sx3 -eq 1 ] && has "scripts/agent/broken.sh" "$sy3" && scripts_ok=1
+if [ $scripts_ok -eq 1 ] && [ $haveyaml -eq 0 ]; then echo "skip draft-cheap-ready-full (python3 has no PyYAML here, so the broken-workflow case did not run)"
+elif [ $scripts_ok -eq 1 ] && [ "$sx4" = 1 ] && has ".github/workflows/broken.yml" "$sy4"; then ok draft-cheap-ready-full
+else fail draft-cheap-ready-full "clean=$sx1 noyaml=$sx2 broken=$sx3 workflow=$sx4: $sy1 | $sy2 | $sy3 | $sy4"; fi
 
 # ---- the rendered workflow
 R=$(mkrepo)
