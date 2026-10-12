@@ -121,13 +121,16 @@ else {
     if (eo && e.budget !== undefined) warn("standards.json e2e.budget is ignored: the e2e suite has no time budget | fix: remove it");
     if (std.affected !== undefined && typeof std.affected !== "boolean") fail(`standards.json affected is ${JSON.stringify(std.affected)}`, 'use false (the whole e2e suite on every pull request), or omit it');
     if (!e2eOk) fail(`standards.json e2e is ${JSON.stringify(e)}`, 'use false (docs/static only), the e2e command, or {"command", "browsers" (extra, run on main against staging_url), "preview": false}');
-    if (std.deploy_workflow !== undefined && !(typeof std.deploy_workflow === "string" && /^[\w.-]+\.ya?ml$/.test(std.deploy_workflow)))
-      fail(`standards.json deploy_workflow is ${JSON.stringify(std.deploy_workflow)}`, "name the one deploy workflow file, e.g. deploy.yml"); 
+    // Removed per-repo exceptions: every repository is held to the same rules, so a leftover key only says what replaced it.
+    for (const [k, instead] of [
+      ["nested_instructions", "no AGENTS.md or CLAUDE.md is allowed below the root; its rules go in the root AGENTS.md or the org overlay"],
+      ["allow_paths", "a .mcp.json at the top of a plugin folder (beside its .claude-plugin or .codex-plugin) passes by kind; any other still fails"],
+      ["duplicate_check_exceptions", "no repository workflow runs on a pull request or a branch push beside gate; its checks go in scripts/agent/gate.local.sh"],
+      ["deploy_workflow", "no repository workflow runs on a branch push; a deploy runs in Workers Builds (scripts/agent/release.mjs), or on a tag push or a manual run"],
+    ]) if (std[k] !== undefined) warn(`standards.json ${k} was removed: ${instead} | fix: remove it`);
     if (std.flow !== "staged") one("flow", [undefined, "direct"]);
     else fail('standards.json flow "staged" is retired (one branch: main; a merge deploys staging and uploads the production version)',
       "merge staging into main, make main the default branch, delete staging, give Workers Builds' main trigger the one-branch release command, then remove flow"); one("design_signoff", [undefined, true, false]);
-    if (std.allow_paths !== undefined && !(Array.isArray(std.allow_paths) && std.allow_paths.every((g) => typeof g === "string" && g.trim())))
-      fail(`standards.json allow_paths is ${JSON.stringify(std.allow_paths)}`, 'a list of globs, e.g. ["plugins/*/.mcp.json"]');
     if (!/^\d+\.\d+\.\d+$/.test(std.version ?? "")) fail("standards.json version is not X.Y.Z", restore("standards.json"));
     const globs = (v) => v === undefined || (Array.isArray(v) && v.every((g) => typeof g === "string"));
     const ui = std.ui_paths;
@@ -212,64 +215,34 @@ else {
     fail(".codex/config.toml engine keys changed", restore(".codex/config.toml"));
 
   // Forbidden paths and content
-  // standards.json allow_paths: repo-owned globs for shipped content that looks like agent config (a plugin's .mcp.json);
-  // they exempt the .mcp.json and forbidden-path checks only.
-  // standards.json nested_instructions: [{path, reason}], the only AGENTS.md / CLAUDE.md files allowed below the root.
-  const nested = new Set(), declaredNested = std?.nested_instructions;
-  if (declaredNested !== undefined) {
-    if (!Array.isArray(declaredNested)) fail("standards.json nested_instructions must be a list", "use [{path, reason}] or remove it");
-    else for (const e of declaredNested) {
-      if (!(e && typeof e === "object" && Object.keys(e).sort().join(",") === "path,reason" && typeof e.path === "string" && typeof e.reason === "string" && e.reason.trim())) {
-        fail("standards.json nested_instructions has an invalid entry", "each entry is {path, reason} with a nonempty reason"); continue;
-      }
-      const base = e.path.split("/").pop();
-      if (!["AGENTS.md", "CLAUDE.md"].includes(base) || e.path === base) fail(`nested_instructions: ${e.path} is not an AGENTS.md or CLAUDE.md below the root`, "declare only nested AGENTS.md or CLAUDE.md files");
-      else if (!tracked.includes(e.path)) fail(`nested_instructions names ${e.path}, which is not tracked`, "remove the stale entry");
-      else nested.add(e.path);
-    }
-  }
-  const allowed = (Array.isArray(std?.allow_paths) ? std.allow_paths.filter((g) => typeof g === "string" && g.trim()) : []).map(glob);
+  // A plugin folder is a folder below the root holding .claude-plugin/plugin.json or .codex-plugin/plugin.json. The .mcp.json
+  // at its top level is the plugin's own content, not this repository's MCP configuration; every other rule applies inside it.
+  const plugins = new Set(tracked.map((f) => f.match(/^(.+)\/\.(claude|codex)-plugin\/plugin\.json$/)?.[1]).filter(Boolean));
   for (const f of tracked) {
-    const name = f.split("/").pop(), dirs = f.split("/").slice(0, -1).map((d) => d.toLowerCase()), ok = allowed.some((r) => r.test(f));
+    const name = f.split("/").pop(), dirs = f.split("/").slice(0, -1).map((d) => d.toLowerCase());
     if (name === "CONTEXT.md") fail(`CONTEXT.md is forbidden: ${f}`, `git rm ${f}   (rules go in AGENTS.md)`);
-    if (["AGENTS.md", "CLAUDE.md"].includes(name) && f !== name && !nested.has(f))
-      fail(`undeclared nested instruction file: ${f}`, `fold it into the root AGENTS.md and git rm ${f}, or declare it in standards.json nested_instructions as {"path": "${f}", "reason": "<the subdirectory's own rule>"}`);
-    if (name === ".mcp.json" && !ok) fail(`${f} is committed`, `git rm --cached ${f} && echo .mcp.json >> .gitignore`);
+    if (["AGENTS.md", "CLAUDE.md"].includes(name) && f !== name)
+      fail(`nested instruction file: ${f}`, `move its rules into the root AGENTS.md or the org overlay, then git rm ${f}`);
+    if (name === ".mcp.json" && !plugins.has(dirname(f))) fail(`${f} is committed`, `git rm --cached ${f} && echo .mcp.json >> .gitignore`);
     if (f.startsWith(".evidence/")) fail(`.evidence/ is tracked (${f})`, "git rm -r .evidence   (pr.sh evidence removes it after posting)");
     if ((/\.(md|markdown)$/i.test(name) && dirs.some((d) => pack.decision_dirs.includes(d))) || /^ADR-.*\.md$/i.test(name) || pack.decision_record_globs.some((g) => glob(g).test(f)))
       fail(`decision record tracked: ${f}`, `git rm ${f}   (decisions are not recorded; they must be evident in the work)`);
-    if (!ok) for (const g of pack.forbid_paths) if (glob(g).test(f)) fail(`${f} matches the org's forbidden path ${g}`, `git rm -r --cached ${f}`);
+    for (const g of pack.forbid_paths) if (glob(g).test(f)) fail(`${f} matches the org's forbidden path ${g}`, `git rm -r --cached ${f}`);
   }
-  // CI: one gate per head. Every job has a timeout; repo workflows neither test on pull requests nor re-test pushes to
-  // the default or integration branch (checks go in scripts/agent/gate.local.sh); no schedule runs more than daily;
-  // Playwright installs name their browsers. A line-level reading of the block YAML workflows use.
-  const exceptions = new Set(), declared = std?.duplicate_check_exceptions;
-  if (declared !== undefined) {
-    if (!Array.isArray(declared)) fail("standards.json duplicate_check_exceptions must be a list", "use [{path, sha256, reason}] or remove it");
-    else for (const e of declared) {
-      const valid = e && typeof e === "object" && !Array.isArray(e) &&
-        Object.keys(e).sort().join(",") === "path,reason,sha256" &&
-        typeof e.path === "string" && /^\.github\/workflows\/[A-Za-z0-9._-]+\.ya?ml$/.test(e.path) &&
-        typeof e.sha256 === "string" && /^[0-9a-f]{64}$/.test(e.sha256) &&
-        typeof e.reason === "string" && e.reason.trim();
-      if (!valid) { fail("standards.json duplicate_check_exceptions has an invalid entry", "name one workflow path, its lowercase SHA256, and a nonempty reason"); continue; }
-      if (exceptions.has(e.path)) { fail(`duplicate_check_exceptions repeats ${e.path}`, "keep one pinned entry per workflow"); continue; }
-      if (!tracked.includes(e.path)) { fail(`duplicate_check_exceptions names missing workflow ${e.path}`, "track the exact workflow, or remove the exception"); continue; }
-      if (sha(readFileSync(e.path)) !== e.sha256) { fail(`duplicate_check_exceptions SHA256 mismatch for ${e.path}`, "update the reviewed hash and reason for this workflow revision, or remove the exception"); continue; }
-      exceptions.add(e.path);
-    }
-  }
-  const deploy = std?.deploy_workflow;
+  // CI: one gate per head. Every job has a timeout; a repo workflow never runs on a pull request or a branch push, whatever
+  // its steps say (checks go in scripts/agent/gate.local.sh); no schedule runs more than daily; Playwright installs name
+  // their browsers. A line-level reading of the block YAML workflows use.
   for (const f of tracked.filter((f) => /^\.github\/workflows\/[^/]+\.ya?ml$/.test(f))) {
     const text = read(f) ?? "", L = text.split("\n"), name = f.split("/").pop(), managed = /^std-/.test(name);
-    const onAt = L.findIndex((l) => /^["']?on["']?:/.test(l)), inline = onAt >= 0 ? L[onAt].replace(/^["']?on["']?:\s*/, "").trim() : "";
+    const onAt = L.findIndex((l) => /^["']?on["']?:/.test(l)), inline = onAt >= 0 ? L[onAt].replace(/^["']?on["']?:\s*/, "").replace(/(^|\s)#.*$/, "").trim() : "";
     const block = (at, indent) => { const b = []; for (let i = at + 1; i < L.length && (L[i].trim() === "" || L[i].search(/\S/) > indent || L[i].trim().startsWith("#")); i++) b.push(L[i]); return b; };
     const onBlock = onAt >= 0 ? block(onAt, 0) : [];
     const triggers = inline ? inline.replace(/[[\]{}]/g, "").split(",").map((t) => t.trim().split(":")[0]).filter(Boolean)
       : onBlock.filter((l) => /^ {2}[a-z_]+:/.test(l)).map((l) => l.trim().split(":")[0]);
-    const pushAt = onBlock.findIndex((l) => /^ {2}push:/.test(l)), push = pushAt >= 0 ? block(onAt + 1 + pushAt, 2).map((l) => l.trim()).join(" ") : "";
-    const pushBranches = /branches:/.test(push) ? push.replace(/.*branches:\s*/, "").split(/tags:|paths:|branches-ignore:|paths-ignore:/)[0].match(/[\w./*-]+/g) ?? [] : null;
-    const integrationPush = triggers.includes("push") && (pushBranches === null ? !/tags:/.test(push) : pushBranches.some((b) => ["main", "master", "staging", "develop", "*", "**"].includes(b)));
+    // GitHub runs a push trigger on branch pushes unless its filters name tags only (tags or tags-ignore, no branches or branches-ignore).
+    const pushAt = onBlock.findIndex((l) => /^ {2}push:/.test(l));
+    const push = inline || (pushAt >= 0 ? [onBlock[pushAt].replace(/^ {2}push:/, ""), ...block(onAt + 1 + pushAt, 2)].map((l) => l.trim()).join(" ") : "");
+    const branchPush = triggers.includes("push") && (/\bbranches(-ignore)?:/.test(push) || !/\btags(-ignore)?:/.test(push));
     const crons = [...text.matchAll(/cron:\s*["']([^"']+)["']/g)].map((m) => m[1].trim());
     if (crons.length > 1 || crons.some((c) => !/^\d+\s+\d+\s/.test(c)))
       fail(`${f} is scheduled more often than daily (${crons.join("; ")})`, "one daily or rarer cron; polling and monitoring belong in Workers Cron Triggers");
@@ -287,11 +260,12 @@ else {
     const runs = jobs.flatMap((j) => j.body).filter((l) => !/^\s*(-\s*)?(name|uses|id|if):/.test(l)).join("\n");
     if (/playwright install\b(?![^\n;&|]*\b(chromium|chrome|firefox|webkit|msedge)\b)/.test(runs))
       fail(`${f} runs playwright install without naming a browser (it downloads all of them)`, "name the browser: playwright install --with-deps chromium");
-    const checks = /\b(tests?|e2e|lint|typecheck|tsc|vitest|jest|playwright|eslint|biome|gate|check)\b/i, builds = /\bbuild\b/i;
-    // `managed` (std-*, hash-locked) is the exception: std-release-check.yml is the one workflow that tests on push to main.
-    if (!managed && !exceptions.has(f) && (triggers.some((t) => ["pull_request", "pull_request_target"].includes(t)) || (integrationPush && name !== deploy)) && (checks.test(runs) || (name !== deploy && integrationPush && builds.test(runs))))
-      fail(`${f} runs checks on ${triggers.filter((t) => ["pull_request", "pull_request_target", "push"].includes(t)).join(" and ")}, beside the one gate`, "move them into scripts/agent/gate.local.sh and delete the workflow (a deploy workflow on push is declared as standards.json deploy_workflow and does not test)");
-    if (!managed && name === deploy && checks.test(runs)) fail(`${f} is the declared deploy workflow but runs checks`, "gate tests; the deploy workflow only builds and deploys");
+    // The trigger alone decides, never the words in its steps or the name of its branch. `managed` (std-*, hash-locked) keeps
+    // its exemption: std-gate.yml is the one gate.
+    const prs = triggers.filter((t) => ["pull_request", "pull_request_target"].includes(t));
+    if (!managed && (prs.length || branchPush))
+      fail(`${f} runs on ${[...prs, ...(branchPush ? ["a branch push"] : [])].join(" and ")}, beside the one gate`,
+        "move its checks into scripts/agent/gate.local.sh and delete it; a deploy runs in Workers Builds (scripts/agent/release.mjs), or on a tag push or a manual run");
   }
   const scripts = Object.values(json("package.json")?.scripts ?? {}).join("\n") + "\n" + (read("scripts/agent/gate.local.sh") ?? "");
   if (/playwright install\b(?![^\n;&|]*\b(chromium|chrome|firefox|webkit|msedge)\b)/.test(scripts))

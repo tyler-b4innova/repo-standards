@@ -92,19 +92,24 @@ has "-scripts/agent/ledger-recall" "$out" || why="$why; removal not reported: $o
 commit "$R" >/dev/null; c=$(check "$R") || why="$why; check after removal: $c"
 if [ -z "$why" ]; then ok orphan-recall-removed; else fail orphan-recall-removed "$why"; fi
 
-# standards.json allow_paths exempts shipped content (a plugin's .mcp.json) and nothing else; re-apply keeps it
+# a plugin folder (below the root, holding .claude-plugin/plugin.json or .codex-plugin/plugin.json) ships its own .mcp.json at
+# its top level: the .mcp.json rule skips it by kind, with nothing declared in standards.json
 why=""
-R=$(mkrepo); mkdir -p "$R/plugins/clerk" && echo '{}' > "$R/plugins/clerk/.mcp.json" && commit "$R"
-out=$(check "$R") && why="tracked plugin .mcp.json passed without allow_paths"
-jset "$R/standards.json" 'o.allow_paths=["plugins/*/.mcp.json"]'; commit "$R"
-out=$(check "$R") || why="$why; allowed path still failed: $out"
-apply "$R" >/dev/null; [ "$(node -p 'JSON.stringify(require(process.argv[1]).allow_paths)' "$R/standards.json")" = '["plugins/*/.mcp.json"]' ] || why="$why; re-apply dropped allow_paths"
-echo '{}' > "$R/.mcp.json" && commit "$R"; out=$(check "$R") && why="$why; root .mcp.json passed"
-has ".mcp.json is committed" "$out" || why="$why; root message: $out"
-git -C "$R" rm -q --cached .mcp.json && rm "$R/.mcp.json" && jset "$R/standards.json" 'o.allow_paths="plugins"'; commit "$R"
-out=$(check "$R") && why="$why; a non-list allow_paths passed"
-has "standards.json allow_paths is" "$out" || why="$why; non-list message: $out"
-if [ -z "$why" ]; then ok repo-allow-paths; else fail repo-allow-paths "$why"; fi
+R=$(mkrepo); for p in claude codex; do mkdir -p "$R/plugins/$p-kit/.$p-plugin" && echo '{}' >"$R/plugins/$p-kit/.$p-plugin/plugin.json" && echo '{}' >"$R/plugins/$p-kit/.mcp.json"; done
+commit "$R"; out=$(check "$R") || why="a plugin folder's own .mcp.json failed: $out"
+if [ -z "$why" ]; then ok plugin-mcp-json; else fail plugin-mcp-json "$why"; fi
+# any other .mcp.json still fails (no manifest beside it, below a plugin's top level, at the root even beside a root manifest),
+# and the org's forbidden paths still apply inside a plugin folder
+why=""
+FP=$T/forbid-paths.json; node -e 'const o=require(process.argv[1]);o.forbid_paths=["**/scratch.md"];require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$FP"
+R=$(OVERLAY=$FP mkrepo); mkdir -p "$R/plugins/clerk" "$R/plugins/kit/.claude-plugin" "$R/plugins/kit/servers" "$R/.claude-plugin"
+echo '{}' >"$R/plugins/clerk/.mcp.json"; echo '{}' >"$R/plugins/kit/.claude-plugin/plugin.json"; echo '{}' >"$R/plugins/kit/servers/.mcp.json"
+echo '{}' >"$R/.claude-plugin/plugin.json"; echo '{}' >"$R/.mcp.json"; echo "x" >"$R/plugins/kit/scratch.md"; commit "$R"
+out=$(check "$R"); st=$?
+[ $st -eq 1 ] || why="exit $st"
+for f in plugins/clerk/.mcp.json plugins/kit/servers/.mcp.json .mcp.json; do has "FAIL: $f is committed" "$out" || why="$why; $f passed"; done
+has "plugins/kit/scratch.md matches the org's forbidden path" "$out" || why="$why; a forbidden path inside a plugin folder passed"
+if [ -z "$why" ]; then ok plugin-mcp-json; else fail plugin-mcp-json "$why: $out"; fi
 
 # overlay-launcher-validated: the example's launcher settings load; typos, bad schedules and
 # credential-looking values are refused before anything is written
@@ -173,7 +178,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - run: npm ci && npm test'; out=$(cr "$R") && why="$why; a PR test workflow passed"; has "validate.yml runs checks on pull_request" "$out" || why="$why; [$out]"
+      - run: npm ci && npm test'; out=$(cr "$R") && why="$why; a PR test workflow passed"; has "validate.yml runs" "$out" && has "pull_request, beside the one gate" "$out" || why="$why; [$out]"
 R=$(mkrepo); wf "$R" gates.yml 'on:
   pull_request:
     paths: ["plugins/**"]
@@ -205,9 +210,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: npm ci && npm run build && npx wrangler deploy'
-R=$(mkrepo); wf "$R" deploy.yml "$DEPLOY"; out=$(cr "$R") && why="$why; an undeclared build-on-push passed"
-jset "$R/standards.json" 'o.deploy_workflow="deploy.yml"'; out=$(cr "$R") || why="$why; the declared deploy workflow failed: $out"
-wf "$R" nightly.yml 'on:
+R=$(mkrepo); wf "$R" deploy.yml "$DEPLOY"; out=$(cr "$R") && why="$why; a build-and-deploy on push to main passed"
+# a schedule, a manual run or a tag push alone passes, whatever its steps say; its other rules still apply
+R=$(mkrepo); wf "$R" nightly.yml 'on:
   schedule:
     - cron: "17 4 * * 1"
   workflow_dispatch:
@@ -216,9 +221,54 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - run: echo weekly'; out=$(cr "$R") || why="$why; a weekly schedule failed: $out"
+      - run: echo weekly'
+wf "$R" manual.yml 'on: workflow_dispatch
+jobs:
+  once:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: echo check done'
+wf "$R" publish.yml 'on:
+  push:
+    tags: ["v*"]
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - run: npm ci && npm run build && npm publish'; out=$(cr "$R") || why="$why; a weekly, manual or tag-push workflow failed: $out"
+wf "$R" manual.yml 'on: workflow_dispatch
+jobs:
+  once:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: npx playwright install && npm test'; out=$(cr "$R") && why="$why; a manual workflow with no timeout and a bare playwright install passed"
+has "manual.yml job once has no timeout-minutes" "$out" && has "playwright install without naming a browser" "$out" || why="$why; manual-run guardrails: $out"
+if [ -z "$why" ]; then ok no-duplicate-gate-workflows; else fail no-duplicate-gate-workflows "$why"; fi
+# the trigger alone decides: a pull request or a push to a branch of any name fails, whatever words its steps use; a tag push
+# passes however its trigger is written, and a comment after `on:` hides nothing
+why=""
+R=$(mkrepo); i=0
+for step in "python -m pytest" "python -m unittest" "cargo nextest run" "go vet ./..."; do i=$((i + 1)); wf "$R" "pr$i.yml" "on:
+  pull_request:
+jobs:
+  t:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - run: $step"; done
+wf "$R" branch.yml 'on:
+  push:
+    branches: ["feat/example"]
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - run: npm test'
 # a push trigger limited to other branches is read where it stands, even when `on:` is not the first line
-R=$(mkrepo); wf "$R" release.yml 'name: release checks
+wf "$R" release.yml 'name: release checks
 on:
   push:
     branches: ["release/**"]
@@ -227,11 +277,41 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - run: npm ci && npm test'; out=$(cr "$R") || why="$why; a push-to-release test workflow was rejected: $out"
-if [ -z "$why" ]; then ok no-duplicate-gate-workflows; else fail no-duplicate-gate-workflows "$why"; fi
-# A named duplicate check can stay only while its reviewed bytes and rationale match. Other workflow rules still apply.
+      - run: npm ci && npm test'
+wf "$R" lint.yml 'on: # yamllint disable-line rule:truthy
+  pull_request:
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - run: npm run lint'
+out=$(cr "$R"); st=$?
+[ $st -eq 1 ] || why="exit $st"
+for f in pr1 pr2 pr3 pr4 branch release lint; do has ".github/workflows/$f.yml runs on" "$out" || why="$why; $f.yml passed"; done
+R=$(mkrepo); wf "$R" publish.yml 'on: { push: { tags: ["v*"] } }
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - run: npm ci && npm run build && npm publish'; out=$(cr "$R") || why="$why; an inline tag-push workflow failed: $out"
+if [ -z "$why" ]; then ok no-duplicate-gate-workflows; else fail no-duplicate-gate-workflows "$why: $out"; fi
+# the removed per-repo exception keys: a leftover one warns once, saying what replaced it, and is never validated
 why=""
-R=$(mkrepo); wf "$R" validate.yml 'on:
+R=$(mkrepo)
+jset "$R/standards.json" 'o.nested_instructions="apps"; o.allow_paths="plugins"; o.duplicate_check_exceptions=[{path:".github/workflows/validate.yml",sha256:"bad",reason:" "}]; o.deploy_workflow="not a workflow"'
+out=$(cr "$R"); st=$?
+[ $st -eq 0 ] || why="exit $st"
+for k in nested_instructions allow_paths duplicate_check_exceptions deploy_workflow; do
+  [ "$(printf '%s\n' "$out" | grep -c "^WARN: standards.json $k was removed: .* | fix: remove it$")" = 1 ] || why="$why; $k: not one warning"
+done
+if [ -z "$why" ]; then ok exception-keys-removed; else fail exception-keys-removed "$why: $out"; fi
+# none of them lets anything through: a declared nested file, an allowed .mcp.json, a pinned duplicate workflow and a declared
+# deploy workflow on push each fail
+why=""
+R=$(mkrepo); mkdir -p "$R/apps/web" "$R/plugins/clerk"; echo "- web rule" >"$R/apps/web/AGENTS.md"; echo '{}' >"$R/plugins/clerk/.mcp.json"
+wf "$R" validate.yml 'on:
   pull_request:
 jobs:
   validate:
@@ -239,27 +319,15 @@ jobs:
     timeout-minutes: 10
     steps:
       - run: npm test'
-out=$(cr "$R") && why="$why; an unexcepted PR check passed"
-has "validate.yml runs checks on pull_request" "$out" || why="$why; no-exception message: $out"
-pin_exception() { node -e 'const fs=require("fs"),c=require("crypto"),s=process.argv[1],w=process.argv[2],o=JSON.parse(fs.readFileSync(s));o.duplicate_check_exceptions=[{path:".github/workflows/validate.yml",sha256:c.createHash("sha256").update(fs.readFileSync(w)).digest("hex"),reason:"Preview artifacts consumed by protected publish"}];fs.writeFileSync(s,JSON.stringify(o,null,2)+"\n")' "$R/standards.json" "$R/.github/workflows/validate.yml"; }
-pin_exception; out=$(cr "$R") || why="$why; valid pinned exception failed: $out"
-apply "$R" >/dev/null; [ "$(node -p 'require(process.argv[1]).duplicate_check_exceptions?.length' "$R/standards.json")" = 1 ] || why="$why; apply dropped exception"
-jset "$R/standards.json" 'o.duplicate_check_exceptions=[{path:".github/workflows/validate.yml",sha256:"bad",reason:" "}]'; out=$(cr "$R") && why="$why; malformed exception passed"
-has "duplicate_check_exceptions has an invalid entry" "$out" || why="$why; malformed message: $out"
-pin_exception; echo '# changed' >> "$R/.github/workflows/validate.yml"; out=$(cr "$R") && why="$why; hash mismatch passed"
-has "duplicate_check_exceptions SHA256 mismatch" "$out" || why="$why; mismatch message: $out"
-wf "$R" validate.yml 'on:
-  pull_request:
-  schedule:
-    - cron: "*/10 * * * *"
-jobs:
-  validate:
-    runs-on: ubuntu-24.04
-    steps:
-      - run: npx playwright install && npm test'
-pin_exception; out=$(cr "$R") && why="$why; pinned exception bypassed other workflow rules"
-has "scheduled more often than daily" "$out" && has "has no timeout-minutes" "$out" && has "playwright install without naming a browser" "$out" || why="$why; guardrail message: $out"
-if [ -z "$why" ]; then ok duplicate-check-exception-pinned; else fail duplicate-check-exception-pinned "$why"; fi
+wf "$R" deploy.yml "$DEPLOY"
+node -e 'const fs=require("fs"),c=require("crypto"),[s,w]=process.argv.slice(1),o=JSON.parse(fs.readFileSync(s));
+o.nested_instructions=[{path:"apps/web/AGENTS.md",reason:"the web app deploys separately"}];o.allow_paths=["plugins/*/.mcp.json"];o.deploy_workflow="deploy.yml";
+o.duplicate_check_exceptions=[{path:".github/workflows/validate.yml",sha256:c.createHash("sha256").update(fs.readFileSync(w)).digest("hex"),reason:"artifacts consumed by a protected publish"}];
+fs.writeFileSync(s,JSON.stringify(o,null,2)+"\n")' "$R/standards.json" "$R/.github/workflows/validate.yml"
+out=$(cr "$R"); st=$?
+[ $st -eq 1 ] || why="exit $st"
+for n in "nested instruction file: apps/web/AGENTS.md" "plugins/clerk/.mcp.json is committed" ".github/workflows/validate.yml runs" ".github/workflows/deploy.yml runs"; do has "$n" "$out" || why="$why; [$n] passed"; done
+if [ -z "$why" ]; then ok exception-keys-removed; else fail exception-keys-removed "$why: $out"; fi
 why=""
 R=$(mkrepo); wf "$R" manual.yml 'on: workflow_dispatch
 jobs:
@@ -318,26 +386,27 @@ done
 R=$(mkrepo); mkdir -p "$R/docs/guide" && echo "We chose X." > "$R/docs/guide/setup.md" && git -C "$R" add docs; check "$R" >/dev/null || all=0
 if [ $all = 1 ]; then ok no-decision-records-in-tree; else fail no-decision-records-in-tree; fi
 
-# instruction files at any depth: CONTEXT.md fails anywhere; a nested AGENTS.md or CLAUDE.md only with a declared reason
+# instruction files at any depth: CONTEXT.md fails anywhere, and so does an AGENTS.md or CLAUDE.md anywhere but the root
 why=""
 for f in CONTEXT.md docs/CONTEXT.md apps/web/CONTEXT.md; do
   R=$(mkrepo); mkdir -p "$R/$(dirname "$f")" && echo "Glossary." > "$R/$f" && git -C "$R" add "$f"
   out=$(check "$R"); [ $? -eq 1 ] && has "CONTEXT.md is forbidden: $f" "$out" || why="$why; $f: $out"
 done
-R=$(mkrepo); mkdir -p "$R/apps/web" "$R/.claude" "$R/workers/api"
+R=$(mkrepo); mkdir -p "$R/apps/web" "$R/.claude"
 echo "- web rule" > "$R/apps/web/AGENTS.md"; echo "@AGENTS.md" > "$R/apps/web/CLAUDE.md"; echo "Rules." > "$R/.claude/CLAUDE.md"; git -C "$R" add -f .claude/CLAUDE.md; commit "$R"
 out=$(check "$R"); st=$?
-for f in apps/web/AGENTS.md apps/web/CLAUDE.md .claude/CLAUDE.md; do has "undeclared nested instruction file: $f" "$out" || why="$why; $f not named"; done
-[ $st -eq 1 ] || why="$why; undeclared passed"
+for f in apps/web/AGENTS.md apps/web/CLAUDE.md .claude/CLAUDE.md; do has "nested instruction file: $f" "$out" || why="$why; $f not named"; done
+[ $st -eq 1 ] || why="$why; nested files passed"
+if [ -z "$why" ]; then ok instruction-files-any-depth; else fail instruction-files-any-depth "$why"; fi
+# with no way to declare one: a nested file listed in standards.json nested_instructions still fails, and its fix moves the rules
+why=""
 git -C "$R" rm -q .claude/CLAUDE.md
 jset "$R/standards.json" 'o.nested_instructions=[{path:"apps/web/AGENTS.md",reason:"the web app deploys separately"},{path:"apps/web/CLAUDE.md",reason:"imports it for Claude"}]'; commit "$R"
-out=$(check "$R") || why="$why; declared failed: $out"
-apply "$R" >/dev/null; [ "$(node -p 'require(process.argv[1]).nested_instructions.length' "$R/standards.json")" = 2 ] || why="$why; re-apply dropped nested_instructions"
-gc -C "$R" checkout -q -- standards.json
-jset "$R/standards.json" 'o.nested_instructions.push({path:"workers/api/AGENTS.md",reason:"gone"},{path:"apps/web/README.md",reason:"not one"},{path:"apps/web/AGENTS.md",reason:" "})'; commit "$R"
 out=$(check "$R"); st=$?
-[ $st -eq 1 ] && has "nested_instructions names workers/api/AGENTS.md, which is not tracked" "$out" && has "apps/web/README.md is not an AGENTS.md or CLAUDE.md" "$out" && has "nested_instructions has an invalid entry" "$out" || why="$why; bad declarations: $out"
-if [ -z "$why" ]; then ok instruction-files-any-depth; else fail instruction-files-any-depth "$why"; fi
+[ $st -eq 1 ] && has "nested instruction file: apps/web/AGENTS.md" "$out" && has "nested instruction file: apps/web/CLAUDE.md" "$out" || why="declared nested files passed"
+printf '%s\n' "$out" | grep 'nested instruction file' | grep -qE 'declare|nested_instructions' && why="$why; the fix still offers a declaration"
+has "move its rules into the root AGENTS.md or the org overlay, then git rm apps/web/AGENTS.md" "$out" || why="$why; the fix does not move the rules"
+if [ -z "$why" ]; then ok instruction-files-any-depth; else fail instruction-files-any-depth "$why: $out"; fi
 
 # a CLAUDE.md above the repository (up to $HOME) makes Claude skip AGENTS.md: a warning, never a failure
 H=$T/home; R=$H/work/site; mkdir -p "$R" "$H/.claude" && git -C "$R" init -q -b main && apply "$R" >/dev/null && commit "$R" init
