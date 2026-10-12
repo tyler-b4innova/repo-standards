@@ -241,7 +241,7 @@ else {
       : onBlock.map((l) => l.match(/^ {2}(?:- )?([a-z_]+)(?::|\s*(?:#.*)?$)/)?.[1]).filter(Boolean); // a key, or a sequence item
     // GitHub runs a push trigger on branch pushes unless its filters name tags only (tags or tags-ignore, no branches or branches-ignore).
     const pushAt = onBlock.findIndex((l) => /^ {2}push:/.test(l));
-    const push = inline || (pushAt >= 0 ? [onBlock[pushAt].replace(/^ {2}push:/, ""), ...block(onAt + 1 + pushAt, 2)].map((l) => l.trim()).join(" ") : "");
+    const push = inline || (pushAt >= 0 ? [onBlock[pushAt].replace(/^ {2}push:/, ""), ...block(onAt + 1 + pushAt, 2)].map((l) => l.replace(/(^|\s)#.*$/, "").trim()).join(" ") : "");
     const branchPush = triggers.includes("push") && (/\bbranches(-ignore)?:/.test(push) || !/\btags(-ignore)?:/.test(push));
     const crons = [...text.matchAll(/cron:\s*["']([^"']+)["']/g)].map((m) => m[1].trim());
     if (crons.length > 1 || crons.some((c) => !/^\d+\s+\d+\s/.test(c)))

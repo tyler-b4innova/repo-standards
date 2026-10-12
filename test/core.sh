@@ -278,6 +278,17 @@ jobs:
     timeout-minutes: 10
     steps:
       - run: npm ci && npm test'
+# a tags filter beside a real branches line still runs on branch pushes
+wf "$R" tagged.yml 'on:
+  push:
+    tags: ["v*"]
+    branches: [main]
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - run: npm test'
 wf "$R" lint.yml 'on: # yamllint disable-line rule:truthy
   pull_request:
 jobs:
@@ -296,7 +307,7 @@ jobs:
       - run: npm test'
 out=$(cr "$R"); st=$?
 [ $st -eq 1 ] || why="exit $st"
-for f in pr1 pr2 pr3 pr4 branch release lint listed; do has ".github/workflows/$f.yml runs on" "$out" || why="$why; $f.yml passed"; done
+for f in pr1 pr2 pr3 pr4 branch release tagged lint listed; do has ".github/workflows/$f.yml runs on" "$out" || why="$why; $f.yml passed"; done
 R=$(mkrepo); wf "$R" publish.yml 'on: { push: { tags: ["v*"] } }
 jobs:
   publish:
@@ -304,6 +315,17 @@ jobs:
     timeout-minutes: 10
     steps:
       - run: npm ci && npm run build && npm publish'; out=$(cr "$R") || why="$why; an inline tag-push workflow failed: $out"
+# a commented-out branches line does not make a tag-only push trigger a branch push
+R=$(mkrepo); wf "$R" publish.yml 'on:
+  push:
+    # branches: [main]
+    tags: ["v*"] # branches-ignore: [wip]
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - run: npm ci && npm run build && npm publish'; out=$(cr "$R") || why="$why; a tag-push workflow with a commented branches line failed: $out"
 if [ -z "$why" ]; then ok no-duplicate-gate-workflows; else fail no-duplicate-gate-workflows "$why: $out"; fi
 # the removed per-repo exception keys: a leftover one warns once, saying what replaced it, and is never validated
 why=""
