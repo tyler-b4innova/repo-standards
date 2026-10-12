@@ -230,6 +230,19 @@ realsum=$(tail -1 "$T/default.log")
 case "$realsum" in *'install=PASS; typecheck=PASS; build=PASS; gate.local.sh=PASS; worker=PASS; e2e=PASS'*) ;; *) sk_ok=0; echo "real-suite summary: $realsum" ;; esac
 if [ "$nw" -eq 0 ] && [ "$nsx" -eq 0 ] && [ "$sk_ok" -eq 1 ] && [ "$(cat "$rec" 2>/dev/null)" = "$(git -C "$N" rev-parse HEAD)" ]; then ok gate-local-skip-not-pass
 else fail gate-local-skip-not-pass "no-package.json run=$nw summary: $skipsum | package.json without scripts run=$nsx summary: $nssum"; fi
+# gate-local-trusts-checkout: the gate's children hide HOME, so they must trust the repository themselves. git's own test knob
+# makes every repository look owned by another user; the gate process reads a home whose git config trusts everything (the
+# host's), its children do not. The caller's GIT_CONFIG_COUNT entry reaches a stage (gate.local.sh reads it back through git).
+OWN=$T/ownerhome; mkdir "$OWN"; printf '[safe]\n\tdirectory = *\n' >"$OWN/.gitconfig"
+printf '#!/usr/bin/env bash\n[ "$(git config --get gatetest.marker)" = kept ] || { echo "caller git config entry lost"; exit 1; }\ngit rev-parse --git-dir >/dev/null\n' >"$N/scripts/agent/gate.local.sh"
+git -C "$N" add -A && git -C "$N" commit -qm "gate.local.sh reads the caller git config"
+scrubbed=$(env HOME="$T/scrubbed" GIT_TEST_ASSUME_DIFFERENT_OWNER=1 git -C "$N" rev-parse --git-dir 2>&1)
+trust() { (cd "$N" && env HOME="$OWN" USERPROFILE="$OWN" GIT_TEST_ASSUME_DIFFERENT_OWNER=1 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=gatetest.marker GIT_CONFIG_VALUE_0=kept node scripts/agent/gate.mjs local --base main) >"$T/trust.log" 2>&1; }
+trust; tc=$?
+tsum=$(tail -1 "$T/trust.log")
+case "$scrubbed" in *'dubious ownership'*) knob=1 ;; *) knob=0 ;; esac
+if [ "$knob" -eq 1 ] && [ "$tc" -eq 0 ] && has 'setup --check=PASS' trust && has 'gate.local.sh=PASS' trust && ! has 'dubious ownership' trust; then ok gate-local-trusts-checkout
+else fail gate-local-trusts-checkout "scrubbed-home git (knob works: $knob): $scrubbed | exit=$tc summary: $tsum"; grep -m3 -i 'dubious\|caller git' <"$T/trust.log"; fi
 printf '\nLocal gate evidence (real Worker):\n'; tail -1 "$T/default.log"; tail -1 "$T/failing.log"; tail -1 "$T/optout.log"
 printf 'Local gate evidence (steps that ran nothing):\n'; echo "$skipsum"; echo "$nssum"
 done_cases
