@@ -85,7 +85,7 @@ pl() { echo "$2" > "$T/pev.json"; (cd "$R" && GITHUB_API_URL=$API GITHUB_REPOSIT
 PRE='{"pull_request":{"number":7}}'
 put "{pr:{number:7,draft:true,head:{sha:\"$HEAD1\",ref:\"feat\"},base:{ref:\"main\"}}}"; d1=$(pl pull_request "$PRE")
 put "{pr:{number:7,draft:false,head:{sha:\"$HEAD1\",ref:\"feat\"},base:{ref:\"main\"}}}"; d2=$(pl pull_request "$PRE")
-if [ "$d1 $d2" = "cheap full" ] && grep -q "if: steps.plan.outputs.mode == 'cheap'" "$GWF"; then ok draft-cheap-ready-full; else fail draft-cheap-ready-full "draft=$d1 ready=$d2"; fi
+if [ "$d1 $d2" = "cheap full" ]; then ok draft-cheap-ready-full; else fail draft-cheap-ready-full "draft=$d1 ready=$d2"; fi
 # gate-edit-cheap: a description edit on a ready PR plans the cheap path (checks only), but never turns a head's red or
 # unfinished gate green, and it has its own concurrency group so it cannot cancel the full gate
 EDIT='{"action":"edited","pull_request":{"number":7}}'

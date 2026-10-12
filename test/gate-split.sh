@@ -22,6 +22,7 @@ if(!/actions\/setup-node/.test(g))out.push("gate job sets up no node");
 if(!/^    if: \$\{\{ always\(\) && !cancelled\(\) && github\.event\.pull_request\.draft != true && needs\.checks\.outputs\.rollback_draft != .true. \}\}$/m.test(g)||!/^    name: .*\|\| .gate. \}\}$/m.test(g)||!/gate\.mjs verdict/.test(g))out.push("gate job: "+g);
 for(const j of ["checks","test","gate"])if(!/^    timeout-minutes: 30$/m.test(body(j)))out.push(j+" timeout");
 {const b=body("test");if(!/needs: checks/.test(b)||!/if: needs\.checks\.outputs\.mode == .full./.test(b))out.push("test not a tail job")}
+if(!/^      - name: syntax\n        run: node scripts\/agent\/gate\.mjs syntax$/m.test(body("checks")))out.push("checks: the syntax step is missing or has a condition (it runs on every gated run)")
 for(const [j,s] of [["test","run typecheck"],["test","run build"],["test","gate.mjs preview"],["test","gate.mjs e2e"],["test","gate.local.sh"],["checks","setup.sh --check"],["checks","gate.mjs instructions"],["checks","gate.mjs secrets"]])if(!body(j).includes(s))out.push(j+" lacks "+s);
 console.log(out.join("; ")||"ok")' "$WF")
 [ "$shape" = ok ] || why="shape: $shape"
