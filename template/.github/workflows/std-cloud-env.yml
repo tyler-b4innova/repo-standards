@@ -22,7 +22,7 @@ concurrency:
 jobs:
   cloud-env:
     runs-on: ${{ vars.STD_GATE_RUNNER || 'ubuntu-24.04' }}
-    timeout-minutes: 10
+    timeout-minutes: {gate_timeout_minutes}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -41,6 +41,8 @@ has "ref: \${{ env.RELEASE_SHA }}" "$yml" || why="$why; does not check out the b
 has "gate.mjs release-report" "$yml" || why="$why; the verdict is not posted as release-check"
 has "gate.mjs e2e" "$yml" && has "gate.local.sh" "$yml" || why="$why; not the full suite (e2e and repo checks)"
 has "GATE_SELECT" "$yml" || why="$why; selection is not switched off"
+# each job (pre, suite, post) times out at the overlay's gate.timeout_minutes (default 30); none keeps a number of its own
+[ "$(grep -c 'timeout-minutes:' "$W/$WF")" = 3 ] && [ "$(grep -c '^    timeout-minutes: 30$' "$W/$WF")" = 3 ] || why="$why; job timeouts are not the overlay's: $(grep -n timeout-minutes "$W/$WF")"
 if [ -z "$why" ]; then ok release-check-every-worker; else fail release-check-every-worker "$why"; fi
 
 # check.mjs: the managed workflow passes; a repo-owned workflow that tests on push to main does not, whatever its name

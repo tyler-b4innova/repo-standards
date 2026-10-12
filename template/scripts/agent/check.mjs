@@ -280,8 +280,10 @@ else {
       if (m) jobs.push({ name: m[1], body: block(i, 2) });
       else if (/^\S/.test(L[i])) break;
     }
+    // A job with no timeout-minutes runs up to GitHub's default of 360 minutes
+    // (docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idtimeout-minutes).
     for (const j of jobs) if (!j.body.some((l) => /^ {4}(timeout-minutes|uses):/.test(l)))
-      fail(`${f} job ${j.name} has no timeout-minutes (the default is 360 minutes)`, `add timeout-minutes to ${j.name} (gate 30, anything else at most 20)`);
+      fail(`${f} job ${j.name} has no timeout-minutes (GitHub's default is 360 minutes)`, `add timeout-minutes to ${j.name}: the org's one job timeout, the overlay's gate.timeout_minutes (the value every job in std-gate.yml carries)`);
     const runs = jobs.flatMap((j) => j.body).filter((l) => !/^\s*(-\s*)?(name|uses|id|if):/.test(l)).join("\n");
     if (/playwright install\b(?![^\n;&|]*\b(chromium|chrome|firefox|webkit|msedge)\b)/.test(runs))
       fail(`${f} runs playwright install without naming a browser (it downloads all of them)`, "name the browser: playwright install --with-deps chromium");
