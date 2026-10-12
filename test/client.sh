@@ -190,7 +190,6 @@ const metas = {
 createServer((req, res) => {
   // homeonly: the static home page says noindex (public/_headers), but a page the Worker renders (a 404) does not
   const headers = { "content-type": "text/html", ...((mode === "header" || (mode === "homeonly" && req.url === "/")) && { "x-robots-tag": "googlebot: noindex" }) };
-  if (mode === "stall") { res.writeHead(200, headers); res.write("<html><head>"); return; } // never finishes the body
   setTimeout(() => {
     res.writeHead(200, headers);
     res.end(`<html><head>${metas[mode] ?? ""}<meta name="robots" content="${mode === "slow" ? "noindex" : "index"}" data-x></head><body>home</body></html>`.replace(mode === "slow" ? "" : /<meta name="robots" content="index" data-x>/, ""));

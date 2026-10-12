@@ -4,11 +4,10 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 . test/lib.sh
 unset GITHUB_EVENT_PATH GITHUB_EVENT_NAME GITHUB_SERVER_URL RANGE GH_TOKEN GATE_GITLEAKS_ARCHIVE
-ENGINE=$PWD PW_VERSION=1.63.0
+ENGINE=$PWD
 T=$(mktemp -d)
 PIDS=""
 trap 'for p in $PIDS; do { kill "$p"; wait "$p"; } 2>/dev/null; done; rm -rf "$T"' EXIT
-skip() { echo "skip $1 ($2)"; }
 has() { case "$2" in *"$1"*) return 0 ;; esac; return 1; } # has <needle> <text>
 gc() { git -c user.name=t -c user.email=t@t "$@"; }
 commit() { gc -C "$1" add -A && gc -C "$1" commit -qm "${2:-change}"; }
@@ -21,7 +20,6 @@ jset() { node -e 'const fs=require("fs"),f=process.argv[1],o=JSON.parse(fs.readF
 # step_run <workflow> <step name>: the step's run: line
 step_run() { node -e 'const L=require("fs").readFileSync(process.argv[1],"utf8").split("\n"),i=L.findIndex(l=>l.trim()==="- name: "+process.argv[2]);if(i<0)process.exit(1);for(let j=i+1;j<L.length&&!/^\s*- /.test(L[j]);j++){const m=L[j].match(/^(\s*)run: (.*)$/);if(!m)continue;if(m[2]!=="|"){console.log(m[2]);process.exit(0)}const b=[];for(let k=j+1;k<L.length&&(L[k].trim()===""||L[k].search(/\S/)>m[1].length);k++)b.push(L[k].trim());console.log(b.join("\n").trim());process.exit(0)}process.exit(1)' "$1" "$2"; }
 wait_port() { local i; for i in $(seq 100); do [ -s "$1" ] && { cat "$1"; return 0; }; sleep 0.1; done; return 1; }
-online() { curl -sSfI --max-time 5 https://registry.npmjs.org/ >/dev/null 2>&1; }
 # Restricted PATH: only the tools setup.sh and check.mjs need, plus shims (so gh, ffmpeg, pdftoppm, soffice are absent).
 mkpath() { mkdir -p "$1"; local t; for t in bash env git node sed grep id dirname cat; do ln -sf "$(command -v "$t")" "$1/$t"; done; }
 shim() { printf '#!/bin/sh\n%s\n' "$3" > "$1/$2"; chmod +x "$1/$2"; }
