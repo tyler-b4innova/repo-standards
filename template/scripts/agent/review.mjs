@@ -12,7 +12,7 @@ const glob = (g) => new RegExp("^" + g.replace(/[.+^$()|[\]\\]/g, "\\$&").replac
 const short = (s) => s.slice(0, 7);
 
 // pull: the PR as the caller already read it (so the verdict is for exactly that state); read here when omitted.
-export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.now(), serverUrl = "https://github.com" }) {
+export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.now() }) {
   const R = `/repos/${owner}/${repo}`;
   const all = async (path) => { const out = []; for (let p = 1; ; p++) { const b = (await api("GET", `${path}${path.includes("?") ? "&" : "?"}per_page=100&page=${p}`)) ?? []; out.push(...b); if (b.length < 100) return out; } };
   const pr = pull ?? (await api("GET", `${R}/pulls/${n}`));
@@ -56,31 +56,29 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.n
     return evidence();
   }
 
-  // Accepted: a trusted comment whose images are all in this repo at a commit in the PR head's history, covering
-  // before and after at 400 and 1280px for web changes and paired before-N/after-N pages for documents, with no later
-  // commit touching a UI path (evidence goes stale when the UI changes).
+  // Accepted: a trusted comment that pr.sh evidence wrote, marked `<!-- std:evidence head=<sha> -->`, whose images are
+  // GitHub attachments named by their alt text, covering before and after at 400 and 1280px for web changes and paired
+  // before-N/after-N pages for documents. The marked head must be in this PR's history, with no later commit touching a
+  // UI path (evidence goes stale when the UI changes). Videos carry no name and need none.
   async function evidence() {
     const isDoc = (f) => /\.(docx|pptx|xlsx|odt|odp|ods|pdf)$/i.test(f), docs = changed.some(isDoc), web = changed.some((f) => !isDoc(f));
     const trusted = pack.evidence_trusted_authors ?? ["pr_author", "app"];
     const trust = (c) => (trusted.includes("pr_author") && c.user?.login === pr.user.login) || (trusted.includes("app") && c.performed_via_github_app) || trusted.includes(c.user?.login);
-    const esc = (s) => s.replace(/[.]/g, "\\.");
-    const pin = new RegExp(`^${esc(serverUrl)}/${esc(`${owner}/${repo}`)}/(?:blob|raw)/([0-9a-f]{40})/(\\.evidence/[^?#]+)(?:[?#].*)?$`, "i");
+    const ASSET = /https:\/\/github\.com\/user-attachments\/assets\/[\w-]+/g, NAMED = /!\[([^\]]*)\]\((https:\/\/github\.com\/user-attachments\/assets\/[\w-]+)\)/g;
     const bad = [];
     for (const c of await all(`${R}/issues/${n}/comments`)) {
-      const urls = [...new Set(c.body?.match(/https?:\/\/[^\s)"'<>]*\/\.evidence\/[^\s)"'<>]*/g) ?? [])];
+      const body = c.body ?? "";
+      const pinned = body.match(/https?:\/\/[^\s)"'<>]*\/\.evidence\/[^\s)"'<>]*/g) ?? [], assets = body.match(ASSET) ?? [];
       const who = `${c.html_url} by @${c.user?.login}`;
-      if (!urls.length) continue;
+      if (!pinned.length && !assets.length && !body.includes("<!-- std:evidence")) continue;
       if (!trust(c)) { bad.push(`${who}: not a trusted author (${trusted.join(", ")}; PR author @${pr.user.login})`); continue; }
-      // Existence by directory listing (one read per commit and folder): the file endpoint returns the image
-      // itself and refuses files over 1 MB, which full-page captures often are.
-      const miss = [], listed = new Map(), decode = (x) => { try { return decodeURIComponent(x); } catch { return null; } };
-      for (const u of urls) {
-        const m = u.match(pin), path = m && decode(m[2]), dir = path?.split("/").slice(0, -1).join("/"), key = path && `${m[1]}:${dir}`;
-        if (path && !listed.has(key)) { const l = await api("GET", `${R}/contents/${dir}?ref=${m[1]}`); listed.set(key, new Set(Array.isArray(l) ? l.map((f) => f.path) : [])); } // a file, not a folder: nothing listed
-        if (!path || !listed.get(key).has(path)) miss.push(u); // an undecodable path is unresolved, never an error
-      }
-      if (miss.length) { bad.push(`${who}: unresolved (need this repo, a 40-hex SHA, the file): ${miss.join(" ")}`); continue; }
-      const shas = [...new Set(urls.map((u) => u.match(pin)[1]))], names = urls.map((u) => decode(u.match(pin)[2]));
+      if (pinned.length) { bad.push(`${who}: pinned .evidence/ links are no longer accepted; re-post with pr.sh evidence`); continue; }
+      const mark = body.match(/<!-- std:evidence head=([0-9a-f]{40}) -->/);
+      if (!mark) { bad.push(`${who}: no <!-- std:evidence head=<40-hex sha> --> marker; re-post with pr.sh evidence`); continue; }
+      if (!assets.length) { bad.push(`${who}: no uploaded image or video`); continue; }
+      // One name per upload: a single asset cannot count as several captures.
+      const named = new Map([...body.matchAll(NAMED)].map((m) => [m[2], m[1]]));
+      const names = [...named.values()];
       // Distinct images: a file counts for one state only. A file named like a viewport capture is never a page.
       const img = (nm, st) => new RegExp(`(^|[/_-])${st}[_-]`, "i").test(nm) && !new RegExp(`(^|[/_-])${st === "before" ? "after" : "before"}[_-]`, "i").test(nm);
       const shot = (st, w) => names.some((nm) => img(nm, st) && new RegExp(`(^|[^0-9])${w}\\.(png|jpe?g|webp|gif)$`, "i").test(nm));
@@ -90,22 +88,19 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.n
         ...(docs && !paired ? [!pb.size ? "before pages" : !pa.size ? "after pages" : "a page with both before and after"] : [])];
       const need = [web && "before and after captures at 400 and 1280px", docs && "before and after page images (before-N, after-N)"].filter(Boolean).join(" and ");
       if (gaps.length) { bad.push(`${who}: needs ${need} (missing ${gaps.join(", ")})`); continue; }
-      // In the head's history, and no later commit (each against its first parent) touches a UI path.
-      let stale = "", outside = "";
+      // In the marked head's history, and no later commit (each against its first parent) touches a UI path.
+      const sha = mark[1];
+      let stale = "";
       // Both lists are paginated: a comparison's commits and a commit's files each come a page at a time.
       const paged = async (path, key) => { const out = []; for (let p = 1; ; p++) { const b = (await api("GET", `${path}?per_page=100&page=${p}`))?.[key] ?? []; out.push(...b); if (b.length < 100) return out; } };
-      for (const s of shas) {
-        const cmp = await api("GET", `${R}/compare/${s}...${head}?per_page=100&page=1`);
-        if (!cmp || !["ahead", "identical"].includes(cmp.status)) { outside = s; break; }
-        const commits = (cmp.commits ?? []).length < 100 ? cmp.commits ?? [] : await paged(`${R}/compare/${s}...${head}`, "commits");
-        for (const k of commits) {
-          const all3k = await paged(`${R}/commits/${k.sha}`, "files"); // GitHub lists at most 3,000: treat a capped commit as a UI change
-          const files = paths(all3k).filter((f) => !f.startsWith(".evidence/"));
-          if (all3k.length >= 3000 || ui(files).length) { stale = k.sha; break; }
-        }
-        if (stale) break;
+      const cmp = await api("GET", `${R}/compare/${sha}...${head}?per_page=100&page=1`);
+      if (!cmp || !["ahead", "identical"].includes(cmp.status)) { bad.push(`${who}: evidence commit ${short(sha)} is not in this PR's history`); continue; }
+      const commits = (cmp.commits ?? []).length < 100 ? cmp.commits ?? [] : await paged(`${R}/compare/${sha}...${head}`, "commits");
+      for (const k of commits) {
+        const all3k = await paged(`${R}/commits/${k.sha}`, "files"); // GitHub lists at most 3,000: treat a capped commit as a UI change
+        const files = paths(all3k).filter((f) => !f.startsWith(".evidence/"));
+        if (all3k.length >= 3000 || ui(files).length) { stale = k.sha; break; }
       }
-      if (outside) { bad.push(`${who}: evidence commit ${short(outside)} is not in this PR's history`); continue; }
       if (stale) { bad.push(`${who}: UI changed after the evidence (commit ${short(stale)}); capture again`); continue; }
       return { state: "success", description: "evidence accepted", details: [`evidence: accepted ${c.html_url}`] };
     }

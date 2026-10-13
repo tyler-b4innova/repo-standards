@@ -2,6 +2,7 @@
 # PR helper cases (scripts/agent/pr.sh) against a local GitHub stub; a local bare repo is origin, so pushes stay offline.
 set -uo pipefail
 cd "$(dirname "$0")/.."
+ENGINE=$PWD
 . test/lib.sh
 T=$(mktemp -d)
 SP=""
@@ -91,32 +92,51 @@ then ok pr-resolve-thread; else fail pr-resolve-thread "$rs1 $r1 | $rs2 $r2 | $g
 mut "S.threads=[]"
 if [ -z "$why" ]; then ok pr-status-done; else fail pr-status-done "$why"; fi
 
-# evidence-images-pinned-resolving (posting side): two posts leave one marked comment whose image URLs carry the 40-hex SHA.
-printf '\211PNG\r\n' >"$T/home page.png" && echo notes >"$T/notes.txt"
+# evidence-attachments-posted: pr.sh evidence uploads through `gh pr comment --attach` (the gh double is on PATH), leaves one
+# marked comment (a re-post replaces it; another author's is untouched), and makes no commit, no push and no .evidence/.
+printf 'mp4' >"$T/clip.mp4" && echo notes >"$T/notes.txt"
+for n in before-400 before-1280 after-400 after-1280; do printf '\211PNG\r\n' >"$T/$n.png"; done
+mkdir -p "$T/bin" && printf '#!/bin/sh\nexec node "%s/test/stubs/gh-attach.mjs" "$@"\n' "$ENGINE" >"$T/bin/gh" && chmod +x "$T/bin/gh"
+export PATH="$T/bin:$PATH" GH_SHIM_LOG="$T/gh.jsonl"; : >"$GH_SHIM_LOG"
+CAP=("$T/before-400.png" "$T/before-1280.png" "$T/after-400.png" "$T/after-1280.png" "$T/clip.mp4")
+HEAD_SHA=$(git rev-parse HEAD)
 why=""
-for run in 1 2; do "$PR" evidence 1 "$T/home page.png" "$T/notes.txt" >"$T/ev.out" 2>&1 || why="$why; evidence run $run failed: $(cat "$T/ev.out")"; done
-PIN=$(git rev-parse HEAD~1)
-body=$(state "S.issueComments[1].filter(c=>c.body.includes('<!-- std:evidence -->')).map(c=>c.body).join('\n----\n')")
-case "$body" in *"----"*) why="$why; more than one evidence comment" ;; esac
-case "$body" in *"![home page.png](https://github.com/acme/demo/blob/$PIN/.evidence/home%20page.png?raw=true)"*) ;; *) why="$why; image not pinned to $PIN: $body" ;; esac
-case "$body" in *"[notes.txt](https://github.com/acme/demo/blob/$PIN/.evidence/notes.txt)"*) ;; *) why="$why; non-image link missing" ;; esac
-case "$body" in *'![notes.txt]'*) why="$why; non-image rendered as an image" ;; esac
-[ "$(count '"method":"PATCH","path":"/repos/acme/demo/issues/comments/')" = 1 ] || why="$why; second post did not update the comment"
-if [ -z "$why" ]; then ok evidence-images-pinned-resolving; else fail evidence-images-pinned-resolving "$why"; fi
-
-# no-evidence-on-main (posting side): the pushed tip has no .evidence/ and every posted URL still resolves at its SHA.
-why=""
-tip=$(git --git-dir="$T/origin.git" ls-tree -r --name-only refs/heads/feat/x)
-case "$tip" in *.evidence/*) why="tip still tracks .evidence/" ;; esac
-[ "$(git rev-parse HEAD)" = "$(git --git-dir="$T/origin.git" rev-parse refs/heads/feat/x)" ] || why="$why; cleanup commit not pushed"
-[ ! -e .evidence ] || why="$why; .evidence/ left in the worktree"
-urls=$(echo "$body" | grep -oE 'https://github\.com/[^)]+' | sed 's/?raw=true$//')
-[ -n "$urls" ] || why="$why; no URLs posted"
-for u in $urls; do
-  code=$(curl -s -o /dev/null -w '%{http_code}' "$GITHUB_API_URL${u#https://github.com}")
-  [ "$code" = 200 ] || why="$why; $u -> $code"
+mut "S.issueComments[1]=[{id:5,body:'<!-- std:evidence --> by someone else',user:{login:'other'}}]"
+for run in 1 2; do "$PR" evidence 1 "${CAP[@]}" >"$T/ev.out" 2>&1 || why="$why; evidence run $run failed: $(cat "$T/ev.out")"; done
+body=$(state "S.issueComments[1].find(c=>c.user.login==='agent').body")
+[ "$(state "S.issueComments[1].filter(c=>c.user.login==='agent').length")" = 1 ] || why="$why; not exactly one own comment"
+[ "$(state "S.issueComments[1].find(c=>c.id===5).body")" = "<!-- std:evidence --> by someone else" ] || why="$why; edited another author's comment"
+case "$body" in "<!-- std:evidence head=$HEAD_SHA -->"$'\n'"### Evidence"*) ;; *) why="$why; marker or heading wrong: $body" ;; esac
+for n in before-400 before-1280 after-400 after-1280; do
+  case "$body" in *"![$n.png](https://github.com/user-attachments/assets/"*) ;; *) why="$why; $n.png not embedded by name" ;; esac
 done
-if [ -z "$why" ]; then ok no-evidence-on-main; else fail no-evidence-on-main "$why"; fi
+[ "$(printf '%s' "$body" | grep -o 'user-attachments/assets/' | wc -l | tr -d ' ')" = 5 ] || why="$why; video not attached: $body"
+grep -q -- '"--attach","./1.png#before-400.png"' "$GH_SHIM_LOG" || why="$why; capture not attached with its name as alt text: $(cat "$GH_SHIM_LOG")"
+[ "$(git rev-parse HEAD)" = "$HEAD_SHA" ] || why="$why; a commit was made"
+[ "$(git --git-dir="$T/origin.git" rev-parse refs/heads/feat/x)" = "$HEAD_SHA" ] || why="$why; something was pushed"
+[ ! -e .evidence ] && [ -z "$(git status --porcelain)" ] || why="$why; the checkout changed"
+# gh 2.98 is refused before anything is sent; so is a file that is not an image or video
+g0=$(wc -l <"$GH_SHIM_LOG"); n=$(lines)
+out=$(GH_SHIM_VERSION=2.98.0 "$PR" evidence 1 "${CAP[@]}" 2>&1) && why="$why; gh 2.98 accepted"
+case "$out" in *"gh 2.99 or later"*) ;; *) why="$why; no version message: $out" ;; esac
+out=$("$PR" evidence 1 "$T/notes.txt" 2>&1) && why="$why; a text file accepted"
+case "$out" in *"unsupported evidence file"*) ;; *) why="$why; no unsupported-file message: $out" ;; esac
+[ "$(wc -l <"$GH_SHIM_LOG")" = "$g0" ] && [ "$(lines)" = "$n" ] || why="$why; a refused run sent requests"
+# a failed post changes nothing: the previous own comment stays as it was
+mut "S.failComments=true"; out=$("$PR" evidence 1 "${CAP[@]}" 2>&1) && why="$why; failed post reported success"
+mut "S.failComments=false"
+[ "$(state "S.issueComments[1].find(c=>c.user.login==='agent').body")" = "$body" ] || why="$why; a failed post changed the comment"
+# the review rule reads what the helper posted: same marker, same names, through the review export
+FXP=$T/review-fixture.json
+node -e '(async()=>{const S=await (await fetch(process.env.GITHUB_API_URL+"/__state")).json();require("fs").writeFileSync(process.argv[1],JSON.stringify({repo:"acme/demo",files:{1:["src/app.css"]},comments:{1:S.issueComments[1]},pull:{user:"agent",ref:"feat/x"},head:process.argv[2],gitDir:process.argv[3]}))})()' "$FXP" "$HEAD_SHA" "$PWD"
+node "$ENGINE/test/stubs/gate-github.mjs" "$T/rport" "$T/rlog" "$FXP" & RP=$!
+for _ in $(seq 100); do [ -s "$T/rport" ] && break; sleep 0.05; done
+rv=$(GITHUB_API_URL="http://127.0.0.1:$(cat "$T/rport")" GITHUB_REPOSITORY=acme/demo node "$ENGINE/test/review-run.mjs" 1 2>&1); rs=$?
+kill "$RP"; wait "$RP" 2>/dev/null
+{ [ $rs -eq 0 ] && case "$rv" in *"evidence: accepted"*) ;; *) false ;; esac; } || why="$why; the review rule did not accept the posted evidence (exit $rs): $rv"
+# no commit, push or .evidence/ anywhere on the branch
+case "$(git ls-tree -r --name-only HEAD)" in *.evidence/*) why="$why; tip tracks .evidence/" ;; esac
+if [ -z "$why" ]; then ok evidence-attachments-posted; ok no-evidence-on-main; else fail evidence-attachments-posted "$why"; fi
 
 # pr-open-verified (refs): an open PR into another base is not reused; refs with # and + are URL-encoded;
 # `--` ends options so a title may start with -, and an unknown option sends nothing.
@@ -144,32 +164,6 @@ n=$(lines); out=$("$PR" open --bse rel "t" "$T/body.md" 2>&1) && why="$why; unkn
 [ "$(lines)" = "$n" ] || why="$why; unknown option sent a request"
 git checkout -q feat/x
 if [ -z "$why" ]; then ok pr-open-verified; else fail pr-open-verified "$why"; fi
-
-# evidence-images-pinned-resolving (ignored .evidence/): captures post even when .evidence/ is gitignored,
-# and only the named files are committed: a parked .evidence/pr.md and an unrelated staged file stay out.
-why=""
-echo .evidence/ >>.gitignore && g commit -qam "ignore .evidence" && git push -q 2>/dev/null
-mkdir -p .evidence && echo "parked" >.evidence/pr.md && echo y >y.txt && git add y.txt
-mut "S.issueComments[1].unshift({id:5,body:'<!-- std:evidence --> by someone else',user:{login:'other'}})"
-"$PR" evidence 1 "$T/home page.png" >"$T/ev.out" 2>&1 || why="evidence failed: $(cat "$T/ev.out")"
-files=$(git show --name-only --format= HEAD~1)
-[ "$files" = ".evidence/home page.png" ] || why="$why; evidence commit held: $files"
-[ -f .evidence/pr.md ] || why="$why; parked .evidence/pr.md was deleted"
-[ "$(git diff --cached --name-only)" = y.txt ] || why="$why; staged y.txt not left staged"
-body=$(state "S.issueComments[1].find(c=>c.user.login==='agent'&&c.body.includes('<!-- std:evidence -->')).body")
-case "$body" in *"/blob/$(git rev-parse HEAD~1)/.evidence/home%20page.png"*) ;; *) why="$why; not pinned: $body" ;; esac
-[ "$(state "S.issueComments[1].find(c=>c.id===5).body")" = "<!-- std:evidence --> by someone else" ] || why="$why; edited another author's evidence comment"
-git reset -q y.txt && rm -rf y.txt .evidence
-if [ -z "$why" ]; then ok evidence-images-pinned-resolving; else fail evidence-images-pinned-resolving "$why"; fi
-
-# no-evidence-on-main (failed post): when the comment cannot be posted, the pushed tip still has no .evidence/.
-why=""
-mut "S.failComments=true"
-"$PR" evidence 1 "$T/notes.txt" >"$T/ev.out" 2>&1 && why="post failure not reported"
-tip=$(git --git-dir="$T/origin.git" ls-tree -r --name-only refs/heads/feat/x)
-case "$tip" in *.evidence/*) why="$why; tip tracks .evidence/ after a failed post" ;; esac
-mut "S.failComments=false"
-if [ -z "$why" ]; then ok no-evidence-on-main; else fail no-evidence-on-main "$why"; fi
 
 # ready: turns a draft ready once, and only when `gate.mjs local` passed on the pushed, clean head. Failures change nothing.
 why=""

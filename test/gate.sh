@@ -261,31 +261,35 @@ R=$(mkrepo)
 out1=$(cd "$R" && scripts/agent/setup.sh --check 2>&1); s1=$?
 mkdir -p "$R/.evidence" && printf 'png' > "$R/.evidence/after-home-400.png" && commit "$R"
 out2=$(cd "$R" && scripts/agent/setup.sh --check 2>&1); s2=$?
-if [ $s1 -eq 0 ] && [ $s2 -eq 1 ] && has ".evidence/ is tracked (.evidence/after-home-400.png)" "$out2"; then ok no-evidence-on-main
+if [ $s1 -eq 0 ] && [ $s2 -eq 1 ] && has ".evidence/ is tracked (.evidence/after-home-400.png)" "$out2" && has "git rm -r --cached .evidence" "$out2" && has "pr.sh evidence" "$out2"; then ok no-evidence-on-main
 else fail no-evidence-on-main "untracked=$s1 tracked=$s2: $out2"; fi
 
-# Evidence repos are clones of one repo, so the pinned evidence commit is in every PR head's history.
+# Evidence repos are clones of one repo, so the marked head is in every PR head's history.
 EV=$(mkrepo); mkev() { local d; d=$(mktemp -d "$T/ev.XXXXXX"); git clone -q "$EV" "$d" && echo "$d"; }
 FX=$T/fixture.json LOG=$T/stub.log SHA=$(git -C "$EV" rev-parse HEAD)
 export FX SHA
 echo '{"repo":"acme/demo"}' > "$FX"
 node test/stubs/gate-github.mjs "$T/port" "$LOG" "$FX" & PIDS="$PIDS $!"
 PORT=$(wait_port "$T/port") || { fail stub-start "gate-github stub did not start"; exit 1; }
-# fx '<js object>': write the fixture; helpers c(id, login, body, app) and img(url-suffix); files: {pr: [...]}
-fx() { node -e 'const S=process.env.SHA,U="https://github.com/acme/demo/blob/"+S+"/.evidence/",img=(u)=>"![shot]("+u+")",
-c=(id,login,body,app)=>({id,html_url:"https://github.com/acme/demo/pull/9#issuecomment-"+id,user:{login},performed_via_github_app:app?{slug:"evidence-app"}:null,body});
-require("fs").writeFileSync(process.env.FX,JSON.stringify({repo:"acme/demo",files:{},comments:{},contents:["before","after"].flatMap((b)=>[S+":.evidence/"+b+"-home-400.png",S+":.evidence/"+b+"-home-1280.png"]),...eval("("+process.argv[1]+")")}))' "$1"; }
+# fx '<js object>': write the fixture. The spec can use: c(id, login, body, app) for a comment; img(name) for an
+# attachment named by its alt text; MK (the marker for the marked head); GOOD (before and after at 400 and 1280px);
+# PAGES (before-1, after-1, after-2 as attachments); BLOB (the old pinned .evidence/ form).
+fx() { node -e 'const S=process.env.SHA, MK="<!-- std:evidence head="+S+" -->\n### Evidence\n", img=(n)=>"!["+n+"](https://github.com/user-attachments/assets/"+n.replace(/[^a-z0-9]/gi,"-")+"-id)",
+c=(id,login,body,app)=>({id,html_url:"https://github.com/acme/demo/pull/9#issuecomment-"+id,user:{login},performed_via_github_app:app?{slug:"evidence-app"}:null,body}),
+GOOD=MK+["before","after"].flatMap((b)=>[img(b+"-home-400.png"),img(b+"-home-1280.png")]).join("\n"),
+PAGES=[img("before-1.png"),img("after-1.png"),img("after-2.png")].join("\n"),
+BLOB="![before-home-400.png](https://github.com/acme/demo/blob/"+S+"/.evidence/before-home-400.png?raw=true)";
+require("fs").writeFileSync(process.env.FX,JSON.stringify({repo:"acme/demo",files:{},comments:{},...eval("("+process.argv[1]+")")}))' "$1"; }
 # ev <repo> <pr>: the review rule (repo-standards/review, as a launcher calls it); the stand-in answers commits,
 # compares and the policy files from <repo>
 ev() {
   node -e 'const f=process.env.FX,x=JSON.parse(require("fs").readFileSync(f,"utf8"));x.head=process.argv[1];x.gitDir=process.argv[2];require("fs").writeFileSync(f,JSON.stringify(x))' "$(git -C "$1" rev-parse HEAD)" "$1"
   GITHUB_API_URL="http://127.0.0.1:$PORT" GITHUB_REPOSITORY=acme/demo node "$ENGINE/test/review-run.mjs" "$2" 2>&1; }
-GOOD='["before","after"].flatMap((b)=>[img(U+b+"-home-400.png?raw=true"),img(U+b+"-home-1280.png?raw=true")]).join("\n")'
 
 R=$(mkev)
 fx '{files:{1:[...Array.from({length:150},(_,i)=>"lib/m"+i+".mjs"),"src/components/Button.tsx"]}}'
 : > "$LOG"; out1=$(ev "$R" 1); s1=$?; log=$(cat "$LOG")
-fx '{files:{1:[...Array.from({length:150},(_,i)=>"lib/m"+i+".mjs"),"src/components/Button.tsx"]},comments:{1:[c(11,"alice",'"$GOOD"')]}}'
+fx '{files:{1:[...Array.from({length:150},(_,i)=>"lib/m"+i+".mjs"),"src/components/Button.tsx"]},comments:{1:[c(11,"alice",GOOD)]}}'
 out2=$(ev "$R" 1); s2=$?
 if [ $s1 -eq 1 ] && has "src/components/Button.tsx" "$out1" && has "no accepted evidence comment" "$out1" && has '"path":"/repos/acme/demo/pulls/1/files","query":"?per_page=100&page=2"' "$log" &&
   [ $s2 -eq 0 ] && has "evidence: accepted" "$out2"; then ok ui-paths-evidence-required
@@ -313,57 +317,55 @@ jset "$R/standards.json" 'o.ui_paths=["content/**"]'; mkdir -p "$R/content" && e
 cls=$(G "$R" classify HEAD)
 if [ -z "$r" ] && has content/a.txt "$cls" && ! has app.css "$cls"; then ok ui-paths-repo-override; else fail ui-paths-repo-override "$r classify=$cls"; fi
 
+# evidence-comment-author-or-app: only the PR author, an app or a trusted login may post the evidence
 R=$(mkev)
-fx '{files:{5:["src/app.css"]},comments:{5:[c(21,"mallory",'"$GOOD"')]}}'; out1=$(ev "$R" 5); s1=$?
-fx '{files:{5:["src/app.css"]},comments:{5:[c(22,"evidence-app[bot]",'"$GOOD"',true)]}}'; out2=$(ev "$R" 5); s2=$?
-fx '{files:{5:["src/app.css"]},comments:{5:[c(23,"alice",'"$GOOD"')]}}'; out3=$(ev "$R" 5); s3=$?
+fx '{files:{5:["src/app.css"]},comments:{5:[c(21,"mallory",GOOD)]}}'; out1=$(ev "$R" 5); s1=$?
+fx '{files:{5:["src/app.css"]},comments:{5:[c(22,"evidence-app[bot]",GOOD,true)]}}'; out2=$(ev "$R" 5); s2=$?
+fx '{files:{5:["src/app.css"]},comments:{5:[c(23,"alice",GOOD)]}}'; out3=$(ev "$R" 5); s3=$?
 if [ $s1 -eq 1 ] && has "#issuecomment-21 by @mallory" "$out1" && [ $s2 -eq 0 ] && has "#issuecomment-22" "$out2" && [ $s3 -eq 0 ]; then ok evidence-comment-author-or-app
 else fail evidence-comment-author-or-app "other-user=$s1 app=$s2 author=$s3: $out1"; fi
 
-B1="https://github.com/acme/demo/blob/main/.evidence/after-home-400.png" B2="https://github.com/other/demo/blob/$SHA/.evidence/after-home-400.png" B3="https://github.com/acme/demo/blob/$SHA/.evidence/missing.png"
-fx "{files:{6:[\"src/app.css\"]},comments:{6:[c(31,\"alice\",img(\"$B1\")),c(32,\"alice\",img(\"$B2\")),c(33,\"alice\",$GOOD+img(\"$B3\"))]}}"
-: > "$LOG"; out1=$(ev "$R" 6); s1=$?; log=$(cat "$LOG")
-fx '{files:{6:["src/app.css"]},comments:{6:[c(34,"alice",'"$GOOD"')]}}'; out2=$(ev "$R" 6); s2=$?
-# an undecodable path is rejected evidence, never an error that leaves an old verdict standing
-fx '{files:{6:["src/app.css"]},comments:{6:[c(35,"alice",'"$GOOD"'+img(U+"after-%ZZ-400.png"))]}}'; out3=$(ev "$R" 6); s3=$?
-# a path under something that is a file, not a folder, is rejected too (the listing is a file object)
-fx '{files:{6:["src/app.css"]},contents:["before","after"].flatMap((b)=>[process.env.SHA+":.evidence/"+b+"-home-400.png",process.env.SHA+":.evidence/"+b+"-home-1280.png"]).concat([process.env.SHA+":.evidence/foo"]),comments:{6:[c(36,"alice",'"$GOOD"'+img(U+"foo/bar.png"))]}}'; out4=$(ev "$R" 6); s4=$?
-if [ $s1 -eq 1 ] && has "$B1" "$out1" && has "$B2" "$out1" && has "$B3" "$out1" && ! has "after-home-1280" "$out1" &&
-  has "\"method\":\"GET\",\"path\":\"/repos/acme/demo/contents/.evidence\",\"query\":\"?ref=$SHA\"" "$log" && ! has "contents/.evidence/after-home-400.png" "$log" && [ $s2 -eq 0 ] \
-  && [ $s3 -eq 1 ] && has "unresolved" "$out3" && ! has "URIError" "$out3" && [ $s4 -eq 1 ] && has "unresolved" "$out4" && ! has "TypeError" "$out4"; then ok evidence-images-pinned-resolving
-else fail evidence-images-pinned-resolving "bad-images=$s1 good=$s2: $out1"; fi
+# evidence-old-pinned-rejected, evidence-marker-required: the old .evidence/ blob form and a marker-less comment are
+# refused with the reason; a missing width and a repeated upload are refused as missing captures.
+R=$(mkev)
+fx '{files:{6:["src/app.css"]},comments:{6:[c(31,"alice",BLOB)]}}'; out1=$(ev "$R" 6); s1=$?
+fx '{files:{6:["src/app.css"]},comments:{6:[c(32,"alice",GOOD.replace(/<!-- std:evidence head=[0-9a-f]+ -->/,"<!-- std:evidence -->"))]}}'; out2=$(ev "$R" 6); s2=$?
+fx '{files:{6:["src/app.css"]},comments:{6:[c(33,"alice",MK+[img("before-home-400.png"),img("before-home-1280.png"),img("after-home-400.png")].join("\n"))]}}'; out3=$(ev "$R" 6); s3=$?
+fx '{files:{6:["src/app.css"]},comments:{6:[c(34,"alice",GOOD)]}}'; out4=$(ev "$R" 6); s4=$?
+fx '{files:{6:["src/app.css"]},comments:{6:[c(35,"alice",MK+["before-home-400.png","before-home-1280.png","after-home-400.png","after-home-1280.png"].map((n)=>"![" + n + "](https://github.com/user-attachments/assets/one-upload)").join("\n"))]}}'; out5=$(ev "$R" 6); s5=$?
+if [ $s1 -eq 1 ] && has "pinned .evidence/ links are no longer accepted; re-post with pr.sh evidence" "$out1"; then old=1; else old=0; fi
+if [ $s2 -eq 1 ] && has "no <!-- std:evidence head=<40-hex sha> --> marker; re-post with pr.sh evidence" "$out2"; then mark=1; else mark=0; fi
+if [ $old -eq 1 ]; then ok evidence-old-pinned-rejected; else fail evidence-old-pinned-rejected "blob=$s1: $out1"; fi
+if [ $mark -eq 1 ]; then ok evidence-marker-required; else fail evidence-marker-required "marker-less=$s2: $out2"; fi
+if [ $s3 -eq 1 ] && has "missing after 1280px" "$out3" && [ $s4 -eq 0 ] && has "evidence: accepted" "$out4" && [ $s5 -eq 1 ] && has "missing before 400px" "$out5"; then ok evidence-attachments-pinned
+else fail evidence-attachments-pinned "missing-width=$s3 accepted=$s4 one-asset=$s5: $out3 | $out4 | $out5"; fi
 
-# Stale or incomplete evidence: a later UI commit, a commit outside the PR, or no 1280px capture.
+# Stale or incomplete evidence: a later UI commit, a marked head outside the PR, or a merged side branch with UI.
 R=$(mkev); echo "a{}" > "$R/app.css" && commit "$R" "UI after the evidence"
-fx '{files:{7:["app.css"]},comments:{7:[c(41,"alice",'"$GOOD"')]}}'; st1=$(ev "$R" 7); x1=$?
+fx '{files:{7:["app.css"]},comments:{7:[c(41,"alice",GOOD)]}}'; st1=$(ev "$R" 7); x1=$?
 # A side branch with a UI change merged after the evidence makes it stale too.
 R=$(mkev); gc -C "$R" checkout -qb side; echo "b{}" > "$R/side.css" && commit "$R" "side UI"; gc -C "$R" checkout -q main
 echo x > "$R/notes.txt" && commit "$R" "unrelated"; gc -C "$R" merge -q --no-ff --no-edit side
-fx '{files:{7:["side.css"]},comments:{7:[c(44,"alice",'"$GOOD"')]}}'; st4=$(ev "$R" 7); x4=$?
+fx '{files:{7:["side.css"]},comments:{7:[c(44,"alice",GOOD)]}}'; st4=$(ev "$R" 7); x4=$?
 R=$(mkev); RND=$(node -e 'console.log(require("crypto").randomBytes(20).toString("hex"))')
-fx "{files:{7:[\"app.css\"]},contents:[\"before\",\"after\"].flatMap((b)=>[\"$RND:.evidence/\"+b+\"-a-400.png\",\"$RND:.evidence/\"+b+\"-a-1280.png\"]),comments:{7:[c(42,\"alice\",[\"before\",\"after\"].flatMap((b)=>[img(\"https://github.com/acme/demo/blob/$RND/.evidence/\"+b+\"-a-400.png\"),img(\"https://github.com/acme/demo/blob/$RND/.evidence/\"+b+\"-a-1280.png\")]).join(\"\"))]}}"; st2=$(ev "$R" 7); x2=$?
-fx '{files:{7:["app.css"]},comments:{7:[c(43,"alice",img(U+"before-home-400.png?raw=true")+img(U+"after-home-400.png?raw=true")+img(U+"after-home-1280.png?raw=true"))]}}'; st3=$(ev "$R" 7); x3=$?
-# Two files cannot stand in for four captures, and only image files count.
-fx '{files:{7:["app.css"]},contents:[process.env.SHA+":.evidence/before-after-400.txt",process.env.SHA+":.evidence/before-after-1280.txt"],comments:{7:[c(45,"alice",img(U+"before-after-400.txt")+img(U+"before-after-1280.txt"))]}}'; st5=$(ev "$R" 7); x5=$?
-if [ $x1 -eq 1 ] && has "UI changed after the evidence" "$st1" && [ $x2 -eq 1 ] && has "not in this PR's history" "$st2" && [ $x3 -eq 1 ] && has "missing before 1280px" "$st3" && [ $x4 -eq 1 ] && has "UI changed after the evidence" "$st4" &&
-  [ $x5 -eq 1 ] && has "missing before 400px, before 1280px, after 400px, after 1280px" "$st5"; then ok evidence-images-pinned-resolving
-else fail evidence-images-pinned-resolving "stale=$x1 outside=$x2 no1280=$x3 merged=$x4 two-files=$x5: $st1 | $st2 | $st3 | $st4 | $st5"; fi
+fx "{files:{7:[\"app.css\"]},comments:{7:[c(42,\"alice\",GOOD.replace(S,\"$RND\"))]}}"; st2=$(ev "$R" 7); x2=$?
+fx '{files:{7:["app.css"]},comments:{7:[c(43,"alice",MK+[img("before-home-400.png"),img("after-home-400.png"),img("after-home-1280.png")].join("\n"))]}}'; st3=$(ev "$R" 7); x3=$?
+if [ $x1 -eq 1 ] && has "UI changed after the evidence" "$st1" && [ $x2 -eq 1 ] && has "not in this PR's history" "$st2" && [ $x3 -eq 1 ] && has "missing before 1280px" "$st3" && [ $x4 -eq 1 ] && has "UI changed after the evidence" "$st4"; then ok evidence-attachments-pinned
+else fail evidence-attachments-pinned "stale=$x1 outside=$x2 no1280=$x3 merged=$x4: $st1 | $st2 | $st3 | $st4"; fi
 
 # A PR changing only documents accepts before-N/after-N page images; a web change does not.
-R=$(mkev); PAGES='img(U+"before-1.png")+img(U+"after-1.png")+img(U+"after-2.png")'
-PC='contents:["before-1","after-1","after-2"].map((n)=>process.env.SHA+":.evidence/"+n+".png")'
-fx "{files:{8:[\"docs/report.docx\",\"deck/q3.pptx\"]},$PC,comments:{8:[c(51,\"alice\",$PAGES)]}}"; d1=$(ev "$R" 8); y1=$?
-fx "{files:{8:[\"docs/report.docx\",\"app.css\"]},$PC,comments:{8:[c(52,\"alice\",$PAGES)]}}"; d2=$(ev "$R" 8); y2=$?
+R=$(mkev)
+fx '{files:{8:["docs/report.docx","deck/q3.pptx"]},comments:{8:[c(51,"alice",MK+PAGES)]}}'; d1=$(ev "$R" 8); y1=$?
+fx '{files:{8:["docs/report.docx","app.css"]},comments:{8:[c(52,"alice",MK+PAGES)]}}'; d2=$(ev "$R" 8); y2=$?
 # mixed: the web set alone lacks pages; web set plus pages passes
-fx "{files:{8:[\"docs/report.docx\",\"app.css\"]},comments:{8:[c(56,\"alice\",$GOOD)]}}"; d6=$(ev "$R" 8); y6=$?
-fx "{files:{8:[\"docs/report.docx\",\"app.css\"]},contents:[\"before-home-400\",\"before-home-1280\",\"after-home-400\",\"after-home-1280\",\"before-1\",\"after-1\",\"after-2\"].map((n)=>process.env.SHA+\":.evidence/\"+n+\".png\"),comments:{8:[c(57,\"alice\",$GOOD+$PAGES)]}}"; d7=$(ev "$R" 8); y7=$?
-fx "{files:{8:[\"docs/report.docx\"]},$PC,comments:{8:[c(53,\"alice\",img(U+\"after-1.png\")+img(U+\"after-2.png\"))]}}"; d3=$(ev "$R" 8); y3=$?
-fx "{files:{8:[\"docs/report.docx\"]},contents:[\"before-01\",\"after-02\"].map((n)=>process.env.SHA+\":.evidence/\"+n+\".png\"),comments:{8:[c(54,\"alice\",img(U+\"before-01.png\")+img(U+\"after-02.png\"))]}}"; d4=$(ev "$R" 8); y4=$?
+fx '{files:{8:["docs/report.docx","app.css"]},comments:{8:[c(56,"alice",GOOD)]}}'; d6=$(ev "$R" 8); y6=$?
+fx '{files:{8:["docs/report.docx","app.css"]},comments:{8:[c(57,"alice",GOOD+"\n"+PAGES)]}}'; d7=$(ev "$R" 8); y7=$?
+fx '{files:{8:["docs/report.docx"]},comments:{8:[c(53,"alice",MK+img("after-1.png")+"\n"+img("after-2.png"))]}}'; d3=$(ev "$R" 8); y3=$?
+fx '{files:{8:["docs/report.docx"]},comments:{8:[c(54,"alice",MK+img("before-01.png")+"\n"+img("after-02.png"))]}}'; d4=$(ev "$R" 8); y4=$?
 # web captures are not document pages, even when both names end in the same number
-fx "{files:{8:[\"docs/report.docx\"]},comments:{8:[c(55,\"alice\",$GOOD)]}}"; d5=$(ev "$R" 8); y5=$?
+fx '{files:{8:["docs/report.docx"]},comments:{8:[c(55,"alice",GOOD)]}}'; d5=$(ev "$R" 8); y5=$?
 # viewport-named files cannot double as document pages
-VP='["before-400","before-1280","after-400","after-1280"]'
-fx "{files:{8:[\"docs/report.docx\",\"app.css\"]},contents:$VP.map((n)=>process.env.SHA+\":.evidence/\"+n+\".png\"),comments:{8:[c(58,\"alice\",$VP.map((n)=>img(U+n+\".png\")).join(\"\"))]}}"; d8=$(ev "$R" 8); y8=$?
+fx '{files:{8:["docs/report.docx","app.css"]},comments:{8:[c(58,"alice",MK+["before-400.png","before-1280.png","after-400.png","after-1280.png"].map((n)=>img(n)).join("\n"))]}}'; d8=$(ev "$R" 8); y8=$?
 if [ $y1 -eq 0 ] && has "evidence: accepted" "$d1" && [ $y5 -eq 1 ] && has "missing before pages" "$d5" && [ $y6 -eq 1 ] && has "missing before pages" "$d6" && [ $y7 -eq 0 ] && has "evidence: accepted" "$d7" && [ $y8 -eq 1 ] && has "missing before pages" "$d8" && [ $y2 -eq 1 ] && has "missing before 400px" "$d2" && [ $y3 -eq 1 ] && has "missing before pages" "$d3" && [ $y4 -eq 1 ] && has "missing a page with both before and after" "$d4"; then ok evidence-document-pages
 else fail evidence-document-pages "docs=$y1 mixed=$y2 no-before=$y3 unpaired=$y4 web-on-docs=$y5 mixed-web-only=$y6 mixed-both=$y7 viewport-as-pages=$y8 ($d8): $d1 | $d2 | $d3 | $d4 | $d5 | $d6 | $d7"; fi
 
