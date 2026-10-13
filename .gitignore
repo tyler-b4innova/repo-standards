@@ -1,4 +1,4 @@
 .claude/*
 !.claude/settings.json
 !.claude/skills
-.venv/
+.test-venv/
