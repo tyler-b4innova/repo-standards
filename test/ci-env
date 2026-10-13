@@ -5,6 +5,16 @@ cd "$(dirname "$0")/.."
 event=$(mktemp)
 trap 'rm -f "$event"' EXIT
 printf '%s\n' '{"pull_request":{"base":{"sha":"1111111111111111111111111111111111111111"}}}' > "$event"
+# The suite parses workflow files with PyYAML (requirements-dev.txt). A python3 that already has it is used as is;
+# otherwise the dependency goes into this repository's ignored .venv, never into the machine's or the user's Python.
+if ! python3 -c "import yaml" 2>/dev/null; then
+  want=$(cat requirements-dev.txt)
+  if [ ! -x .venv/bin/python3 ] || [ "$(cat .venv/.requirements 2>/dev/null)" != "$want" ]; then
+    rm -rf .venv && python3 -m venv .venv && .venv/bin/python3 -m pip install -q --disable-pip-version-check -r requirements-dev.txt
+    printf '%s' "$want" > .venv/.requirements
+  fi
+  export PATH="$PWD/.venv/bin:$PATH"
+fi
 unset ROLLBACK_BASE ROLLBACK_DRAFT
 export GITHUB_ACTIONS=true CI=true GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$event"
 export GITHUB_WORKSPACE="$PWD" GITHUB_REPOSITORY=example-org/engine
