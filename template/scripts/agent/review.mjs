@@ -56,32 +56,30 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.n
     return evidence();
   }
 
-  // Accepted: a trusted comment that pr.sh evidence wrote, marked `<!-- std:evidence head=<sha> -->`, whose images are
-  // GitHub attachments named by their alt text, covering before and after at 400 and 1280px for web changes and paired
+  // Accepted: a trusted comment whose images are GitHub attachments named by their alt text (pr.sh evidence), marked
+  // `<!-- std:evidence head=<sha> -->`, covering before and after at 400 and 1280px for web changes and paired
   // before-N/after-N pages for documents. The marked head must be in this PR's history, with no later commit touching a
   // UI path (evidence goes stale when the UI changes). Videos carry no name and need none.
+  // The pinned form (`.evidence/` blob links) is accepted only until agents stop producing it: such a comment keeps the
+  // pre-attachment checks, each link resolving at its commit, with the same naming rules.
   async function evidence() {
     const isDoc = (f) => /\.(docx|pptx|xlsx|odt|odp|ods|pdf)$/i.test(f), docs = changed.some(isDoc), web = changed.some((f) => !isDoc(f));
     const trusted = pack.evidence_trusted_authors ?? ["pr_author", "app"];
     const trust = (c) => (trusted.includes("pr_author") && c.user?.login === pr.user.login) || (trusted.includes("app") && c.performed_via_github_app) || trusted.includes(c.user?.login);
-    // attachments live on the server the caller names (github.com by default); the host is escaped, never read as a pattern
-    const host = serverUrl.replace(/\/+$/, "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), asset = `${host}/user-attachments/assets/[\\w-]+`;
+    const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // attachments and pinned links live on the server the caller names (github.com by default); the host is escaped, never read as a pattern
+    const host = escape(serverUrl.replace(/\/+$/, "")), asset = `${host}/user-attachments/assets/[\\w-]+`;
     const ASSET = new RegExp(asset, "g"), NAMED = new RegExp(`!\\[([^\\]]*)\\]\\((${asset})\\)`, "g");
+    const pin = new RegExp(`^${host}/${escape(`${owner}/${repo}`)}/(?:blob|raw)/([0-9a-f]{40})/(\\.evidence/[^?#]+)(?:[?#].*)?$`, "i");
+    const PINNED = /https?:\/\/[^\s)"'<>]*\/\.evidence\/[^\s)"'<>]*/g;
+    const decode = (x) => { try { return decodeURIComponent(x); } catch { return null; } };
     const bad = [];
-    for (const c of await all(`${R}/issues/${n}/comments`)) {
-      const body = c.body ?? "";
-      const pinned = body.match(/https?:\/\/[^\s)"'<>]*\/\.evidence\/[^\s)"'<>]*/g) ?? [], assets = body.match(ASSET) ?? [];
-      const who = `${c.html_url} by @${c.user?.login}`;
-      if (!pinned.length && !assets.length && !body.includes("<!-- std:evidence")) continue;
-      if (!trust(c)) { bad.push(`${who}: not a trusted author (${trusted.join(", ")}; PR author @${pr.user.login})`); continue; }
-      if (pinned.length) { bad.push(`${who}: pinned .evidence/ links are no longer accepted; re-post with pr.sh evidence`); continue; }
-      const mark = body.match(/<!-- std:evidence head=([0-9a-f]{40}) -->/);
-      if (!mark) { bad.push(`${who}: no <!-- std:evidence head=<40-hex sha> --> marker; re-post with pr.sh evidence`); continue; }
-      if (!assets.length) { bad.push(`${who}: no uploaded image or video`); continue; }
-      // One name per upload: a single asset cannot count as several captures.
-      const named = new Map([...body.matchAll(NAMED)].map((m) => [m[2], m[1]]));
-      const names = [...named.values()];
-      // Distinct images: a file counts for one state only. A file named like a viewport capture is never a page.
+    // Both lists are paginated: a comparison's commits and a commit's files each come a page at a time.
+    const paged = async (path, key) => { const out = []; for (let p = 1; ; p++) { const b = (await api("GET", `${path}?per_page=100&page=${p}`))?.[key] ?? []; out.push(...b); if (b.length < 100) return out; } };
+    // The naming rule on file names or alt text: before and after at 400 and 1280px for web, page images for documents.
+    // Returns "" when met, else what is missing. Distinct images: a file counts for one state only, and a file named like
+    // a viewport capture is never a page.
+    const shape = (names) => {
       const img = (nm, st) => new RegExp(`(^|[/_-])${st}[_-]`, "i").test(nm) && !new RegExp(`(^|[/_-])${st === "before" ? "after" : "before"}[_-]`, "i").test(nm);
       const shot = (st, w) => names.some((nm) => img(nm, st) && new RegExp(`(^|[^0-9])${w}\\.(png|jpe?g|webp|gif)$`, "i").test(nm));
       const pages = (st) => new Set(names.map((nm) => nm.split("/").pop().match(new RegExp(`^${st}-0*(\\d+)\\.(png|jpe?g|webp|gif)$`, "i"))?.[1]).filter((x) => x && !["400", "1280"].includes(x)));
@@ -89,21 +87,51 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.n
       const gaps = [...(web ? ["before", "after"].flatMap((st) => [400, 1280].filter((w) => !shot(st, w)).map((w) => `${st} ${w}px`)) : []),
         ...(docs && !paired ? [!pb.size ? "before pages" : !pa.size ? "after pages" : "a page with both before and after"] : [])];
       const need = [web && "before and after captures at 400 and 1280px", docs && "before and after page images (before-N, after-N)"].filter(Boolean).join(" and ");
-      if (gaps.length) { bad.push(`${who}: needs ${need} (missing ${gaps.join(", ")})`); continue; }
-      // In the marked head's history, and no later commit (each against its first parent) touches a UI path.
-      const sha = mark[1];
-      let stale = "";
-      // Both lists are paginated: a comparison's commits and a commit's files each come a page at a time.
-      const paged = async (path, key) => { const out = []; for (let p = 1; ; p++) { const b = (await api("GET", `${path}?per_page=100&page=${p}`))?.[key] ?? []; out.push(...b); if (b.length < 100) return out; } };
+      return gaps.length ? `needs ${need} (missing ${gaps.join(", ")})` : "";
+    };
+    // In the marked head's history, and no later commit (each against its first parent) touches a UI path. "" when so.
+    const since = async (sha) => {
       const cmp = await api("GET", `${R}/compare/${sha}...${head}?per_page=100&page=1`);
-      if (!cmp || !["ahead", "identical"].includes(cmp.status)) { bad.push(`${who}: evidence commit ${short(sha)} is not in this PR's history`); continue; }
+      if (!cmp || !["ahead", "identical"].includes(cmp.status)) return `evidence commit ${short(sha)} is not in this PR's history`;
       const commits = (cmp.commits ?? []).length < 100 ? cmp.commits ?? [] : await paged(`${R}/compare/${sha}...${head}`, "commits");
       for (const k of commits) {
         const all3k = await paged(`${R}/commits/${k.sha}`, "files"); // GitHub lists at most 3,000: treat a capped commit as a UI change
         const files = paths(all3k).filter((f) => !f.startsWith(".evidence/"));
-        if (all3k.length >= 3000 || ui(files).length) { stale = k.sha; break; }
+        if (all3k.length >= 3000 || ui(files).length) return `UI changed after the evidence (commit ${short(k.sha)}); capture again`;
       }
-      if (stale) { bad.push(`${who}: UI changed after the evidence (commit ${short(stale)}); capture again`); continue; }
+      return "";
+    };
+    for (const c of await all(`${R}/issues/${n}/comments`)) {
+      const body = c.body ?? "";
+      const pinned = [...new Set(body.match(PINNED) ?? [])], assets = body.match(ASSET) ?? [];
+      const who = `${c.html_url} by @${c.user?.login}`;
+      if (!pinned.length && !assets.length && !body.includes("<!-- std:evidence")) continue;
+      if (!trust(c)) { bad.push(`${who}: not a trusted author (${trusted.join(", ")}; PR author @${pr.user.login})`); continue; }
+      if (pinned.length) {
+        // Existence by directory listing (one read per commit and folder): the file endpoint returns the image
+        // itself and refuses files over 1 MB, which full-page captures often are.
+        const miss = [], listed = new Map();
+        for (const u of pinned) {
+          const m = u.match(pin), path = m && decode(m[2]), dir = path?.split("/").slice(0, -1).join("/"), key = path && `${m[1]}:${dir}`;
+          if (path && !listed.has(key)) { const l = await api("GET", `${R}/contents/${dir}?ref=${m[1]}`); listed.set(key, new Set(Array.isArray(l) ? l.map((f) => f.path) : [])); } // a file, not a folder: nothing listed
+          if (!path || !listed.get(key).has(path)) miss.push(u); // an undecodable path is unresolved, never an error
+        }
+        if (miss.length) { bad.push(`${who}: unresolved (need this repo, a 40-hex SHA, the file): ${miss.join(" ")}`); continue; }
+        const gap = shape(pinned.map((u) => decode(u.match(pin)[2])));
+        if (gap) { bad.push(`${who}: ${gap}`); continue; }
+        let why = "";
+        for (const s of new Set(pinned.map((u) => u.match(pin)[1]))) if ((why = await since(s))) break;
+        if (why) { bad.push(`${who}: ${why}`); continue; }
+        return { state: "success", description: "evidence accepted", details: [`evidence: accepted ${c.html_url}`] };
+      }
+      const mark = body.match(/<!-- std:evidence head=([0-9a-f]{40}) -->/);
+      if (!mark) { bad.push(`${who}: no <!-- std:evidence head=<40-hex sha> --> marker; re-post with pr.sh evidence`); continue; }
+      if (!assets.length) { bad.push(`${who}: no uploaded image or video`); continue; }
+      // One name per upload: a single asset cannot count as several captures.
+      const gap = shape([...new Map([...body.matchAll(NAMED)].map((m) => [m[2], m[1]])).values()]);
+      if (gap) { bad.push(`${who}: ${gap}`); continue; }
+      const why = await since(mark[1]);
+      if (why) { bad.push(`${who}: ${why}`); continue; }
       return { state: "success", description: "evidence accepted", details: [`evidence: accepted ${c.html_url}`] };
     }
     return { state: "failure", description: `UI paths changed (${changed.slice(0, 3).join(", ")}) but no accepted evidence comment`, details: [`UI paths changed: ${changed.join(", ")}`, ...bad.map((b) => `rejected: ${b}`)] };
