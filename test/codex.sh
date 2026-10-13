@@ -116,10 +116,11 @@ for kind in code docs; do
 done
 put "{pr:{number:7,draft:false,head:{sha:\"$HEAD1\",ref:\"feat\"},base:{ref:\"main\"}}}"
 # skip-never-greens-gate: no job-level if; a dispatch re-gate plans the pull request it names, never "not a pull request"
-# the required gate job never skips (always() && !cancelled()); the other jobs' skips are judged by its verdict
-jobif=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8"),g=y.slice(y.indexOf("\n  gate:"));console.log(!/^ {4}if: \$\{\{ always\(\) && !cancelled\(\) && github\.event\.pull_request\.draft != true && needs\.checks\.outputs\.rollback_draft != .true. \}\}$/m.test(g)||/^ {4}if: (?!\$\{\{ always\(\) && !cancelled\(\) && github\.event\.pull_request\.draft != true && needs\.checks\.outputs\.rollback_draft != .true. \}\}$)/m.test(g))' "$GWF")
+# skip-never-greens-gate: the one job's only job-level if is the draft skip (a ready run is never skipped, so no skip can
+# green it); the verdict judges the step outcomes, and a dispatch re-gate plans the pull request it names
+jobif=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8"),g=y.slice(y.indexOf("\n  gate:"));console.log(/^ {4}if: github\.event\.pull_request\.draft != true$/m.test(g)&&!/^ {4}if: .*(always|needs)/m.test(g))' "$GWF")
 dg=$(pl workflow_dispatch '{"inputs":{"pr":"7"}}')
-if [ "$jobif" = false ] && [ "$dg" = full ]; then ok skip-never-greens-gate; else fail skip-never-greens-gate "jobif=$jobif dispatch-mode=$dg"; fi
+if [ "$jobif" = true ] && [ "$dg" = full ]; then ok skip-never-greens-gate; else fail skip-never-greens-gate "jobif=$jobif dispatch-mode=$dg"; fi
 # e2e-chromium-default: a pull request from the default branch into main is no promotion: gate plans Chromium only,
 # whatever browsers the repository names (those run on main, before release)
 cp "$R/standards.json" "$T/std.plan"; node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f));o.e2e={browsers:["firefox"]};require("fs").writeFileSync(f,JSON.stringify(o))' "$R/standards.json"
