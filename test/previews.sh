@@ -163,6 +163,8 @@ has "token_ref=" "$(cfg "$R")" && [ "$(cfg "$R" | head -1)" = "token_ref=" ] || 
 grep -q "::notice::PR Previews were not cleaned up" "$R/$WF" || why="$why; no inert notice"
 O=$T/ov.json; node -e 'const o=require(process.argv[1]);o.preview={cleanup:{token_ref:"op://ci/previews/token",account_ref:"op://ci/previews/account"}};require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$O"
 grep -q 'ref: ${{ github.event.repository.default_branch }}' "$R/.github/workflows/std-preview-cleanup.yml" || why="$why; cleanup does not check out the default branch"
+# the clean-up runs on GitHub's runner, never on the gate's runner (a closed pull request must not bill the gate's pool)
+grep -qx '    runs-on: ubuntu-24.04' "$R/.github/workflows/std-preview-cleanup.yml" && ! grep -q 'STD_GATE_RUNNER' "$R/.github/workflows/std-preview-cleanup.yml" || why="$why; cleanup is not on ubuntu-24.04"
 OVERLAY=$O apply "$R" >/dev/null; [ "$(cfg "$R" | tr '\n' ' ')" = "token_ref=op://ci/previews/token account_ref=op://ci/previews/account " ] || why="$why; settings with cleanup: $(cfg "$R")"
 node -e 'const o=require(process.argv[1]);o.preview={cleanup:{token_ref:"ghp_x"}};require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$O"
 out=$(OVERLAY=$O apply "$T/x" 2>&1) && why="$why; a bad cleanup ref was accepted"
