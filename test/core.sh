@@ -698,6 +698,18 @@ if [ -z "$why" ]; then ok flow-staged-retired; else fail flow-staged-retired "$w
 out=$(python3 -c 'import sys,yaml; [yaml.safe_load(open(f)) for f in sys.argv[1:]]' template/.github/workflows/*.yml 2>&1)
 if [ $? -eq 0 ]; then ok workflows-parse; else fail workflows-parse "$out"; fi
 
+# ---- the suite's PyYAML comes from the repository's own .test-venv when python3 lacks it, never from the user's Python;
+# a .test-venv the suite did not make is refused and left alone, and a current one is reused and put first on PATH
+why=""; ENG=$PWD; NY=$T/noyaml-py; mkdir -p "$NY"; printf '#!/bin/sh\nexit 1\n' > "$NY/python3"; chmod +x "$NY/python3"
+D1=$(mktemp -d "$T/py.XXXXXX"); printf 'pyyaml==6.0.3\n' > "$D1/requirements-dev.txt"; mkdir -p "$D1/.test-venv"; echo mine > "$D1/.test-venv/keep"
+o1=$(cd "$D1" && PATH="$NY:/usr/bin:/bin" bash -c '. "$1" && echo "PATH=$PATH"' _ "$ENG/tools/test-python.sh" 2>&1); s1=$?
+[ $s1 -ne 0 ] && has "was not made by this suite" "$o1" && [ "$(cat "$D1/.test-venv/keep")" = mine ] || why="$why; unowned: $s1 $o1"
+D2=$(mktemp -d "$T/py.XXXXXX"); printf 'pyyaml==6.0.3\n' > "$D2/requirements-dev.txt"; mkdir -p "$D2/.test-venv/bin"
+printf '#!/bin/sh\n' > "$D2/.test-venv/bin/python3"; chmod +x "$D2/.test-venv/bin/python3"; printf 'pyyaml==6.0.3' > "$D2/.test-venv/.owned-by-engine-tests"; echo kept > "$D2/.test-venv/sentinel"
+o2=$(cd "$D2" && PATH="$NY:/usr/bin:/bin" bash -c '. "$1" && echo "PATH=$PATH"' _ "$ENG/tools/test-python.sh" 2>&1); s2=$?
+[ $s2 -eq 0 ] && has "PATH=$D2/.test-venv/bin:" "$o2" && [ -f "$D2/.test-venv/sentinel" ] || why="$why; owned: $s2 $o2"
+if [ -z "$why" ]; then ok engine-test-python-repo-local; else fail engine-test-python-repo-local "$why"; fi
+
 # no byte-size limit on the managed block: an overlay whose block renders over 1800 bytes loads, applies and checks
 BIG=$T/big.json; node -e 'const o=require(process.argv[1]);o.profiles.client.block_lines=["- "+"x".repeat(2000)];require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$BIG"
 out=$(node bin/repo-standards.mjs block --overlay "$BIG" --profile client 2>&1); st=$?; size=$(printf '%s' "$out" | wc -c | tr -d ' ')

@@ -266,6 +266,8 @@ Retired in 0.6.0 with the staged flow: `promote-no-ui-auto`, `promote-ui-needs-h
 
 - **`workflows-parse`**: every workflow the engine ships parses as YAML (an unquoted colon once disabled a workflow silently).
 
+- **`engine-test-python-repo-local`**: when `python3` has no PyYAML, the suite takes it from the repository's own ignored `.test-venv` (built from `requirements-dev.txt`), never from the user's or the machine's Python. A current `.test-venv` is reused and put first on PATH. A `.test-venv` the suite did not make (no owner marker) is refused and left untouched. (A developer machine without PyYAML failed the local gate, and the only way past it was a user-wide install; an owner asked that test dependencies stay in the repository.)
+
 - **`engine-neutral`**: no organization name, internal host, account, App or vault identifier appears in the tree or anywhere in history.
 - **`engine-coverage-skip-fails`**: under `CI`, `test/run.sh` fails its coverage line on any `skip` line and names the skipped ids, as it does for an id no case prints. A case that did not run is not coverage (rule: every test must be able to fail); an offline run's `skip affected-full-runs-every-project` used to count as covered.
 - **`gate-timeout-overlay`**: every job of every managed workflow (`std-gate.yml`, `std-release-check.yml`, `std-cache-warm.yml`, `std-preview-cleanup.yml`, `std-cloud-env.yml`) times out at 30 minutes unless the overlay sets `gate.timeout_minutes`, any positive integer (zero, negative, fractional, non-numeric and null values are refused before anything is written); the repository's offline check accepts the rendered value. Stated rule: one job timeout, set once by the org, runaway protection only.
