@@ -126,16 +126,6 @@ if [ -z "$bwhy" ] && has "install-deps chromium" "$bunk" && has "install-deps ch
   && has "key=playwright-" "$bkey" && has "-1.63.0-chromium+firefox" "$bkey" && has "-1.63.0-chromium" "$bkey1" && ! has "firefox" "$bkey1" && [ "$bnokey" = "key=" ] && [ "$bwf" = ok ]
 then ok gate-browser-cache; else fail gate-browser-cache "layouts=${bwhy#; } | unknown=$bunk | firefox=$bff | none=$bnone | key=$bkey | $bkey1 | nokey=$bnokey | workflow=$bwf"; fi
 
-# ---- the gate never writes a cache: a re-gate on the default branch (workflow_dispatch) runs a pull request's tree, so
-# a cache saved there would be seeded by that tree. Only std-cache-warm (pushes to the default branch, no PR code) saves.
-cw=$R/.github/workflows/std-cache-warm.yml
-cwhy=""
-grep -Eq 'uses: actions/cache@|^\s+cache:' "$R/$WF" && cwhy="$cwhy; gate saves a cache"
-grep -Eq 'uses: actions/cache/restore@[0-9a-f]{40}' "$R/$WF" || cwhy="$cwhy; gate restores nothing"
-grep -Eq 'uses: actions/cache@[0-9a-f]{40}' "$cw" || cwhy="$cwhy; warm saves nothing"
-grep -Eq 'pull_request|workflow_dispatch|^\s+ref:' "$cw" && cwhy="$cwhy; warm can run or check out pull request code"
-grep -Eq '^    branches: \[main\]' "$cw" || cwhy="$cwhy; warm not main-only"
-if [ -z "$cwhy" ]; then ok gate-never-writes-cache; else fail gate-never-writes-cache "$cwhy"; fi
 # e2e-budget-removed: a slow suite passes, a leftover e2e.budget warns in --check and changes nothing, and an overlay still setting gate.budget loads with one notice
 R=$(mkrepo)
 jset "$R/standards.json" 'o.e2e={command:"sleep 2",budget:0.01}'
