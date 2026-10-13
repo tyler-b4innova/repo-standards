@@ -71,6 +71,8 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 - **`jobs-have-timeouts`**: a workflow job without `timeout-minutes` fails `--check` (GitHub's default is 360 minutes); the fix points at the org's one setting, `gate.timeout_minutes`, and names no minutes of its own.
 - **`secrets-scan-changes-only`**: the secret scan covers the pull request's own commits, including on a dispatch re-gate of the merge ref, so an old leak already on the base does not fail it.
 
+Retired before any release, with the transition: `evidence-old-pinned-rejected` (the pinned form is accepted while agents stop producing it; see `evidence-pinned-transition`).
+
 ## One-branch releases
 
 - **`release-generated-builds`**: adapter-generated flattened Wrangler configs select staging with `CLOUDFLARE_ENV=staging`, then build production separately with it unset before versions upload. Incident: an adapter ignored deploy-time `--env staging` and deployed production.
