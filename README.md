@@ -70,7 +70,7 @@ No secrets are needed: use local D1, Durable Objects with SQLite, Queues, R2 and
 
 **The review rule** is `scripts/agent/review.mjs`, exported as `repo-standards/review` for a launcher or merge helper to ask before merging: `reviewStatus({ api, owner, repo, pr })` is read-only and returns `null` (draft, closed, not engine-managed) or `{ state, description, sha, base, base_sha, target_url, details }`. Its settings come from the current base branch:
 - **Codex review:** a completed Codex review exists for any commit of the PR (its summary shows Completed, or the bot submitted a review) and no Codex thread is unresolved (resolved means answered). The head and push time are not checked: each PR gets one review and fixes are not re-reviewed. Pending for 20 minutes without a review, then failure ("request a review"). Repos with no Codex reviews and `codex_review: false` pass.
-- **Evidence:** a PR changing UI paths needs a comment by a trusted author with images pinned to a commit in its history: before and after at 400 and 1280px for web changes, before-N/after-N page images for documents, and no UI change after them.
+- **Evidence:** a PR changing UI paths needs a comment by a trusted author marked `<!-- std:evidence head=<sha> -->` whose images are GitHub attachments (`pr.sh evidence` uploads them; nothing is committed), named by alt text: before and after at 400 and 1280px for web changes, before-N/after-N page images for documents. The marked sha must be in the PR's history, and no UI change may follow it.
 
 The managed AGENTS.md block carries a `## Review guidelines` line telling Codex review to skip pack-managed paths: findings on those belong in this repository.
 

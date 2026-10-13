@@ -224,7 +224,7 @@ else {
     if (["AGENTS.md", "CLAUDE.md"].includes(name) && f !== name)
       fail(`nested instruction file: ${f}`, `move its rules into the root AGENTS.md or the org overlay, then git rm ${f}`);
     if (name === ".mcp.json" && !plugins.has(dirname(f))) fail(`${f} is committed`, `git rm --cached ${f} && echo .mcp.json >> .gitignore`);
-    if (f.startsWith(".evidence/")) fail(`.evidence/ is tracked (${f})`, "git rm -r .evidence   (pr.sh evidence removes it after posting)");
+    if (f.startsWith(".evidence/")) fail(`.evidence/ is tracked (${f})`, "git rm -r --cached .evidence   (pr.sh evidence uploads them instead)");
     if ((/\.(md|markdown)$/i.test(name) && dirs.some((d) => pack.decision_dirs.includes(d))) || /^ADR-.*\.md$/i.test(name) || pack.decision_record_globs.some((g) => glob(g).test(f)))
       fail(`decision record tracked: ${f}`, `git rm ${f}   (decisions are not recorded; they must be evident in the work)`);
     for (const g of pack.forbid_paths) if (glob(g).test(f)) fail(`${f} matches the org's forbidden path ${g}`, `git rm -r --cached ${f}`);

@@ -5,6 +5,7 @@ cd "$(dirname "$0")/.."
 event=$(mktemp)
 trap 'rm -f "$event"' EXIT
 printf '%s\n' '{"pull_request":{"base":{"sha":"1111111111111111111111111111111111111111"}}}' > "$event"
+. tools/test-python.sh
 unset ROLLBACK_BASE ROLLBACK_DRAFT
 export GITHUB_ACTIONS=true CI=true GITHUB_EVENT_NAME=pull_request GITHUB_EVENT_PATH="$event"
 export GITHUB_WORKSPACE="$PWD" GITHUB_REPOSITORY=example-org/engine

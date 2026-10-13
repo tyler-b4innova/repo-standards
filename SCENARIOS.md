@@ -24,12 +24,15 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 - **`preview-url-from-bot-table`**: the preview URL is the "Preview URL" (or "Deployment URL") cell of the Cloudflare bot table row whose commit is the head, read by the table's header row in a markdown or an HTML table, else the `Preview URL: <url> (commit <sha>)` line naming the head; never a link to the Cloudflare dashboard, and "No Preview URL", a table without the column (a production deploy comment) and a row for another commit mean none, so gate fails. Bodies are real bot comments from `test/fixtures/cf-comments`, made neutral. Incident: gate took the first link on the head's row, the build's "View logs" dashboard link, and tested it.
 - **`ui-paths-evidence-required`**: a pull request changing a UI path (markup, styles, components, .docx, .pptx) fails without an accepted evidence comment and passes with one. A rename counts by both paths, so moving a UI file out of a UI path needs evidence too.
 - **`evidence-comment-author-or-app`**: an evidence comment by anyone but the PR author, an app or an overlay-trusted login is rejected (a forged comment once passed).
-- **`evidence-images-pinned-resolving`**: every evidence image must be in this repository at a 40-hex commit and exist there, as four distinct image files (before and after at 400 and 1280px); the PR helper posts images that way and re-posting updates one comment.
+- **`evidence-attachments-pinned`**: every evidence image is a GitHub attachment (`https://github.com/user-attachments/assets/<id>`) named by its alt text, as four distinct images (before and after at 400 and 1280px); the marked head (`<!-- std:evidence head=<sha> -->`) must be in the PR's history, and a UI commit after it makes the evidence stale.
+- **`evidence-attachments-posted`**: `pr.sh evidence` uploads its files with `gh pr comment --attach` (gh 2.99 or later, a person's token), posts one marked comment with images named by file name, makes no commit and pushes nothing, and re-posting replaces the previous comment; the review rule accepts what it posts.
+- **`evidence-marker-required`**: an attachment comment without the `head=<sha>` marker is rejected, with a message that names the marker and says to re-post with `pr.sh evidence`.
+- **`evidence-old-pinned-rejected`**: a comment linking pinned `.evidence/` blob files is rejected, with a message that says to re-post with `pr.sh evidence`.
 - **`evidence-document-pages`**: a PR whose UI paths are all documents (.docx, .pptx and similar) accepts before and after page images (`before-N`, `after-N`) with at least one page in both; a PR that also changes web UI needs the 400 and 1280px set and the pages.
 - **`ui-paths-repo-override`**: `standards.json` `ui_paths` replaces the default globs, and `{ "ignore": [...] }` keeps them while exempting paths (release notes generated upstream once tripped the evidence gate).
 - **`ui-paths-empty-warns`**: an explicit `ui_paths: []` turns the evidence gate off, and `--check` warns naming tracked files the defaults would cover.
 - **`test-quality-warns`**: `--check` warns, never fails, with file:line on `setCPUThrottlingRate`, `test.retries`, `retries:` in a Playwright config and `waitForTimeout` under tests; comments and non-test files stay silent; `std-implement` carries the rules.
-- **`no-evidence-on-main`**: tracked `.evidence/` fails `--check` (gate's standards step); the PR helper leaves no `.evidence/` on the branch tip after posting.
+- **`no-evidence-on-main`**: tracked `.evidence/` fails `--check` (gate's standards step), with the hint `git rm -r --cached .evidence` and a note that `pr.sh evidence` uploads them; the PR helper creates no commit and leaves no `.evidence/` in the checkout.
 
 ### Review (the pull request's conversation: `scripts/agent/review.mjs`, exported as `repo-standards/review`)
 
@@ -262,6 +265,8 @@ Retired in 0.6.0 with the staged flow: `promote-no-ui-auto`, `promote-ui-needs-h
 ## Engine
 
 - **`workflows-parse`**: every workflow the engine ships parses as YAML (an unquoted colon once disabled a workflow silently).
+
+- **`engine-test-python-repo-local`**: when `python3` has no PyYAML, the suite takes it from the repository's own ignored `.test-venv` (built from `requirements-dev.txt`), never from the user's or the machine's Python. A current `.test-venv` is reused and put first on PATH. A `.test-venv` the suite did not make (no owner marker) is refused and left untouched. (A developer machine without PyYAML failed the local gate, and the only way past it was a user-wide install; an owner asked that test dependencies stay in the repository.)
 
 - **`engine-neutral`**: no organization name, internal host, account, App or vault identifier appears in the tree or anywhere in history.
 - **`engine-coverage-skip-fails`**: under `CI`, `test/run.sh` fails its coverage line on any `skip` line and names the skipped ids, as it does for an id no case prints. A case that did not run is not coverage (rule: every test must be able to fail); an offline run's `skip affected-full-runs-every-project` used to count as covered.

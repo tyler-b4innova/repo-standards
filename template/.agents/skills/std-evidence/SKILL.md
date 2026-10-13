@@ -10,7 +10,7 @@ description: Capture visual proof for a PR - before/after screenshots of a chang
    - Documents: `soffice --headless --convert-to pdf <file>`, then `pdftoppm -png -r 80 <file>.pdf before` (and `after`) for the changed pages. Documents need before-N and after-N pages instead of the two widths; a PR that also changes web UI needs both.
 2. Open every capture and look at it (both widths or every page, overflow, contrast, what the issue asked for). Fix and recapture. Never post an image you have not viewed.
 3. Show the final images in chat.
-4. `scripts/agent/pr.sh evidence <pr> <files...>` as the PR author or an app: it posts one comment with SHA-pinned images and removes `.evidence/` from the tip. Re-running updates that comment.
+4. `scripts/agent/pr.sh evidence <pr> <files...>` as the PR author, with a person's token and gh 2.99 or later. It uploads the files to GitHub as attachments (never committed, no commit, no push) and posts one comment marked with the PR head SHA, each image embedded by file name. Re-running replaces that comment. Videos (MP4, MOV, WebM) are attached the same way and appear as players. Limits: images 10 MB, video 100 MB on paid plans. Captures must be from the pushed head.
 5. Link that comment under Evidence in the PR body.
 
 Seeded data only: no secrets, client or personal data.
