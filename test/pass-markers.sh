@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # gate-pass-markers: the gate job restores this pull request's pass-marker directory before its repo checks, exposes it
-# as STD_PASS_DIR and saves it after them; a merge queue run, the release check and a cache-warm get no marker. Read from
+# as STD_PASS_DIR and saves it after them when a marker exists; only a pull_request run: a re-gate dispatch, a merge
+# queue run, the release check and a cache-warm get no marker. Read from
 # the workflow apply renders, the one a repository runs.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -23,12 +24,12 @@ steps "$WF" > "$T/steps.json"
 why=""
 st() { node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const f=s.find((x)=>x.name===process.argv[2]);if(!f){process.exit(3)}console.log(process.argv[3]==="if"?(f.if||""):process.argv[3]==="uses"?(f.uses||""):process.argv[3]==="text"?f.text:(f.run||""))' "$T/steps.json" "$1" "$2" 2>/dev/null; }
 idx() { node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log(s.findIndex((x)=>x.name===process.argv[2]))' "$T/steps.json" "$1"; }
-KEY='std-pass-${{ github.event.pull_request.number || inputs.pr }}-${{ github.run_id }}'
-RK='std-pass-${{ github.event.pull_request.number || inputs.pr }}-'
-COND="github.event_name == 'pull_request' || inputs.pr"
-for n in "pass markers" "pass markers dir" "pass markers save"; do [ -n "$(st "$n" if)" ] || why="$why; $n: no if"; done
+KEY='std-pass-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}'
+RK='std-pass-${{ github.event.pull_request.number }}-'
+COND="github.event_name == 'pull_request'"
+for n in "pass markers" "pass markers dir" "pass markers written" "pass markers save"; do [ -n "$(st "$n" if)" ] || why="$why; $n: no if"; done
 # restore before the repo checks, save after them, the directory made in between
-[ "$(idx "pass markers")" -ge 0 ] && [ "$(idx "pass markers")" -lt "$(idx "pass markers dir")" ] && [ "$(idx "pass markers dir")" -lt "$(idx "repo checks")" ] && [ "$(idx "repo checks")" -lt "$(idx "pass markers save")" ] || why="$why; order"
+[ "$(idx "pass markers")" -ge 0 ] && [ "$(idx "pass markers")" -lt "$(idx "pass markers dir")" ] && [ "$(idx "pass markers dir")" -lt "$(idx "repo checks")" ] && [ "$(idx "repo checks")" -lt "$(idx "pass markers written")" ] && [ "$(idx "pass markers written")" -lt "$(idx "pass markers save")" ] || why="$why; order"
 st "pass markers" uses | grep -Eq '^actions/cache/restore@[0-9a-f]{40} # v' || why="$why; restore not SHA-pinned"
 st "pass markers save" uses | grep -Eq '^actions/cache/save@[0-9a-f]{40} # v' || why="$why; save not SHA-pinned"
 st "pass markers" text | grep -qF "path: \${{ runner.temp }}/std-pass" || why="$why; restore path"
@@ -37,10 +38,12 @@ st "pass markers" text | grep -qF "restore-keys: $RK" || why="$why; restore-keys
 st "pass markers save" text | grep -qF "path: \${{ runner.temp }}/std-pass" || why="$why; save path"
 st "pass markers save" text | grep -qF "key: $KEY" || why="$why; save key"
 st "pass markers save" if | grep -qF "always()" || why="$why; save not always()"
+st "pass markers written" if | grep -qF "always()" || why="$why; written check not always()"
+st "pass markers save" if | grep -qF "steps.markers.outputs.any == 'true'" || why="$why; save does not wait for a marker"
 st "pass markers save" text | grep -q "continue-on-error: true" || why="$why; save can fail the gate"
-for n in "pass markers" "pass markers dir" "pass markers save"; do
-  st "$n" if | grep -qF "steps.plan.outputs.mode == 'full'" && st "$n" if | grep -qF "$COND" || why="$why; $n not for a full pull request or re-gate"
-  st "$n" if | grep -Eq 'merge_group|GATE_SELECT' && why="$why; $n runs for a merge queue or full selection"
+for n in "pass markers" "pass markers dir" "pass markers written" "pass markers save"; do
+  st "$n" if | grep -qF "steps.plan.outputs.mode == 'full'" && st "$n" if | grep -qF "$COND" || why="$why; $n not for a full pull request"
+  st "$n" if | grep -Eq 'merge_group|GATE_SELECT|inputs.pr' && why="$why; $n runs for a re-gate dispatch, a merge queue or a full selection"
 done
 # the directory is exposed through GITHUB_ENV, and the repo checks read nothing else
 st "pass markers dir" run | grep -qF 'echo "STD_PASS_DIR=$RUNNER_TEMP/std-pass" >>"$GITHUB_ENV"' || why="$why; dir not exposed"
@@ -49,6 +52,11 @@ st "repo checks" text | grep -q "STD_PASS" && why="$why; repo checks set STD_PAS
 RT=$T/rt; mkdir -p "$RT"; : > "$T/github-env"
 (export RUNNER_TEMP="$RT" GITHUB_ENV="$T/github-env"; bash -c "$(st "pass markers dir" run)") || why="$why; dir step failed"
 grep -qx "STD_PASS_DIR=$RT/std-pass" "$T/github-env" && [ -d "$RT/std-pass" ] || why="$why; dir step wrote [$(cat "$T/github-env")]"
+# the rendered marker check: an empty directory reports nothing (no save), one marker reports any=true
+: > "$T/out"; (export RUNNER_TEMP="$RT" GITHUB_OUTPUT="$T/out"; bash -c "$(st "pass markers written" run)") || why="$why; written step failed"
+[ ! -s "$T/out" ] || why="$why; empty directory reported [$(cat "$T/out")]"
+touch "$RT/std-pass/unit-abc"; (export RUNNER_TEMP="$RT" GITHUB_OUTPUT="$T/out"; bash -c "$(st "pass markers written" run)")
+grep -qx "any=true" "$T/out" || why="$why; a marker was not reported [$(cat "$T/out")]"
 # the only cache save in the gate is the marker save; the dependency and browser restores stay restores
 [ "$(grep -c 'actions/cache/save@' "$WF")" = 1 ] || why="$why; gate saves $(grep -c 'actions/cache/save@' "$WF") caches"
 grep -Eq 'uses: actions/cache@' "$WF" && why="$why; gate uses a bare actions/cache"

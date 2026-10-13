@@ -9,8 +9,8 @@
 # the test steps (a full plan on a ready head only), then the verdict step, which reads the outcomes of those steps.
 # This workflow restores the dependency and browser caches and never saves them: a re-gate on the default branch runs a
 # pull request's tree, so a cache written here could be seeded by that tree; std-cache-warm (main only) writes those.
-# The one cache it saves is the pass-marker directory, under this pull request's own key, on a pull request or a re-gate
-# dispatch only (never a release check, a full selection or a merge queue run): the markers of the units that passed.
+# The one cache it saves is the pass-marker directory, under this pull request's own key, on a pull_request run only
+# (never a re-gate dispatch, which runs on the default branch's cache scope, a release check or a merge queue run).
 # Repo-owned checks go in scripts/agent/gate.local.sh (it builds whatever it needs). The job's timeout is the overlay's
 # gate.timeout_minutes.
 name: std-gate
@@ -128,30 +128,36 @@ jobs:
         run: node scripts/agent/gate.mjs run build
       # pass markers: a file named <unit>-<fingerprint> that the repo checks write for a unit that passed. Restored by this
       # pull request's key prefix (the latest run's markers only), exposed to gate.local.sh as STD_PASS_DIR, and saved
-      # after the repo checks, pass or fail, under this run's key. Only a pull request or a re-gate dispatch gets them:
-      # a release check, a full selection (GATE_SELECT=full) and a merge queue run test every unit, so STD_PASS_DIR is unset
+      # after the repo checks, pass or fail, under this run's key when any marker exists. Only a pull_request run gets
+      # them: its cache entries are visible to this pull request alone. A re-gate dispatch (default-branch cache scope),
+      # the release check and a merge queue run never set STD_PASS_DIR, so they test every unit they select.
       - name: pass markers
-        if: steps.plan.outputs.mode == 'full' && steps.plan.outputs.rollback_draft != 'true' && (github.event_name == 'pull_request' || inputs.pr)
+        if: steps.plan.outputs.mode == 'full' && steps.plan.outputs.rollback_draft != 'true' && github.event_name == 'pull_request'
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/std-pass
-          key: std-pass-${{ github.event.pull_request.number || inputs.pr }}-${{ github.run_id }}
-          restore-keys: std-pass-${{ github.event.pull_request.number || inputs.pr }}-
+          key: std-pass-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: std-pass-${{ github.event.pull_request.number }}-
       - name: pass markers dir
-        if: steps.plan.outputs.mode == 'full' && steps.plan.outputs.rollback_draft != 'true' && (github.event_name == 'pull_request' || inputs.pr)
+        if: steps.plan.outputs.mode == 'full' && steps.plan.outputs.rollback_draft != 'true' && github.event_name == 'pull_request'
         run: mkdir -p "$RUNNER_TEMP/std-pass" && echo "STD_PASS_DIR=$RUNNER_TEMP/std-pass" >>"$GITHUB_ENV"
       - name: repo checks
         if: steps.plan.outputs.mode == 'full' && steps.plan.outputs.rollback_draft != 'true'
         run: |
           if [ -f scripts/agent/gate.local.sh ]; then env -u RELEASE_CHECK bash scripts/agent/gate.local.sh; else echo "notice: no scripts/agent/gate.local.sh"; fi
+      - name: pass markers written
+        id: markers
+        if: ${{ always() && steps.plan.outputs.mode == 'full' && steps.plan.outputs.rollback_draft != 'true' && github.event_name == 'pull_request' }}
+        run: if [ -n "$(ls -A "$RUNNER_TEMP/std-pass" 2>/dev/null)" ]; then echo "any=true" >>"$GITHUB_OUTPUT"; fi
       - name: pass markers save
-        # after the repo checks whatever their outcome: the markers of the units that passed are kept when another unit failed
-        if: ${{ always() && steps.plan.outputs.mode == 'full' && steps.plan.outputs.rollback_draft != 'true' && (github.event_name == 'pull_request' || inputs.pr) }}
-        continue-on-error: true # a save that fails (a re-run of the same run has the key already) must not fail the gate
+        # after the repo checks whatever their outcome: the markers of the units that passed are kept when another unit
+        # failed; a repository whose checks write no marker saves nothing
+        if: ${{ always() && steps.markers.outputs.any == 'true' && steps.plan.outputs.mode == 'full' && steps.plan.outputs.rollback_draft != 'true' && github.event_name == 'pull_request' }}
+        continue-on-error: true # a save that fails (the cache service is down) must not fail the gate
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/std-pass
-          key: std-pass-${{ github.event.pull_request.number || inputs.pr }}-${{ github.run_id }}
+          key: std-pass-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ github.run_attempt }}
       # last before e2e, so the Workers Builds for this head has the earlier steps' time to finish
       - name: preview
         id: preview
