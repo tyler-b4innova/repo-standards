@@ -85,6 +85,10 @@ createServer((req, res) => {
       list.push(c);
       return send(201, c);
     }
+    if ((m = p.match(/^\/repos\/acme\/demo\/issues\/comments\/(\d+)$/)) && req.method === "GET") {
+      const c = Object.values(S.issueComments).flat().find((x) => x.id == m[1]);
+      return c ? send(200, c) : send(404, {});
+    }
     if ((m = p.match(/^\/repos\/acme\/demo\/issues\/comments\/(\d+)$/)) && req.method === "DELETE") {
       const list = Object.values(S.issueComments).find((l) => l.some((x) => x.id == m[1]));
       if (!list) return send(404, {});

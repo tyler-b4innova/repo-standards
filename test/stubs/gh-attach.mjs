@@ -41,4 +41,6 @@ const res = await fetch(`${process.env.GITHUB_API_URL}/repos/${repo}/issues/${pr
 });
 const data = await res.json().catch(() => ({}));
 if (!res.ok) { console.error(`gh shim: HTTP ${res.status}: ${data.message ?? ""}`); process.exit(1); }
+// GH_SHIM_PARTIAL: the comment is posted, then the command fails before it reports the URL (a partial upload)
+if (process.env.GH_SHIM_PARTIAL) { console.error("gh shim: connection lost after posting"); process.exit(1); }
 console.log(`https://github.com/${repo}/pull/${pr}#issuecomment-${data.id}`);

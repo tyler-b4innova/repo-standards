@@ -103,16 +103,19 @@ status() {
 }
 
 evidence() {
-  local pr=${1:-} head me old out url f ext i=0 args=() body
+  local pr=${1:-} head me old out url newid keep kurl stray patch f ext i=0 args=() body major minor
   shift || true
   [ "${1:-}" != -- ] || shift
   [ -n "$pr" ] && [ $# -gt 0 ] || die "usage: pr.sh evidence <pr> <file>..."
+  # gh attaches at most 50 files per command, and this helper posts one command per comment
+  [ $# -le 50 ] || die "pr.sh evidence takes at most 50 files per comment (gh attaches 50 per command); got $#"
   # uploads are gh's: attachments need gh 2.99 or later (the flag is absent before it)
   local v; v=$(gh --version 2>/dev/null | sed -n '1s/^gh version \([0-9.]*\).*/\1/p') || true
-  [ -n "$v" ] && [ "$(printf '%s\n2.99\n' "$v" | sort -V | head -n 1)" = 2.99 ] || die "pr.sh evidence uploads with gh --attach, which needs gh 2.99 or later (found: ${v:-none})"
+  IFS=. read -r major minor _ <<<"$v" || true
+  [ -n "$v" ] && { [ "${major:-0}" -gt 2 ] || { [ "${major:-0}" -eq 2 ] && [ "${minor:-0}" -ge 99 ]; }; } || die "pr.sh evidence uploads with gh --attach, which needs gh 2.99 or later (found: ${v:-none})"
   for f in "$@"; do
     [ -f "$f" ] || die "no such file: $f"
-    case "$(printf '%s' "${f##*.}" | tr A-Z a-z)" in png | jpg | jpeg | gif | webp | svg | mp4 | mov | webm) ;; *) die "unsupported evidence file: $f (images: png, jpg, jpeg, gif, webp, svg; video: mp4, mov, webm)" ;; esac
+    case "$(printf '%s' "${f##*.}" | tr A-Z a-z)" in png | jpg | jpeg | gif | webp | mp4 | mov | webm) ;; *) die "unsupported evidence file: $f (images: png, jpg, jpeg, gif, webp; video: mp4, mov, webm)" ;; esac
   done
   req GET "pulls/$pr"
   [ "$(js 'd.head.ref' <<<"$R")" = "$(git branch --show-current)" ] || die "PR #$pr is not for the current branch $(git branch --show-current)"
@@ -134,11 +137,31 @@ evidence() {
       *) printf '![%s](./%s.%s)\n\n' "${f##*/}" "$i" "$ext" >>"$body"; args+=(--attach "./$i.$ext#${f##*/}") ;;
     esac
   done
-  out=$(cd "$EVD" && GH_TOKEN=$TOKEN gh pr comment "$pr" -R "$REPO" --body-file body.md "${args[@]}") || die "gh pr comment failed; the previous evidence comment is unchanged"
+  if ! out=$(cd "$EVD" && GH_TOKEN=$TOKEN gh pr comment "$pr" -R "$REPO" --body-file body.md "${args[@]}"); then
+    # gh can fail after posting a partial comment: remove this login's marked comments that were not there before
+    api GET "issues/$pr/comments?per_page=100"
+    if [ "$ST" = 200 ]; then
+      stray=$(js 'd.filter(c=>c.user?.login===a[0]&&(c.body||"").startsWith("<!-- std:evidence")&&!a[1].split(" ").includes(String(c.id))).map(c=>c.id).join(" ")' "$me" "$old" <<<"$R")
+      for id in $stray; do api DELETE "issues/comments/$id"; done
+    fi
+    die "gh pr comment failed; the previous evidence comment is unchanged"
+  fi
   url=$(printf '%s\n' "$out" | tail -n 1)
-  # post first, then remove our older evidence comments: a failed upload leaves the previous one in place
-  for id in $old; do req DELETE "issues/comments/$id"; done
-  printf '%s\n' "$url"
+  newid=${url##*issuecomment-}
+  case "$newid" in '' | *[!0-9]*) die "could not read the posted comment's id from: $url" ;; esac
+  if [ -z "$old" ]; then
+    kurl=$url
+  else
+    # keep the oldest comment (its id and URL stay the same across re-runs): it takes the new body, the new comment goes
+    set -- $old; keep=$1; shift
+    api GET "issues/comments/$newid"; [ "$ST" = 200 ] || die "could not read the posted comment $newid"
+    patch=$(js '({body:d.body})' <<<"$R")
+    req PATCH "issues/comments/$keep" "$patch"
+    kurl=$(js 'd.html_url' <<<"$R")
+    req DELETE "issues/comments/$newid"
+    for id in "$@"; do req DELETE "issues/comments/$id"; done
+  fi
+  printf '%s\n' "$kurl"
   echo "pr.sh: the review rule reads this evidence when the PR is next checked for merge" >&2
 }
 

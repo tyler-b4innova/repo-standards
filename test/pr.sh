@@ -102,7 +102,11 @@ CAP=("$T/before-400.png" "$T/before-1280.png" "$T/after-400.png" "$T/after-1280.
 HEAD_SHA=$(git rev-parse HEAD)
 why=""
 mut "S.issueComments[1]=[{id:5,body:'<!-- std:evidence --> by someone else',user:{login:'other'}}]"
-for run in 1 2; do "$PR" evidence 1 "${CAP[@]}" >"$T/ev.out" 2>&1 || why="$why; evidence run $run failed: $(cat "$T/ev.out")"; done
+U1=$("$PR" evidence 1 "${CAP[@]}" 2>"$T/ev.out") || why="$why; evidence run 1 failed: $(cat "$T/ev.out")"
+U2=$("$PR" evidence 1 "${CAP[@]}" 2>"$T/ev.out") || why="$why; evidence run 2 failed: $(cat "$T/ev.out")"
+# the second run keeps the first comment: same URL, same id, and the body is the new upload
+[ -n "$U1" ] && [ "$U1" = "$U2" ] || why="$why; the URL changed across runs: $U1 then $U2"
+[ "$(state "S.issueComments[1].find(c=>c.user.login==='agent').id")" = "${U1##*issuecomment-}" ] || why="$why; the kept comment is not $U1"
 body=$(state "S.issueComments[1].find(c=>c.user.login==='agent').body")
 [ "$(state "S.issueComments[1].filter(c=>c.user.login==='agent').length")" = 1 ] || why="$why; not exactly one own comment"
 [ "$(state "S.issueComments[1].find(c=>c.id===5).body")" = "<!-- std:evidence --> by someone else" ] || why="$why; edited another author's comment"
@@ -115,17 +119,27 @@ grep -q -- '"--attach","./1.png#before-400.png"' "$GH_SHIM_LOG" || why="$why; ca
 [ "$(git rev-parse HEAD)" = "$HEAD_SHA" ] || why="$why; a commit was made"
 [ "$(git --git-dir="$T/origin.git" rev-parse refs/heads/feat/x)" = "$HEAD_SHA" ] || why="$why; something was pushed"
 [ ! -e .evidence ] && [ -z "$(git status --porcelain)" ] || why="$why; the checkout changed"
-# gh 2.98 is refused before anything is sent; so is a file that is not an image or video
+# gh 2.98 is refused before anything is sent; so are files that are not images or video (SVG included), and more than 50
+printf '<svg/>' >"$T/diagram.svg"; mkdir -p "$T/many"; MANY=(); for i in $(seq 51); do printf '\211PNG\r\n' >"$T/many/c$i.png"; MANY+=("$T/many/c$i.png"); done
 g0=$(wc -l <"$GH_SHIM_LOG"); n=$(lines)
 out=$(GH_SHIM_VERSION=2.98.0 "$PR" evidence 1 "${CAP[@]}" 2>&1) && why="$why; gh 2.98 accepted"
 case "$out" in *"gh 2.99 or later"*) ;; *) why="$why; no version message: $out" ;; esac
 out=$("$PR" evidence 1 "$T/notes.txt" 2>&1) && why="$why; a text file accepted"
 case "$out" in *"unsupported evidence file"*) ;; *) why="$why; no unsupported-file message: $out" ;; esac
+out=$("$PR" evidence 1 "$T/diagram.svg" 2>&1) && why="$why; an SVG accepted"
+case "$out" in *"unsupported evidence file"*) ;; *) why="$why; no SVG message: $out" ;; esac
+out=$("$PR" evidence 1 "${MANY[@]}" 2>&1) && why="$why; 51 files accepted"
+case "$out" in *"at most 50 files"*) ;; *) why="$why; no 50-file message: $out" ;; esac
 [ "$(wc -l <"$GH_SHIM_LOG")" = "$g0" ] && [ "$(lines)" = "$n" ] || why="$why; a refused run sent requests"
 # a failed post changes nothing: the previous own comment stays as it was
 mut "S.failComments=true"; out=$("$PR" evidence 1 "${CAP[@]}" 2>&1) && why="$why; failed post reported success"
 mut "S.failComments=false"
 [ "$(state "S.issueComments[1].find(c=>c.user.login==='agent').body")" = "$body" ] || why="$why; a failed post changed the comment"
+# a partial post (gh fails after the comment is up) leaves nothing behind: the previous comment stays, the new one is removed
+idb=$(state "S.issueComments[1].find(c=>c.user.login==='agent').id")
+out=$(GH_SHIM_PARTIAL=1 "$PR" evidence 1 "${CAP[@]}" 2>&1) && why="$why; a partial post reported success"
+case "$out" in *"the previous evidence comment is unchanged"*) ;; *) why="$why; partial post message: $out" ;; esac
+[ "$(state "S.issueComments[1].filter(c=>c.user.login==='agent').length")" = 1 ] && [ "$(state "S.issueComments[1].find(c=>c.user.login==='agent').id")" = "$idb" ] || why="$why; a partial post left a comment: $(state "JSON.stringify(S.issueComments[1])")"
 # the review rule reads what the helper posted: same marker, same names, through the review export
 FXP=$T/review-fixture.json
 node -e '(async()=>{const S=await (await fetch(process.env.GITHUB_API_URL+"/__state")).json();require("fs").writeFileSync(process.argv[1],JSON.stringify({repo:"acme/demo",files:{1:["src/app.css"]},comments:{1:S.issueComments[1]},pull:{user:"agent",ref:"feat/x"},head:process.argv[2],gitDir:process.argv[3]}))})()' "$FXP" "$HEAD_SHA" "$PWD"

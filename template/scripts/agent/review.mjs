@@ -12,7 +12,7 @@ const glob = (g) => new RegExp("^" + g.replace(/[.+^$()|[\]\\]/g, "\\$&").replac
 const short = (s) => s.slice(0, 7);
 
 // pull: the PR as the caller already read it (so the verdict is for exactly that state); read here when omitted.
-export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.now() }) {
+export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.now(), serverUrl = "https://github.com" }) {
   const R = `/repos/${owner}/${repo}`;
   const all = async (path) => { const out = []; for (let p = 1; ; p++) { const b = (await api("GET", `${path}${path.includes("?") ? "&" : "?"}per_page=100&page=${p}`)) ?? []; out.push(...b); if (b.length < 100) return out; } };
   const pr = pull ?? (await api("GET", `${R}/pulls/${n}`));
@@ -64,7 +64,9 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.n
     const isDoc = (f) => /\.(docx|pptx|xlsx|odt|odp|ods|pdf)$/i.test(f), docs = changed.some(isDoc), web = changed.some((f) => !isDoc(f));
     const trusted = pack.evidence_trusted_authors ?? ["pr_author", "app"];
     const trust = (c) => (trusted.includes("pr_author") && c.user?.login === pr.user.login) || (trusted.includes("app") && c.performed_via_github_app) || trusted.includes(c.user?.login);
-    const ASSET = /https:\/\/github\.com\/user-attachments\/assets\/[\w-]+/g, NAMED = /!\[([^\]]*)\]\((https:\/\/github\.com\/user-attachments\/assets\/[\w-]+)\)/g;
+    // attachments live on the server the caller names (github.com by default); the host is escaped, never read as a pattern
+    const host = serverUrl.replace(/\/+$/, "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), asset = `${host}/user-attachments/assets/[\\w-]+`;
+    const ASSET = new RegExp(asset, "g"), NAMED = new RegExp(`!\\[([^\\]]*)\\]\\((${asset})\\)`, "g");
     const bad = [];
     for (const c of await all(`${R}/issues/${n}/comments`)) {
       const body = c.body ?? "";
