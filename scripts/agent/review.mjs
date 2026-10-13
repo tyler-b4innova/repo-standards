@@ -10,6 +10,8 @@ const b64 = (f) => (f?.content ? JSON.parse(Buffer.from(f.content, "base64").toS
 const glob = (g) => new RegExp("^" + g.replace(/[.+^$()|[\]\\]/g, "\\$&").replace(/\{([^}]+)\}/g, (_, a) => `(${a.split(",").join("|")})`)
   .replace(/\*\*\//g, "\0").replace(/\*\*/g, "\x01").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]").replace(/\0/g, "(.*/)?").replace(/\x01/g, ".*") + "$");
 const short = (s) => s.slice(0, 7);
+// The last producer of pinned .evidence/ links stopped at 09:56Z on 2026-10-13: pinned comments created or edited from this instant on are refused.
+const PINNED_CUTOVER = Date.parse("2026-10-13T10:00:00Z");
 
 // pull: the PR as the caller already read it (so the verdict is for exactly that state); read here when omitted.
 export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.now(), serverUrl = "https://github.com" }) {
@@ -60,7 +62,7 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.n
   // `<!-- std:evidence head=<sha> -->`, covering before and after at 400 and 1280px for web changes and paired
   // before-N/after-N pages for documents. The marked head must be in this PR's history, with no later commit touching a
   // UI path (evidence goes stale when the UI changes). Videos carry no name and need none.
-  // The pinned form (`.evidence/` blob links) is accepted only until agents stop producing it: such a comment keeps the
+  // The pinned form (`.evidence/` blob links) is accepted only when last written (edited, else created) before PINNED_CUTOVER: such a comment keeps the
   // pre-attachment checks, each link resolving at its commit, with the same naming rules.
   async function evidence() {
     const isDoc = (f) => /\.(docx|pptx|xlsx|odt|odp|ods|pdf)$/i.test(f), docs = changed.some(isDoc), web = changed.some((f) => !isDoc(f));
@@ -108,6 +110,8 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.n
       if (!pinned.length && !assets.length && !body.includes("<!-- std:evidence")) continue;
       if (!trust(c)) { bad.push(`${who}: not a trusted author (${trusted.join(", ")}; PR author @${pr.user.login})`); continue; }
       if (pinned.length) {
+        // An edit counts: an older pr.sh could rewrite a grandfathered comment in place, keeping its created_at.
+        if (!(Date.parse(c.updated_at ?? c.created_at) < PINNED_CUTOVER)) { bad.push(`${who}: pinned .evidence/ links are no longer accepted; re-post with pr.sh evidence`); continue; }
         // Existence by directory listing (one read per commit and folder): the file endpoint returns the image
         // itself and refuses files over 1 MB, which full-page captures often are.
         const miss = [], listed = new Map();

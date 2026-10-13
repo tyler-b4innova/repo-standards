@@ -289,7 +289,7 @@ PORT=$(wait_port "$T/port") || { fail stub-start "gate-github stub did not start
 # PAGES (before-1, after-1, after-2 as attachments); PINGOOD (before and after at 400 and 1280px as pinned .evidence/
 # blob links) with PINFILES (those files, as the fixture's contents).
 fx() { node -e 'const S=process.env.SHA, MK="<!-- std:evidence head="+S+" -->\n### Evidence\n", img=(n)=>"!["+n+"](https://github.com/user-attachments/assets/"+n.replace(/[^a-z0-9]/gi,"-")+"-id)",
-c=(id,login,body,app)=>({id,html_url:"https://github.com/acme/demo/pull/9#issuecomment-"+id,user:{login},performed_via_github_app:app?{slug:"evidence-app"}:null,body}),
+c=(id,login,body,app,at="2026-10-13T09:00:00Z",edited)=>({id,created_at:at,updated_at:edited??at,html_url:"https://github.com/acme/demo/pull/9#issuecomment-"+id,user:{login},performed_via_github_app:app?{slug:"evidence-app"}:null,body}),
 GOOD=MK+["before","after"].flatMap((b)=>[img(b+"-home-400.png"),img(b+"-home-1280.png")]).join("\n"),
 PAGES=[img("before-1.png"),img("after-1.png"),img("after-2.png")].join("\n"),
 PIN=(n)=>"!["+n+"](https://github.com/acme/demo/blob/"+S+"/.evidence/"+n+"?raw=true)",
@@ -341,8 +341,8 @@ fx '{files:{5:["src/app.css"]},comments:{5:[c(23,"alice",GOOD)]}}'; out3=$(ev "$
 if [ $s1 -eq 1 ] && has "#issuecomment-21 by @mallory" "$out1" && [ $s2 -eq 0 ] && has "#issuecomment-22" "$out2" && [ $s3 -eq 0 ]; then ok evidence-comment-author-or-app
 else fail evidence-comment-author-or-app "other-user=$s1 app=$s2 author=$s3: $out1"; fi
 
-# evidence-pinned-transition: the pinned .evidence/ form is accepted while its links resolve at their commit and no UI
-# commit follows; unresolved or stale pinned evidence is refused. evidence-marker-required: a marker-less comment is
+# evidence-pinned-transition: the pinned .evidence/ form is accepted before the cut-over while its links resolve at their
+# commit and no UI commit follows; unresolved or stale pinned evidence is refused. evidence-marker-required: a marker-less comment is
 # refused with the reason; a missing width and a repeated upload are refused as missing captures.
 R=$(mkev)
 fx '{files:{6:["src/app.css"]},contents:PINFILES,comments:{6:[c(31,"alice","<!-- std:evidence -->\n"+PINGOOD)]}}'; out1=$(ev "$R" 6); s1=$?
@@ -355,6 +355,15 @@ fx '{files:{6:["src/app.css"]},comments:{6:[c(34,"alice",GOOD)]}}'; out4=$(ev "$
 fx '{files:{6:["src/app.css"]},comments:{6:[c(35,"alice",MK+["before-home-400.png","before-home-1280.png","after-home-400.png","after-home-1280.png"].map((n)=>"![" + n + "](https://github.com/user-attachments/assets/one-upload)").join("\n"))]}}'; out5=$(ev "$R" 6); s5=$?
 if [ $s1 -eq 0 ] && has "evidence: accepted" "$out1" && [ $s6 -eq 1 ] && has "unresolved" "$out6" && [ $s7 -eq 1 ] && has "UI changed after the evidence" "$out7"; then ok evidence-pinned-transition
 else fail evidence-pinned-transition "valid=$s1 unresolved=$s6 stale=$s7: $out1 | $out6 | $out7"; fi
+# pinned-cut-over: a pinned comment created or edited at or after the cut-over (2026-10-13T10:00:00Z) is refused with the re-post
+# message, the same links created just before it are accepted, and an attachment comment created after it is still accepted.
+R=$(mkev)
+fx '{files:{8:["src/app.css"]},contents:PINFILES,comments:{8:[c(41,"alice","<!-- std:evidence -->\n"+PINGOOD,false,"2026-10-13T09:59:59Z")]}}'; out8=$(ev "$R" 8); s8=$?
+fx '{files:{8:["src/app.css"]},contents:PINFILES,comments:{8:[c(42,"alice","<!-- std:evidence -->\n"+PINGOOD,false,"2026-10-13T10:00:00Z")]}}'; out9=$(ev "$R" 8); s9=$?
+fx '{files:{8:["src/app.css"]},comments:{8:[c(43,"alice",GOOD,false,"2026-10-13T10:00:00Z")]}}'; out10=$(ev "$R" 8); s10=$?
+fx '{files:{8:["src/app.css"]},contents:PINFILES,comments:{8:[c(44,"alice","<!-- std:evidence -->\n"+PINGOOD,false,"2026-10-13T09:00:00Z","2026-10-13T10:00:00Z")]}}'; out11=$(ev "$R" 8); s11=$?
+if [ $s8 -eq 0 ] && has "evidence: accepted" "$out8" && [ $s9 -eq 1 ] && has "pinned .evidence/ links are no longer accepted; re-post with pr.sh evidence" "$out9" && [ $s10 -eq 0 ] && has "evidence: accepted" "$out10" && [ $s11 -eq 1 ] && has "pinned .evidence/ links are no longer accepted" "$out11"; then ok evidence-pinned-transition
+else fail evidence-pinned-transition "before=$s8 after=$s9 attachment=$s10 edited-after=$s11: $out8 | $out9 | $out10 | $out11"; fi
 if [ $s2 -eq 1 ] && has "no <!-- std:evidence head=<40-hex sha> --> marker; re-post with pr.sh evidence" "$out2"; then ok evidence-marker-required; else fail evidence-marker-required "marker-less=$s2: $out2"; fi
 if [ $s3 -eq 1 ] && has "missing after 1280px" "$out3" && [ $s4 -eq 0 ] && has "evidence: accepted" "$out4" && [ $s5 -eq 1 ] && has "missing before 400px" "$out5"; then ok evidence-attachments-pinned
 else fail evidence-attachments-pinned "missing-width=$s3 accepted=$s4 one-asset=$s5: $out3 | $out4 | $out5"; fi

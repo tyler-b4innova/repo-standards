@@ -27,7 +27,7 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 - **`evidence-attachments-pinned`**: every evidence image is a GitHub attachment (`https://github.com/user-attachments/assets/<id>`) named by its alt text, as four distinct images (before and after at 400 and 1280px); the marked head (`<!-- std:evidence head=<sha> -->`) must be in the PR's history, and a UI commit after it makes the evidence stale.
 - **`evidence-attachments-posted`**: `pr.sh evidence` uploads its files with `gh pr comment --attach` (gh 2.99 or later, a person's token), posts one marked comment with images named by file name, makes no commit and pushes nothing, and re-posting replaces the previous comment; the review rule accepts what it posts.
 - **`evidence-marker-required`**: an attachment comment without the `head=<sha>` marker is rejected, with a message that names the marker and says to re-post with `pr.sh evidence`.
-- **`evidence-pinned-transition`**: the pinned `.evidence/` blob form (pre-attachment comments) is accepted only while agents stop producing it: each link must resolve by directory listing at its 40-hex commit, the commit must be in the PR's history, no later commit may touch a UI path, and the same before/after and width (or page) names apply; an unresolved or stale pinned comment is rejected.
+- **`evidence-pinned-transition`**: the pinned `.evidence/` blob form (pre-attachment comments) is accepted only when created and last edited before the cut-over instant `2026-10-13T10:00:00Z` (the last producer stopped then): a pinned comment created at or after it is rejected with the re-post message, and attachment comments are accepted at any time; before the cut-over each link must resolve by directory listing at its 40-hex commit, the commit must be in the PR's history, no later commit may touch a UI path, and the same before/after and width (or page) names apply; an unresolved or stale pinned comment is rejected.
 - **`evidence-document-pages`**: a PR whose UI paths are all documents (.docx, .pptx and similar) accepts before and after page images (`before-N`, `after-N`) with at least one page in both; a PR that also changes web UI needs the 400 and 1280px set and the pages.
 - **`ui-paths-repo-override`**: `standards.json` `ui_paths` replaces the default globs, and `{ "ignore": [...] }` keeps them while exempting paths (release notes generated upstream once tripped the evidence gate).
 - **`ui-paths-empty-warns`**: an explicit `ui_paths: []` turns the evidence gate off, and `--check` warns naming tracked files the defaults would cover.
@@ -71,7 +71,7 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 - **`jobs-have-timeouts`**: a workflow job without `timeout-minutes` fails `--check` (GitHub's default is 360 minutes); the fix points at the org's one setting, `gate.timeout_minutes`, and names no minutes of its own.
 - **`secrets-scan-changes-only`**: the secret scan covers the pull request's own commits, including on a dispatch re-gate of the merge ref, so an old leak already on the base does not fail it.
 
-Retired before any release, with the transition: `evidence-old-pinned-rejected` (the pinned form is accepted while agents stop producing it; see `evidence-pinned-transition`).
+Retired before any release, with the transition: `evidence-old-pinned-rejected` (the pinned form was accepted until the cut-over; see `evidence-pinned-transition`).
 
 ## One-branch releases
 
