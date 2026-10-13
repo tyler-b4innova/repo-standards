@@ -19,7 +19,8 @@ concurrency:
   cancel-in-progress: false
 jobs:
   cleanup:
-    runs-on: ${{ vars.STD_GATE_RUNNER || 'ubuntu-24.04' }}
+    # GitHub's runner, not the gate's: a closed pull request's clean-up is one short job and must not bill the gate's runner
+    runs-on: ubuntu-24.04
     timeout-minutes: {gate_timeout_minutes}
     steps:
       # the default branch's reviewed code and settings, never a closed pull request's, before any credential is loaded

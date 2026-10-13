@@ -36,10 +36,8 @@ for (const workflow of ["std-gate", "std-cache-warm"]) {
   if (workflow === "std-gate") {
     assert.doesNotMatch(yaml, /uses: actions\/cache@/, "std-gate must never write a cache");
     assert.doesNotMatch(yaml, /^\s+cache:/m, "std-gate must never write a cache (setup-node cache saves)");
-    const checks = jobs[jobs.indexOf("checks") + 1];
-    assert.ok(!checks.includes("gate.mjs install"));
-    assert.ok(!checks.includes("id: pm"));
-    for (const name of ["test"]) assert.ok(jobs[jobs.indexOf(name) + 1].includes("gate.mjs install"));
+    assert.deepEqual(jobs.filter((_, i) => i % 2 === 1), ["gate"], "std-gate is one job");
+    assert.ok(jobs[jobs.indexOf("gate") + 1].includes("gate.mjs install"), "the one job installs");
   } else assert.ok(jobs[jobs.indexOf("warm") + 1].includes("gate.mjs install"));
 }
 JS
