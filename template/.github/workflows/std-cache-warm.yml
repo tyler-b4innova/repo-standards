@@ -1,5 +1,5 @@
 # Managed by the standards pack. Pull requests can read the default branch's dependency cache but not each other's,
-# so a lockfile change on the default branch refreshes it here. Not a required check; it also warms the gate's Playwright browser cache. The only workflow that writes caches: it runs main's code only, never a pull request's.
+# so a lockfile change on the default branch refreshes it here. Not a required check; it also warms the gate's Playwright browser cache. The only workflow that writes dependency and browser caches: it runs main's code only, never a pull request's (the gate saves only its per-pull-request pass markers).
 name: std-cache-warm
 on:
   push:
