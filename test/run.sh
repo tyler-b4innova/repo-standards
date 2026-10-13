@@ -5,25 +5,16 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 unset GATE_SELECT GATE_AFFECTED GATE_AFFECTED_E2E # inherited when this suite is the gate e2e command; cases set their own
-status=0 log=$(mktemp) out=$(mktemp -d)
-trap 'rm -rf "$log" "$out"' EXIT
-# Case files are independent (each works in its own temporary directories), so they run in parallel: TEST_JOBS at a time,
-# default one per CPU. Each file's output is kept whole and printed in file order, so the log reads as a serial run.
-parallel=${TEST_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}
+status=0 log=$(mktemp)
+trap 'rm -f "$log"' EXIT
 files=()
 for f in test/[a-z]*.sh $( [ -f org/test.sh ] && echo org/test.sh ); do
   case "$f" in test/lib.sh | test/run.sh) continue ;; esac
   files+=("$f")
 done
-for i in "${!files[@]}"; do
-  while [ "$(jobs -rp | wc -l)" -ge "$parallel" ]; do sleep 0.2; done
-  ( bash "${files[$i]}" > "$out/$i.log" 2>&1; echo $? > "$out/$i.rc" ) &
-done
-wait
-for i in "${!files[@]}"; do
-  cat "$out/$i.log" | tee -a "$log"
-  [ "$(cat "$out/$i.rc" 2>/dev/null)" = 0 ] || status=1
-done
+# in parallel, TEST_JOBS at a time (default one per CPU); output arrives whole and in file order (tools/parallel.sh)
+bash tools/parallel.sh "${files[@]}" | tee -a "$log"
+[ "${PIPESTATUS[0]}" -eq 0 ] || status=1
 want=$(grep -oE '^- \*\*`[a-z0-9-]+`\*\*' SCENARIOS.md | sed -E 's/^- \*\*`([^`]+)`\*\*/\1/' | sort -u)
 got=$(sed -nE 's/^(ok|FAIL|skip) ([a-z0-9-]+).*/\2/p' "$log" | sort -u)
 skipped=""; [ -z "${CI:-}" ] || skipped=$(sed -nE 's/^skip ([a-z0-9-]+).*/\1/p' "$log" | sort -u)

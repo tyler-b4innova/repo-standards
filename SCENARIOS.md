@@ -266,6 +266,8 @@ Retired in 0.6.0 with the staged flow: `promote-no-ui-auto`, `promote-ui-needs-h
 
 - **`workflows-parse`**: every workflow the engine ships parses as YAML (an unquoted colon once disabled a workflow silently).
 
+- **`engine-suite-parallel`**: `test/run.sh` runs the case files in parallel through `tools/parallel.sh`. It runs at most `TEST_JOBS` at once (default one per CPU) and more than one at a time. Each file's output is printed whole and in the order given, and any non-zero exit fails the run. A `TEST_JOBS` that is not a positive integer falls back to the default instead of hanging. (The local gate took about 10 minutes running 35 independent files one after another; an owner asked for it to be made faster.)
+
 - **`engine-test-python-repo-local`**: when `python3` has no PyYAML, the suite takes it from the repository's own ignored `.test-venv` (built from `requirements-dev.txt`), never from the user's or the machine's Python. A current `.test-venv` is reused and put first on PATH. A `.test-venv` the suite did not make (no owner marker) is refused and left untouched. (A developer machine without PyYAML failed the local gate, and the only way past it was a user-wide install; an owner asked that test dependencies stay in the repository.)
 
 - **`engine-neutral`**: no organization name, internal host, account, App or vault identifier appears in the tree or anywhere in history.

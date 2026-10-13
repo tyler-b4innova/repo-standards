@@ -698,6 +698,26 @@ if [ -z "$why" ]; then ok flow-staged-retired; else fail flow-staged-retired "$w
 out=$(python3 -c 'import sys,yaml; [yaml.safe_load(open(f)) for f in sys.argv[1:]]' template/.github/workflows/*.yml 2>&1)
 if [ $? -eq 0 ]; then ok workflows-parse; else fail workflows-parse "$out"; fi
 
+# ---- the suite's case files run in parallel (tools/parallel.sh): at most TEST_JOBS at once and more than one at a time,
+# output whole and in the order given, any non-zero exit fails the run, and a TEST_JOBS that is not a positive integer
+# falls back to the default instead of hanging
+why=""; PD=$(mktemp -d "$T/par.XXXXXX")
+for n in 1 2 3 4; do
+  printf 'touch "%s/run.$$"; sleep %s; ls "%s"/run.* 2>/dev/null | wc -l | tr -d " " >> "%s/peak"; rm -f "%s/run.$$"; echo "case %s"; %s\n' \
+    "$PD" "$([ $n -eq 1 ] && echo 2 || echo 1)" "$PD" "$PD" "$PD" "$n" "$([ $n -eq 3 ] && echo 'exit 1' || echo 'exit 0')" > "$PD/c$n.sh"
+done
+po=$(TEST_JOBS=2 bash tools/parallel.sh "$PD/c1.sh" "$PD/c2.sh" "$PD/c3.sh" "$PD/c4.sh"); ps=$?
+peak=$(sort -n "$PD/peak" | tail -1)
+[ "$ps" -eq 1 ] || why="$why; a failing case did not fail the run ($ps)"
+[ "$peak" = 2 ] || why="$why; peak concurrency $peak with TEST_JOBS=2"
+[ "$(printf '%s\n' "$po" | tr '\n' ' ')" = "case 1 case 2 case 3 case 4 " ] || why="$why; order: $po"
+printf 'echo fine\n' > "$PD/ok.sh"
+( TEST_JOBS=0 bash tools/parallel.sh "$PD/ok.sh" > "$PD/zero.out" 2>&1; echo $? > "$PD/zero.rc" ) & zp=$!
+for _ in $(seq 1 50); do kill -0 "$zp" 2>/dev/null || break; sleep 0.2; done
+if kill -0 "$zp" 2>/dev/null; then pkill -P "$zp"; kill "$zp"; why="$why; TEST_JOBS=0 hung"
+else [ "$(cat "$PD/zero.rc")" = 0 ] && [ "$(cat "$PD/zero.out")" = fine ] || why="$why; TEST_JOBS=0: $(cat "$PD/zero.out")"; fi
+if [ -z "$why" ]; then ok engine-suite-parallel; else fail engine-suite-parallel "$why"; fi
+
 # ---- the suite's PyYAML comes from the repository's own .test-venv when python3 lacks it, never from the user's Python;
 # a .test-venv the suite did not make is refused and left alone, and a current one is reused and put first on PATH
 why=""; ENG=$PWD; NY=$T/noyaml-py; mkdir -p "$NY"; printf '#!/bin/sh\nexit 1\n' > "$NY/python3"; chmod +x "$NY/python3"
