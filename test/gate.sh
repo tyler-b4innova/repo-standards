@@ -286,12 +286,15 @@ node test/stubs/gate-github.mjs "$T/port" "$LOG" "$FX" & PIDS="$PIDS $!"
 PORT=$(wait_port "$T/port") || { fail stub-start "gate-github stub did not start"; exit 1; }
 # fx '<js object>': write the fixture. The spec can use: c(id, login, body, app) for a comment; img(name) for an
 # attachment named by its alt text; MK (the marker for the marked head); GOOD (before and after at 400 and 1280px);
-# PAGES (before-1, after-1, after-2 as attachments); BLOB (the old pinned .evidence/ form).
+# PAGES (before-1, after-1, after-2 as attachments); PINGOOD (before and after at 400 and 1280px as pinned .evidence/
+# blob links) with PINFILES (those files, as the fixture's contents).
 fx() { node -e 'const S=process.env.SHA, MK="<!-- std:evidence head="+S+" -->\n### Evidence\n", img=(n)=>"!["+n+"](https://github.com/user-attachments/assets/"+n.replace(/[^a-z0-9]/gi,"-")+"-id)",
 c=(id,login,body,app)=>({id,html_url:"https://github.com/acme/demo/pull/9#issuecomment-"+id,user:{login},performed_via_github_app:app?{slug:"evidence-app"}:null,body}),
 GOOD=MK+["before","after"].flatMap((b)=>[img(b+"-home-400.png"),img(b+"-home-1280.png")]).join("\n"),
 PAGES=[img("before-1.png"),img("after-1.png"),img("after-2.png")].join("\n"),
-BLOB="![before-home-400.png](https://github.com/acme/demo/blob/"+S+"/.evidence/before-home-400.png?raw=true)";
+PIN=(n)=>"!["+n+"](https://github.com/acme/demo/blob/"+S+"/.evidence/"+n+"?raw=true)",
+PINGOOD=["before","after"].flatMap((b)=>[PIN(b+"-home-400.png"),PIN(b+"-home-1280.png")]).join("\n"),
+PINFILES=["before","after"].flatMap((b)=>[S+":.evidence/"+b+"-home-400.png",S+":.evidence/"+b+"-home-1280.png"]);
 require("fs").writeFileSync(process.env.FX,JSON.stringify({repo:"acme/demo",files:{},comments:{},...eval("("+process.argv[1]+")")}))' "$1"; }
 # ev <repo> <pr>: the review rule (repo-standards/review, as a launcher calls it); the stand-in answers commits,
 # compares and the policy files from <repo>
@@ -338,18 +341,21 @@ fx '{files:{5:["src/app.css"]},comments:{5:[c(23,"alice",GOOD)]}}'; out3=$(ev "$
 if [ $s1 -eq 1 ] && has "#issuecomment-21 by @mallory" "$out1" && [ $s2 -eq 0 ] && has "#issuecomment-22" "$out2" && [ $s3 -eq 0 ]; then ok evidence-comment-author-or-app
 else fail evidence-comment-author-or-app "other-user=$s1 app=$s2 author=$s3: $out1"; fi
 
-# evidence-old-pinned-rejected, evidence-marker-required: the old .evidence/ blob form and a marker-less comment are
+# evidence-pinned-transition: the pinned .evidence/ form is accepted while its links resolve at their commit and no UI
+# commit follows; unresolved or stale pinned evidence is refused. evidence-marker-required: a marker-less comment is
 # refused with the reason; a missing width and a repeated upload are refused as missing captures.
 R=$(mkev)
-fx '{files:{6:["src/app.css"]},comments:{6:[c(31,"alice",BLOB)]}}'; out1=$(ev "$R" 6); s1=$?
+fx '{files:{6:["src/app.css"]},contents:PINFILES,comments:{6:[c(31,"alice","<!-- std:evidence -->\n"+PINGOOD)]}}'; out1=$(ev "$R" 6); s1=$?
+fx '{files:{6:["src/app.css"]},contents:PINFILES.slice(1),comments:{6:[c(36,"alice",PINGOOD)]}}'; out6=$(ev "$R" 6); s6=$?
+R2=$(mkev); echo "a{}" > "$R2/app.css" && commit "$R2" "UI after the pinned evidence"
+fx '{files:{7:["app.css"]},contents:PINFILES,comments:{7:[c(37,"alice",PINGOOD)]}}'; out7=$(ev "$R2" 7); s7=$?
 fx '{files:{6:["src/app.css"]},comments:{6:[c(32,"alice",GOOD.replace(/<!-- std:evidence head=[0-9a-f]+ -->/,"<!-- std:evidence -->"))]}}'; out2=$(ev "$R" 6); s2=$?
 fx '{files:{6:["src/app.css"]},comments:{6:[c(33,"alice",MK+[img("before-home-400.png"),img("before-home-1280.png"),img("after-home-400.png")].join("\n"))]}}'; out3=$(ev "$R" 6); s3=$?
 fx '{files:{6:["src/app.css"]},comments:{6:[c(34,"alice",GOOD)]}}'; out4=$(ev "$R" 6); s4=$?
 fx '{files:{6:["src/app.css"]},comments:{6:[c(35,"alice",MK+["before-home-400.png","before-home-1280.png","after-home-400.png","after-home-1280.png"].map((n)=>"![" + n + "](https://github.com/user-attachments/assets/one-upload)").join("\n"))]}}'; out5=$(ev "$R" 6); s5=$?
-if [ $s1 -eq 1 ] && has "pinned .evidence/ links are no longer accepted; re-post with pr.sh evidence" "$out1"; then old=1; else old=0; fi
-if [ $s2 -eq 1 ] && has "no <!-- std:evidence head=<40-hex sha> --> marker; re-post with pr.sh evidence" "$out2"; then mark=1; else mark=0; fi
-if [ $old -eq 1 ]; then ok evidence-old-pinned-rejected; else fail evidence-old-pinned-rejected "blob=$s1: $out1"; fi
-if [ $mark -eq 1 ]; then ok evidence-marker-required; else fail evidence-marker-required "marker-less=$s2: $out2"; fi
+if [ $s1 -eq 0 ] && has "evidence: accepted" "$out1" && [ $s6 -eq 1 ] && has "unresolved" "$out6" && [ $s7 -eq 1 ] && has "UI changed after the evidence" "$out7"; then ok evidence-pinned-transition
+else fail evidence-pinned-transition "valid=$s1 unresolved=$s6 stale=$s7: $out1 | $out6 | $out7"; fi
+if [ $s2 -eq 1 ] && has "no <!-- std:evidence head=<40-hex sha> --> marker; re-post with pr.sh evidence" "$out2"; then ok evidence-marker-required; else fail evidence-marker-required "marker-less=$s2: $out2"; fi
 if [ $s3 -eq 1 ] && has "missing after 1280px" "$out3" && [ $s4 -eq 0 ] && has "evidence: accepted" "$out4" && [ $s5 -eq 1 ] && has "missing before 400px" "$out5"; then ok evidence-attachments-pinned
 else fail evidence-attachments-pinned "missing-width=$s3 accepted=$s4 one-asset=$s5: $out3 | $out4 | $out5"; fi
 
