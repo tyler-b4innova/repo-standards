@@ -695,8 +695,12 @@ jset "$R/standards.json" 'o.flow="staged"'; commit "$R"; out=$(check "$R"); st=$
 if [ -z "$why" ]; then ok flow-staged-retired; else fail flow-staged-retired "$why"; fi
 
 # ---- pack hygiene
-out=$(python3 -c 'import sys,yaml; [yaml.safe_load(open(f)) for f in sys.argv[1:]]' template/.github/workflows/*.yml 2>&1)
-if [ $? -eq 0 ]; then ok workflows-parse; else fail workflows-parse "$out"; fi
+# PyYAML is not a declared dependency: a machine without it skips, as gate.mjs syntax does; CI runners have it, so no skip there
+if [ -z "${CI:-}" ] && ! python3 -c "import yaml" 2>/dev/null; then echo "skip workflows-parse (python3 has no PyYAML here)"
+else
+  out=$(python3 -c 'import sys,yaml; [yaml.safe_load(open(f)) for f in sys.argv[1:]]' template/.github/workflows/*.yml 2>&1)
+  if [ $? -eq 0 ]; then ok workflows-parse; else fail workflows-parse "$out"; fi
+fi
 
 # no byte-size limit on the managed block: an overlay whose block renders over 1800 bytes loads, applies and checks
 BIG=$T/big.json; node -e 'const o=require(process.argv[1]);o.profiles.client.block_lines=["- "+"x".repeat(2000)];require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$BIG"
