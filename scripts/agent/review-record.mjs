@@ -1,5 +1,50 @@
 import { createHash } from "node:crypto";
 
+// GitHub's per-comment transport capacity is not a limit on a review or response.
+// Publish every part before its manifest, and verify the complete payload on reads.
+const COMMENT_CAPACITY = 65536;
+const digest = (body) => createHash("sha256").update(body).digest("hex");
+export function splitComment(body, kind) {
+  if (body.length <= COMMENT_CAPACITY) return [body];
+  const hash = digest(body), comments = [];
+  for (let at = 0; at < body.length;) {
+    const header = `<!-- std:multipart-part ${JSON.stringify({ kind, hash, index: comments.length })} -->\n`;
+    let end = Math.min(body.length, at + COMMENT_CAPACITY - header.length);
+    if (end < body.length && /[\uD800-\uDBFF]/.test(body[end - 1])) end--;
+    comments.push(header + body.slice(at, end)); at = end;
+  }
+  comments.push(`<!-- std:multipart ${JSON.stringify({ kind, hash, parts: comments.length })} -->`);
+  return comments;
+}
+export function joinComment(body, comments, kind) {
+  const manifest = /^<!-- std:multipart (\{[^\n]*\}) -->$/.exec(body ?? "");
+  if (!manifest) return body;
+  try {
+    const m = JSON.parse(manifest[1]);
+    if (m.kind !== kind || !/^[0-9a-f]{64}$/.test(m.hash) || !Number.isSafeInteger(m.parts) || m.parts < 1) return null;
+    const parts = new Map();
+    for (const c of comments) {
+      const hit = /^<!-- std:multipart-part (\{[^\n]*\}) -->\n([\s\S]*)$/.exec(c.body ?? "");
+      if (!hit) continue;
+      const p = JSON.parse(hit[1]);
+      if (p.kind !== kind || p.hash !== m.hash || !Number.isSafeInteger(p.index) || p.index < 0 || p.index >= m.parts) continue;
+      if (parts.has(p.index) && parts.get(p.index) !== hit[2]) return null;
+      parts.set(p.index, hit[2]);
+    }
+    if (parts.size !== m.parts) return null;
+    const result = [...parts].sort(([a], [b]) => a - b).map(([, text]) => text).join("");
+    return digest(result) === m.hash ? result : null;
+  } catch { return null; }
+}
+export function parseReviewComments(comments) {
+  return comments.flatMap((comment) => {
+    const body = joinComment(comment.body, comments, "std:review");
+    if (body == null && /^<!-- std:multipart /.test(comment.body ?? "") && (comment.body ?? "").includes('"kind":"std:review"')) throw new Error("incomplete or changed multipart review comment");
+    const record = parseReviewRecord(body);
+    return record ? [{ comment, record, body }] : [];
+  });
+}
+
 // The shared contract for the org App's completed full/follow-up review. A record is
 // evidence only when its caller also checks the comment's author, head and base.
 const sha = (x) => typeof x === "string" && /^[0-9a-f]{40}$/.test(x);
