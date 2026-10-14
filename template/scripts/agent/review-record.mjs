@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 // The shared contract for the org App's completed full/follow-up review. A record is
 // evidence only when its caller also checks the comment's author, head and base.
 const sha = (x) => typeof x === "string" && /^[0-9a-f]{40}$/.test(x);
@@ -33,10 +35,21 @@ export function renderReviewRecord(r) {
 // A later empty clean report cannot erase a known finding: only an explicit
 // independently verified disposition removes it from the outstanding ledger.
 export function outstandingReviewFindings(records) {
+  const contents = new Map();
+  for (const r of records) for (const f of r.findings) {
+    if (!contents.has(f.id)) contents.set(f.id, new Set());
+    contents.get(f.id).add(f.text);
+  }
   const pending = new Map();
   for (const r of records) {
     for (const o of r.outcomes) if (o.status !== "blocking") pending.delete(o.id);
-    for (const f of r.findings) pending.set(f.id, f);
+    for (const f of r.findings) {
+      // An unchanged carried finding keeps its identity. Historical ID reuse for
+      // different defects needs distinct explicit dispositions, never a raw ambiguous ID.
+      const id = contents.get(f.id).size > 1 ? `reused-finding:${createHash("sha256").update(JSON.stringify([f.id, f.text])).digest("hex")}` : f.id;
+      const sourceId = id !== f.id ? f.id : pending.get(id)?.sourceId;
+      pending.set(id, { id, text: f.text, ...(sourceId ? { sourceId } : {}) });
+    }
   }
   return [...pending.values()];
 }

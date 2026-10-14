@@ -67,7 +67,7 @@ record_state() {
   st false alice feat none x 30 "[]" no "$HEAD1" "$OLD"
   node --input-type=module - "$T/state.json" "$HEAD1" "$OLD" "$1" <<'JS'
 import fs from "node:fs";
-import { renderReviewRecord } from "repo-standards/review-record";
+import { renderReviewRecord, outstandingReviewFindings } from "repo-standards/review-record";
 const [file, head, base, mode] = process.argv.slice(2), s = JSON.parse(fs.readFileSync(file));
 s.pr.base = { ref: "main", sha: base }; s.branchHeads = { main: base };
 const author = { login: "example-sync[bot]", type: "Bot" };
@@ -84,6 +84,21 @@ s.comments[7] = [ { user: author, body: renderReviewRecord(prior) }, { user: mod
 const envelope = `<!-- independent-review sha=${head} reviewer=t3-codex model=m verdict=clean -->\n`;
 if (mode === "wrapped") s.comments[7][1].body = envelope + renderReviewRecord(current);
 if (mode.startsWith("relayed-")) s.comments[7] = [{ user: author, body: (mode === "relayed-diagnostics" ? "The author reported:\n\n" : "## Evidence\n\n![after](https://github.com/user-attachments/assets/proof)\n\n") + (mode === "relayed-wrapped" ? envelope : "") + renderReviewRecord(current) }];
+if (mode.startsWith("collision")) {
+  const first = { ...prior, panel: "panel-a" }, second = { ...prior, panel: "panel-b", findings: [{ id: "F1", text: "access check is missing" }] };
+  current.panel = "panel-b";
+  current.outcomes = mode === "collision" ? [{ id: "F1", status: "fixed", reason: "verified the access check", evidence: "access entry point" }]
+    : outstandingReviewFindings([first, second]).map((f) => ({ id: f.id, status: "fixed", reason: `independently verified ${f.text}`, evidence: "both real entry-point sequences" }));
+  if (mode === "collision-followup") { current.phase = "followup"; current.from = base; }
+  s.comments[7] = [first, second, current].map((record) => ({ user: author, body: renderReviewRecord(record) }));
+}
+if (mode.startsWith("later-")) {
+  current.outcomes = [{ id: "F1", status: "fixed", reason: "verified the retry", evidence: "retry entry point" }];
+  const later = { ...prior, base: "e".repeat(40), panel: "other-panel", findings: [{ id: "F2", text: "parallel review found a missing access check" }] };
+  if (mode === "later-clean") { later.verdict = "clean"; later.findings = []; }
+  s.comments[7] = [prior, current, later].map((record) => ({ user: author, body: renderReviewRecord(record) }));
+  if (mode === "later-verified") s.comments[7].push({ user: author, body: renderReviewRecord({ ...current, outcomes: [{ id: "F2", status: "fixed", reason: "verified the late access finding on the candidate", evidence: "current candidate access entry point" }] }) });
+}
 s.compareStatus = "ahead";
 if (mode === "followup-diverged") s.compareStatus = "diverged";
 if (mode === "thread") s.threads = [{ isResolved: false, comments: { nodes: [{ author: { login: "person" }, url: "thread" }] } }];
@@ -103,6 +118,16 @@ if [ -z "$r" ]; then ok independent-review-coverage; else fail independent-revie
 r=""
 for mode in relayed-evidence relayed-wrapped relayed-diagnostics; do record_state "$mode"; chk 1 "no completed review of this head after"; done
 if [ -z "$r" ]; then ok relayed-review-record-refused; else fail relayed-review-record-refused "$r"; fi
+r=""
+record_state collision; chk 1 "has not verified every earlier finding"
+record_state collision-verified; chk 0 "independent review complete for this head and base"
+record_state collision-followup; chk 0 "independent review complete for this head and base"
+if [ -z "$r" ]; then ok review-finding-id-collision; else fail review-finding-id-collision "$r"; fi
+r=""
+record_state later-findings; chk 1 "later review findings require verification"
+record_state later-verified; chk 0 "independent review complete for this head and base"
+record_state later-clean; chk 0 "independent review complete for this head and base"
+if [ -z "$r" ]; then ok later-review-findings-block; else fail later-review-findings-block "$r"; fi
 r=""
 # Retargeting can widen the diff while retaining the reviewed head and an ancestor base.
 native_retarget() {

@@ -78,6 +78,8 @@ The managed AGENTS.md block points to `std-file-pr` and `std-babysit`; review me
 
 **Review record contract:** `repo-standards/review-record` exports the validator, parser, renderer and types for `<!-- std:review {json} -->`. A record starts a dedicated App review comment, optionally after the Launcher's `independent-review` envelope; embedded records in relayed evidence or prose are ignored. Schema 1 records identify `head`, `base`, `panel`, `phase` (full or followup), `from` for followups, `verdict`, outstanding `findings` (id/text), and independently verified `outcomes` (id/status/reason/evidence). The complete selected reviewer panel must finish before the App posts a record. A clean verdict has no outstanding findings or blocking outcomes. Native reviews must complete after the latest PR base change, using the code-review row's timestamp rather than a later security edit to its shared summary. Follow-up review receives the earlier findings, author responses, fix diff, open threads and acceptance criteria; it can inspect wider integration effects. Reviewer selections and limits stay in the Launcher dashboard.
 
+Finding IDs identify immutable defects. Producers namespace new IDs by candidate, panel, round, reviewer and content, and use the ledger's returned IDs in follow-up outcomes. The ledger gives distinct historical defects that reused an ID separate content-bound identities; its optional `sourceId` preserves the original comment link. One ambiguous outcome cannot clear both. Findings posted after a clean candidate record require new verification on that candidate.
+
 ## Client sites
 
 Repositories on the `client` profile get checks for the rules their instruction files used to state.

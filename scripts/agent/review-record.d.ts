@@ -1,4 +1,5 @@
 export interface ReviewFinding { id: string; text: string }
+export interface OutstandingReviewFinding extends ReviewFinding { sourceId?: string }
 export interface ReviewOutcome { id: string; status: "fixed" | "rejected" | "blocking"; reason: string; evidence: string }
 export interface ReviewRecord {
   schema: 1;
@@ -14,4 +15,4 @@ export interface ReviewRecord {
 export function validReviewRecord(value: unknown): value is ReviewRecord;
 export function parseReviewRecord(body: string | null | undefined): ReviewRecord | null;
 export function renderReviewRecord(record: ReviewRecord): string;
-export function outstandingReviewFindings(records: ReviewRecord[]): ReviewFinding[];
+export function outstandingReviewFindings(records: ReviewRecord[]): OutstandingReviewFinding[];
