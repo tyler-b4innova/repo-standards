@@ -12,6 +12,7 @@ const server = createServer((req, res) => {
   const page = new URL(req.url, "http://stub").searchParams.get("page");
   const list = (a) => send(200, page && page !== "1" ? [] : a);
   let m;
+  if (p === "/graphql") return send(200, { data: { repository: { pullRequest: { reviewThreads: { nodes: [] } } } } });
   if (p === "") return send(200, { default_branch: "staging", custom_properties: { flow: st.flow ?? "staged" } });
   if (p === "/pulls/7") return send(200, st.pr);
   if (p === "/branches/main") return send(200, { commit: { sha: "c".repeat(40) } });
