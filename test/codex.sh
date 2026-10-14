@@ -35,30 +35,62 @@ r=""
 chk() { local want=$1 needle=$2 out st; out=$(rv); st=$?; { [ $st -eq "$want" ] && has "$needle" "$out"; } || r="$r [$needle: exit $st: $out]"; }
 # codex-verdict-required: a completed review on the head with every thread resolved passes; an unresolved thread fails
 st false alice feat "$HEAD1" '✅ **Completed** now' 5 "$DONE" yes "$HEAD1" "$HEAD1"; chk 0 "Codex review complete, no open findings"
-st false alice feat "$HEAD1" '✅ **Completed** now' 5 "$OPEN" yes "$HEAD1" "$HEAD1"; chk 1 "1 unresolved Codex thread"
+st false alice feat "$HEAD1" '✅ **Completed** now' 5 "$OPEN" yes "$HEAD1" "$HEAD1"; chk 1 "1 unresolved review thread"
 # a review still running is not a review yet; once 20 minutes pass without one the rule fails
-st false alice feat "$OLD" '🔄 **Running** since' 5 "[]" yes "$HEAD1" "$OLD"; chk 1 "awaiting a Codex review"
-st false alice feat none x 30 "[]" yes "$HEAD1" "$OLD"; chk 1 "no Codex review after"
+st false alice feat "$OLD" '🔄 **Running** since' 5 "[]" yes "$HEAD1" "$OLD"; chk 1 "awaiting a completed review"
+st false alice feat none x 30 "[]" yes "$HEAD1" "$OLD"; chk 1 "no completed review of this head after"
 st true alice feat none x 30 "[]" yes "$HEAD1" "$OLD"; chk 0 "not judged"
-st false alice feat none x 30 "[]" no "$HEAD1" "$OLD"; chk 0 "no Codex reviews on this repo"
+st false alice feat none x 30 "[]" no "$HEAD1" "$OLD"; chk 1 "no completed review of this head after"
 # a pack-sync fallback PR is reviewed like any other (anyone with write access can push to its branch)
-st false 'example-sync[bot]' standards/v1.2.3 none x 30 "[]" yes "$HEAD1" "$OLD"; chk 1 "no Codex review after"
+st false 'example-sync[bot]' standards/v1.2.3 none x 30 "[]" yes "$HEAD1" "$OLD"; chk 1 "no completed review of this head after"
 if [ -z "$r" ]; then ok codex-verdict-required; else fail codex-verdict-required "$r"; fi
-# codex-earlier-verdict-passes: the verdict is for an earlier commit and the head was pushed after it (a fix push): all threads resolved passes
+# codex-earlier-verdict-refused: the verdict is for an earlier commit and the head was pushed after it (a fix push): all threads resolved passes
 r=""
-SUMMARY_AT=$(iso 60) st false alice feat "$OLD" '✅ **Completed** now' 5 "$DONE" yes "$HEAD1" "$OLD"; chk 0 "Codex review complete, no open findings"
-REVIEWS='[{"user":{"login":"chatgpt-codex-connector[bot]","type":"Bot"},"commit_id":"'$OLD'","submitted_at":"'$(iso 60)'"}]' st false alice feat none x 5 "$DONE" no "$HEAD1" "$OLD"; chk 0 "Codex review complete, no open findings"
-if [ -z "$r" ]; then ok codex-earlier-verdict-passes; else fail codex-earlier-verdict-passes "$r"; fi
+SUMMARY_AT=$(iso 60) st false alice feat "$OLD" '✅ **Completed** now' 5 "$DONE" yes "$HEAD1" "$OLD"; chk 1 "awaiting a completed review"
+REVIEWS='[{"user":{"login":"chatgpt-codex-connector[bot]","type":"Bot"},"commit_id":"'$OLD'","submitted_at":"'$(iso 60)'"}]' st false alice feat none x 5 "$DONE" no "$HEAD1" "$OLD"; chk 1 "awaiting a completed review"
+if [ -z "$r" ]; then ok codex-earlier-verdict-refused; else fail codex-earlier-verdict-refused "$r"; fi
 # codex-unresolved-thread-fails: an open Codex thread fails even when the verdict is for an earlier commit
 r=""
-SUMMARY_AT=$(iso 60) st false alice feat "$OLD" '✅ **Completed** now' 5 "$OPEN" yes "$HEAD1" "$OLD"; chk 1 "1 unresolved Codex thread"
+SUMMARY_AT=$(iso 60) st false alice feat "$OLD" '✅ **Completed** now' 5 "$OPEN" yes "$HEAD1" "$OLD"; chk 1 "1 unresolved review thread"
 if [ -z "$r" ]; then ok codex-unresolved-thread-fails; else fail codex-unresolved-thread-fails "$r"; fi
 # codex-no-review-pending: no Codex review on a ready PR yet (repo sees Codex reviews elsewhere) stays pending inside 20 minutes
 r=""
-st false alice feat none x 5 "[]" yes "$HEAD1" "$OLD"; chk 1 "awaiting a Codex review"
+st false alice feat none x 5 "[]" yes "$HEAD1" "$OLD"; chk 1 "awaiting a completed review"
 if [ -z "$r" ]; then ok codex-no-review-pending; else fail codex-no-review-pending "$r"; fi
+# independent-review-coverage: the real exported rule reads App records and rejects
+# stale or forged completion and a fix whose earlier finding was never verified.
 r=""
-
+record_state() {
+  st false alice feat none x 30 "[]" no "$HEAD1" "$OLD"
+  node --input-type=module - "$T/state.json" "$HEAD1" "$OLD" "$1" <<'JS'
+import fs from "node:fs";
+import { renderReviewRecord } from "repo-standards/review-record";
+const [file, head, base, mode] = process.argv.slice(2), s = JSON.parse(fs.readFileSync(file));
+s.pr.base = { ref: "main", sha: base }; s.branchHeads = { main: base };
+const author = { login: "example-sync[bot]", type: "Bot" };
+const prior = { schema: 1, head: base, base, panel: "panel", phase: "full", verdict: "findings", findings: [{ id: "F1", text: "retry leaves no alarm" }], outcomes: [] };
+const current = { schema: 1, head, base, panel: "panel", phase: "full", verdict: "clean", findings: [], outcomes: [] };
+if (mode.startsWith("followup")) { current.phase = "followup"; current.from = base; current.outcomes = [{ id: "F1", status: "fixed", reason: "retry schedules an alarm", evidence: "retry sequence passes through the campaign entry point" }]; }
+if (mode === "followup-missing") current.outcomes = [];
+if (mode === "stale-head") current.head = base;
+if (mode === "stale-base") current.base = "e".repeat(40);
+if (mode === "findings") { current.verdict = "findings"; current.findings = prior.findings; }
+s.comments[7] = [ { user: author, body: renderReviewRecord(prior) }, { user: mode === "author" ? { login: "alice", type: "User" } : author, body: renderReviewRecord(current) } ];
+s.compareStatus = "ahead";
+if (mode === "followup-diverged") s.compareStatus = "diverged";
+if (mode === "thread") s.threads = [{ isResolved: false, comments: { nodes: [{ author: { login: "person" }, url: "thread" }] } }];
+fs.writeFileSync(file, JSON.stringify(s));
+JS
+}
+record_state full; chk 0 "independent review complete for this head and base"
+record_state followup; chk 0 "independent review complete for this head and base"
+for mode in author stale-head stale-base; do record_state "$mode"; chk 1 "no completed review of this head"; done
+record_state followup-missing; chk 1 "has not verified every earlier finding"
+record_state followup-diverged; chk 1 "does not continue its reviewed commit"
+record_state findings; chk 1 "independent review has unresolved findings"
+record_state thread; chk 1 "1 unresolved review thread"
+if [ -z "$r" ]; then ok independent-review-coverage; else fail independent-review-coverage "$r"; fi
+r=""
 
 GWF="$R/.github/workflows/std-gate.yml"
 gtrig=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");console.log(y.slice(y.indexOf("\non:"),y.indexOf("permissions:")).replace(/\s+/g," "))' "$GWF")
