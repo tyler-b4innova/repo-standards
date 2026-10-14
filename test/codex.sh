@@ -19,7 +19,7 @@ iso() { node -e 'console.log(new Date(Date.now()-Number(process.argv[1])*60000).
 st() {
   node -e '
     const [draft, user, ref, sha, status, ago, threads, recent] = process.argv.slice(1), bot = { login: "chatgpt-codex-connector[bot]", type: "Bot" };
-    const sum = (s) => ({ user: bot, updated_at: process.env.SUMMARY_AT || new Date().toISOString(), body: "<!-- codex-pull-request-review-summary -->\n| Review | Status | Commit | Trigger |\n| --- | --- | --- | --- |\n| 📝 **Code Review** | " + status + " | `" + s.slice(0, 7) + "` | New commits |" });
+    const sum = (s) => ({ user: bot, updated_at: process.env.SUMMARY_AT || new Date().toISOString(), body: "<!-- codex-pull-request-review-summary -->\n| Review | Status | Commit | Trigger |\n| --- | --- | --- | --- |\n| 📝 **Code Review** | " + status + " | `" + s + "` | New commits |" });
     const when = new Date(Date.now() - Number(ago) * 60000).toISOString();
     console.log(JSON.stringify({ pr: { number: 7, draft: draft === "true", user: { login: user }, head: { sha: process.argv[9], ref }, created_at: when, base: { ref: "main", sha: process.argv[10] } },
       branchHeads: { main: process.argv[10] }, comments: { 7: sha === "none" ? [] : [sum(sha)], 3: recent === "yes" ? [sum(process.argv[10])] : [] },
@@ -60,6 +60,23 @@ if [ -z "$r" ]; then ok codex-unresolved-thread-fails; else fail codex-unresolve
 r=""
 st false alice feat none x 5 "[]" yes "$HEAD1" "$OLD"; chk 1 "awaiting a completed review"
 if [ -z "$r" ]; then ok codex-no-review-pending; else fail codex-no-review-pending "$r"; fi
+r=""
+st false alice feat "$HEAD1" '✅ **Completed** now' 30 "[]" no "$HEAD1" "$OLD"
+node - "$T/state.json" <<'JS'
+const fs=require("fs"), file=process.argv[2], s=JSON.parse(fs.readFileSync(file));
+const original=s.pr.head.sha;
+s.pr.head.sha=original.slice(0,7)+"a".repeat(33);
+s.comments[7][0].body=s.comments[7][0].body.replace(original,original.slice(0,7));
+fs.writeFileSync(file,JSON.stringify(s));
+JS
+chk 1 "no completed review of this head"
+node - "$T/state.json" <<'JS'
+const fs=require("fs"), file=process.argv[2], s=JSON.parse(fs.readFileSync(file));
+s.reviews=[{user:{login:"chatgpt-codex-connector[bot]",type:"Bot"},commit_id:s.pr.head.sha,state:"COMMENTED",submitted_at:new Date().toISOString()}];
+fs.writeFileSync(file,JSON.stringify(s));
+JS
+chk 0 "Codex review complete, no open findings"
+if [ -z "$r" ]; then ok native-review-full-sha; else fail native-review-full-sha "$r"; fi
 # independent-review-coverage: the real exported rule reads App records and rejects
 # stale or forged completion and a fix whose earlier finding was never verified.
 r=""
@@ -99,6 +116,14 @@ if (mode.startsWith("later-")) {
   s.comments[7] = [prior, current, later].map((record) => ({ user: author, body: renderReviewRecord(record) }));
   if (mode === "later-verified") s.comments[7].push({ user: author, body: renderReviewRecord({ ...current, outcomes: [{ id: "F2", status: "fixed", reason: "verified the late access finding on the candidate", evidence: "current candidate access entry point" }] }) });
 }
+if (mode.startsWith("chain-")) {
+  const middle={schema:1,head:"e".repeat(40),base,panel:"panel",phase:"followup",from:base,verdict:"clean",findings:[],outcomes:[{id:"F1",status:"fixed",reason:"verified the retry",evidence:"retry entry point"}]};
+  current.phase="followup"; current.from=middle.head;
+  const chain=mode==="chain-orphan" ? [middle,current] : [prior,middle,current];
+  if (mode === "chain-shadowed") chain.splice(2, 0, { ...middle, from: "f".repeat(40) });
+  s.comments[7]=chain.map((record)=>({user:author,body:renderReviewRecord(record)}));
+  if(mode==="chain-diverged") s.compareStatuses={ [`${base}...${middle.head}`]: "diverged" };
+}
 s.compareStatus = "ahead";
 if (mode === "followup-diverged") s.compareStatus = "diverged";
 if (mode === "thread") s.threads = [{ isResolved: false, comments: { nodes: [{ author: { login: "person" }, url: "thread" }] } }];
@@ -128,6 +153,12 @@ record_state later-findings; chk 1 "later review findings require verification"
 record_state later-verified; chk 0 "independent review complete for this head and base"
 record_state later-clean; chk 0 "independent review complete for this head and base"
 if [ -z "$r" ]; then ok later-review-findings-block; else fail later-review-findings-block "$r"; fi
+r=""
+record_state chain-orphan; chk 1 "not rooted in a full review"
+record_state chain-rooted; chk 0 "independent review complete for this head and base"
+record_state chain-shadowed; chk 0 "independent review complete for this head and base"
+record_state chain-diverged; chk 1 "does not continue its reviewed commit"
+if [ -z "$r" ]; then ok review-full-ancestry-required; else fail review-full-ancestry-required "$r"; fi
 r=""
 # Retargeting can widen the diff while retaining the reviewed head and an ancestor base.
 native_retarget() {
@@ -284,7 +315,7 @@ else fail e2e-false-skips-preview "e2e-false=$w2 (want 0) still-gated=$w4 (want 
 # ---- review-rule-reads-base: the rule and its settings come from the current base branch (a PR cannot bring its own),
 # even when the head is this repository's default branch (there are no promotions); a stale pull.base.sha is resolved
 # through the branch. A null verdict here: no pack at the ref read.
-SUM="{user:b,updated_at:new Date().toISOString(),body:'<!-- codex-pull-request-review-summary -->\\n| 📝 **Code Review** | ✅ **Completed** now | \`${HEAD1:0:7}\` | x |'}"
+SUM="{user:b,updated_at:new Date().toISOString(),body:'<!-- codex-pull-request-review-summary -->\\n| 📝 **Code Review** | ✅ **Completed** now | \`$HEAD1\` | x |'}"
 base="pr:{number:7,draft:false,state:'open',html_url:'https://github.com/acme/demo/pull/7',user:{login:'alice'},head:{sha:'$HEAD1',ref:'feat'},base:{ref:'main'}},comments:{7:[$SUM]},recent:[],timeline:[],threads:[]"
 PACKFILE="{content:Buffer.from(require('fs').readFileSync('$PACK')).toString('base64')}"
 put "{$base,files:{'scripts/agent/pack.json@feat':$PACKFILE,'scripts/agent/pack.json@$HEAD1':$PACKFILE}}"; rb1=$(rv)

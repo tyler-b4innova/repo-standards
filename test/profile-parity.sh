@@ -31,4 +31,19 @@ for profile in internal client; do
   done
 done
 if [ -z "$why" ]; then ok profile-workflow-parity; else fail profile-workflow-parity "$why"; fi
+why=""
+for profile in internal client; do
+  for value in string number object null array; do
+    node - "$T/first.json" "$T/invalid.json" "$profile" "$value" <<'JS'
+const fs=require("fs"), [source,target,profile,value]=process.argv.slice(2), o=JSON.parse(fs.readFileSync(source));
+o.profiles[profile].block_lines={string:"- policy",number:3,object:{line:"- policy"},null:null,array:["- policy",3]}[value];
+fs.writeFileSync(target,JSON.stringify(o));
+JS
+    dir="$T/first-$profile"
+    out=$(node bin/repo-standards.mjs apply --target "$dir" --overlay "$T/invalid.json" --profile "$profile" --version 1.0.0 2>&1); status=$?
+    [ "$status" -ne 0 ] && [[ "$out" == *"profiles.$profile.block_lines must be an array of strings"* ]] || why="$why accepted $profile $value"
+    [ -z "$(git -C "$dir" status --porcelain)" ] || why="$why changed target $profile $value"
+  done
+done
+if [ -z "$why" ]; then ok profile-block-lines-type; else fail profile-block-lines-type "$why"; fi
 done_cases

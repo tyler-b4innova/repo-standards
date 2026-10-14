@@ -15,4 +15,6 @@ export interface ReviewRecord {
 export function validReviewRecord(value: unknown): value is ReviewRecord;
 export function parseReviewRecord(body: string | null | undefined): ReviewRecord | null;
 export function renderReviewRecord(record: ReviewRecord): string;
+export function reviewRecordChain(records: ReviewRecord[], index?: number): number[] | null;
+export function verifiedReviewChain(records: ReviewRecord[], index: number, continues: (before: string, after: string) => Promise<boolean>): Promise<boolean>;
 export function outstandingReviewFindings(records: ReviewRecord[]): OutstandingReviewFinding[];

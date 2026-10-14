@@ -1,4 +1,4 @@
-import { parseReviewRecord, outstandingReviewFindings } from "./review-record.mjs";
+import { parseReviewRecord, outstandingReviewFindings, reviewRecordChain, verifiedReviewChain } from "./review-record.mjs";
 
 // The review rule for a pull request: everything that lives in its conversation, not its code. Gate checks the code;
 // this checks the Codex verdict and its threads and the evidence comment for UI changes. It only reads, through the caller's GitHub API function, so a launcher or merge helper can ask it before
@@ -160,12 +160,10 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.n
       const later = records.slice(records.indexOf(current) + 1).flatMap((x) => x.record.findings);
       if (later.length) return { state: "failure", description: "later review findings require verification on this candidate", details: later.map((f) => `${f.id}: ${f.text}`) };
       if (r.phase === "followup") {
-        const previous = records.slice(0, records.indexOf(current)).filter((x) => x.record.head === r.from && x.record.base === r.base && x.record.panel === r.panel && Date.parse(x.comment.created_at ?? 0) <= Date.parse(current.comment.created_at ?? 0)).at(-1)?.record;
-        // The shared ledger above already binds every unresolved predecessor finding.
-        if (!previous)
-          return { state: "failure", description: "follow-up review has not verified every earlier finding" };
-        const comparison = await api("GET", `${R}/compare/${r.from}...${head}`);
-        if (!comparison || !["ahead", "identical"].includes(comparison.status))
+        const chain = reviewRecordChain(records.map((x) => x.record), records.indexOf(current));
+        if (!chain) return { state: "failure", description: "follow-up review is not rooted in a full review" };
+        if (!(await verifiedReviewChain(records.map((x) => x.record), records.indexOf(current), async (before, after) =>
+          ["ahead", "identical"].includes((await api("GET", `${R}/compare/${before}...${after}`))?.status))))
           return { state: "failure", description: "follow-up review does not continue its reviewed commit; full review required" };
       }
       appComplete = true;
@@ -183,7 +181,9 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.n
     const afterRetarget = (at) => !baseChangedAt || Date.parse(at ?? "") > baseChangedAt;
     // Security activity can edit the shared summary later; its code-review row owns this timestamp.
     const summaryAt = /datetime="([^"]+)"/.exec(row?.[1] ?? "")?.[1];
-    const reviewed = appComplete || (row && /Completed/i.test(row[1]) && head.startsWith(row[2]) && afterRetarget(summaryAt))
+    // A displayed abbreviation cannot bind coverage to a head: colliding commits
+    // can share that prefix. The summary or submitted review must name the full SHA.
+    const reviewed = appComplete || (row && /Completed/i.test(row[1]) && row[2] === head && afterRetarget(summaryAt))
       || reviews.some((r) => bot(r.user) && r.commit_id === head && r.state !== "DISMISSED" && r.state !== "PENDING" && afterRetarget(r.submitted_at));
     if (reviewed && !appComplete && baseHead) {
       const comparison = await api("GET", `${R}/compare/${baseHead}...${head}`);

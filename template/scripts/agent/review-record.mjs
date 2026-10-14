@@ -32,6 +32,37 @@ export function renderReviewRecord(r) {
   return `<!-- std:review ${JSON.stringify(r).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e")} -->`;
 }
 
+// Indices run from the selected record back to its full-review root. Earlier
+// positions make orphaned and cyclic chains fail without recursion; a newer
+// orphan receipt cannot erase an older valid root for the same commit.
+export function reviewRecordChain(records, index = records.length - 1) {
+  const target = records[index];
+  if (!validReviewRecord(target)) return null;
+  if (target.phase === "full") return [index];
+  const chains = [];
+  for (let i = 0; i <= index; i++) {
+    const r = records[i];
+    if (!validReviewRecord(r) || r.base !== target.base || r.panel !== target.panel) continue;
+    if (r.phase === "full") { chains[i] = [i]; continue; }
+    for (let p = i - 1; p >= 0; p--) if (chains[p] && records[p].head === r.from) { chains[i] = [i, ...chains[p]]; break; }
+  }
+  return chains[index] ?? null;
+}
+
+export async function verifiedReviewChain(records, index, continues) {
+  const target = records[index];
+  if (!validReviewRecord(target)) return false;
+  if (target.phase === "full") return true;
+  const valid = [];
+  for (let i = 0; i <= index; i++) {
+    const r = records[i];
+    if (!validReviewRecord(r) || r.base !== target.base || r.panel !== target.panel) continue;
+    if (r.phase === "full") { valid[i] = true; continue; }
+    for (let p = i - 1; p >= 0; p--) if (valid[p] && records[p].head === r.from) { valid[i] = await continues(r.from, r.head); break; }
+  }
+  return Boolean(valid[index]);
+}
+
 // A later empty clean report cannot erase a known finding: only an explicit
 // independently verified disposition removes it from the outstanding ledger.
 export function outstandingReviewFindings(records) {
