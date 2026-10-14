@@ -84,7 +84,7 @@ record_state() {
   st false alice feat none x 30 "[]" no "$HEAD1" "$OLD"
   node --input-type=module - "$T/state.json" "$HEAD1" "$OLD" "$1" <<'JS'
 import fs from "node:fs";
-import { renderReviewRecord, outstandingReviewFindings } from "repo-standards/review-record";
+import { renderReviewRecord, outstandingReviewFindings, splitComment } from "repo-standards/review-record";
 const [file, head, base, mode] = process.argv.slice(2), s = JSON.parse(fs.readFileSync(file));
 s.pr.base = { ref: "main", sha: base }; s.branchHeads = { main: base };
 const author = { login: "example-sync[bot]", type: "Bot" };
@@ -98,6 +98,15 @@ if (mode === "stale-head") current.head = base;
 if (mode === "stale-base") current.base = "e".repeat(40);
 if (mode === "findings") { current.verdict = "findings"; current.findings = prior.findings; }
 s.comments[7] = [ { user: author, body: renderReviewRecord(prior) }, { user: mode === "author" ? { login: "alice", type: "User" } : author, body: renderReviewRecord(current) } ];
+if (mode.startsWith("multipart-")) {
+  current.outcomes = [{ id: "F1", status: "fixed", reason: Array.from({length:16000}, (_,i) => `proof-${i} 🐱`).join(";"), evidence: "full independent retry sequence" }];
+  const parts = splitComment(renderReviewRecord(current), "std:review");
+  if (parts.length < 3 || parts.some((body) => body.length > 65536)) throw new Error("test must cross the real comment boundary");
+  s.comments[7] = [{user:author,body:renderReviewRecord(prior)}, ...parts.map((body) => ({user:author,body}))];
+  if (mode === "multipart-missing") s.comments[7].splice(1,1);
+  if (mode === "multipart-foreign") s.comments[7][1].user={login:"alice",type:"User"};
+  if (mode === "multipart-edited") s.comments[7][1].body += "edited";
+}
 const envelope = `<!-- independent-review sha=${head} reviewer=t3-codex model=m verdict=clean -->\n`;
 if (mode === "wrapped") s.comments[7][1].body = envelope + renderReviewRecord(current);
 if (mode.startsWith("relayed-")) s.comments[7] = [{ user: author, body: (mode === "relayed-diagnostics" ? "The author reported:\n\n" : "## Evidence\n\n![after](https://github.com/user-attachments/assets/proof)\n\n") + (mode === "relayed-wrapped" ? envelope : "") + renderReviewRecord(current) }];
@@ -173,6 +182,10 @@ record_state orphan-outcome; chk 1 "has not verified every earlier finding"
 record_state orphan-outcome-findings; chk 1 "has not verified every earlier finding"
 record_state orphan-outcome-verified; chk 0 "independent review complete for this head and base"
 if [ -z "$r" ]; then ok orphan-review-outcomes-refused; else fail orphan-review-outcomes-refused "$r"; fi
+r=""
+record_state multipart-complete; chk 0 "independent review complete for this head and base"
+for mode in multipart-missing multipart-foreign multipart-edited; do record_state "$mode"; chk 1 "incomplete or changed multipart review comment"; done
+if [ -z "$r" ]; then ok review-comment-multipart; else fail review-comment-multipart "$r"; fi
 r=""
 # Retargeting can widen the diff while retaining the reviewed head and an ancestor base.
 native_retarget() {

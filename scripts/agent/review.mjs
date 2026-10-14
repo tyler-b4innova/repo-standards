@@ -1,4 +1,4 @@
-import { parseReviewRecord, outstandingReviewFindings, reviewRecordChain, verifiedReviewChain, verifiedReviewRecords } from "./review-record.mjs";
+import { parseReviewComments, outstandingReviewFindings, reviewRecordChain, verifiedReviewChain, verifiedReviewRecords } from "./review-record.mjs";
 
 // The review rule for a pull request: everything that lives in its conversation, not its code. Gate checks the code;
 // this checks the Codex verdict and its threads and the evidence comment for UI changes. It only reads, through the caller's GitHub API function, so a launcher or merge helper can ask it before
@@ -148,7 +148,7 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.n
   async function codex() {
     const comments = await all(`${R}/issues/${n}/comments`);
     const trusted = comments.filter((c) => pack.sync_app_login && c.user?.login === pack.sync_app_login && c.user?.type === "Bot");
-    const parsed = trusted.map((c) => ({ comment: c, record: parseReviewRecord(c.body) })).filter((x) => x.record);
+    const parsed = parseReviewComments(trusted);
     const ledger = await verifiedReviewRecords(parsed.map((x) => x.record), async (before, after) =>
       ["ahead", "identical"].includes((await api("GET", `${R}/compare/${before}...${after}`))?.status));
     const records = parsed.map((x, i) => ({ ...x, record: ledger[i] }));
