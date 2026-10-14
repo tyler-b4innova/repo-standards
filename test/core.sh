@@ -624,10 +624,10 @@ echo "// edit" >> "$R/scripts/agent/pr.sh"; commit "$R"
 b=$(cd "$R" && PATH="$T/offline:$PATH" CI=1 scripts/agent/setup.sh 2>&1); sb=$?
 if [ $sa -eq 0 ] && has "offline: skipping installs" "$a" && [ $sb -eq 1 ] && has "managed file changed: scripts/agent/pr.sh" "$b"; then ok setup-returns-check-status; else fail setup-returns-check-status "$sa $a | $sb $b"; fi
 
-# agents-review-guidelines: the managed block tells the reviewer to leave pack-managed paths to the engine repo
+# agents-workflow-pointer: the actual block delegates review mechanics to the PR workflows.
 blk=$(node bin/repo-standards.mjs block --overlay "$OV" --profile internal)
-if grep -qx "## Review guidelines" <<<"$blk" && grep -q 'Skip pack-managed paths (`scripts/agent/`, `.claude/`, `.codex/`, `std-\*`)' <<<"$blk" && [ "$(tail -1 <<<"$blk")" = "<!-- std:end -->" ]
-then ok agents-review-guidelines; else fail agents-review-guidelines "$blk"; fi
+if grep -q 'Use `std-file-pr` and `std-babysit`' <<<"$blk" && ! grep -qE 'One review per PR|fixes are not re-reviewed|## Review guidelines|Answer every bot finding' <<<"$blk" && [ "$(tail -1 <<<"$blk")" = "<!-- std:end -->" ]
+then ok agents-workflow-pointer; else fail agents-workflow-pointer "$blk"; fi
 
 # ---- agent config: the pack pins no model; never read secrets, never force-push
 # models-unpinned: repositories never pin a model or effort. A fresh repo gets none; re-applying removes every pin

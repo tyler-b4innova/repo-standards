@@ -1,3 +1,5 @@
+import { parseReviewRecord, outstandingReviewFindings, reviewRecordChain, verifiedReviewChain, verifiedReviewRecords } from "./review-record.mjs";
+
 // The review rule for a pull request: everything that lives in its conversation, not its code. Gate checks the code;
 // this checks the Codex verdict and its threads and the evidence comment for UI changes. It only reads, through the caller's GitHub API function, so a launcher or merge helper can ask it before
 // merging (a pack-sync PR gets no exemption: a person fixes it on their own branch, or it is reviewed like any other):
@@ -141,43 +143,72 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.n
     return { state: "failure", description: `UI paths changed (${changed.slice(0, 3).join(", ")}) but no accepted evidence comment`, details: [`UI paths changed: ${changed.join(", ")}`, ...bad.map((b) => `rejected: ${b}`)] };
   }
 
-  // Codex review: a completed Codex review exists for some commit of this PR (its summary comment shows Completed, or it
-  // submitted a review), and every Codex thread is resolved (resolved means answered). Fix pushes are not re-reviewed, so
-  // the head and push time do not matter. Repositories without Codex reviews, or with codex_review off, are exempt.
+  // Completion covers this candidate. The App attests a complete independent review
+  // (including verification of fixes), or GitHub's reviewer completed this exact head.
   async function codex() {
-    if (std.codex_review === false || pack.codex_review === false) return { state: "success", description: "Codex review off for this repo" };
-    const bot = (u) => /codex/i.test(u?.login ?? "") && u?.type === "Bot", MARK = "<!-- codex-pull-request-review-summary -->";
     const comments = await all(`${R}/issues/${n}/comments`);
+    const trusted = comments.filter((c) => pack.sync_app_login && c.user?.login === pack.sync_app_login && c.user?.type === "Bot");
+    const parsed = trusted.map((c) => ({ comment: c, record: parseReviewRecord(c.body) })).filter((x) => x.record);
+    const ledger = await verifiedReviewRecords(parsed.map((x) => x.record), async (before, after) =>
+      ["ahead", "identical"].includes((await api("GET", `${R}/compare/${before}...${after}`))?.status));
+    const records = parsed.map((x, i) => ({ ...x, record: ledger[i] }));
+    const current = records.filter((x) => x.record.head === head && x.record.base === baseHead).at(-1);
+    const earlier = outstandingReviewFindings((current ? records.slice(0, records.indexOf(current)) : records).map((x) => x.record));
+    let appComplete = false;
+    if (current) {
+      const r = current.record;
+      if (r.verdict !== "clean") return { state: "failure", description: "independent review has unresolved findings", details: r.findings.map((f) => `${f.id}: ${f.text}`) };
+      if (earlier.some((f) => !r.outcomes.some((o) => o.id === f.id && o.status !== "blocking")))
+        return { state: "failure", description: "review has not verified every earlier finding" };
+      const later = records.slice(records.indexOf(current) + 1).flatMap((x) => x.record.findings);
+      if (later.length) return { state: "failure", description: "later review findings require verification on this candidate", details: later.map((f) => `${f.id}: ${f.text}`) };
+      if (r.phase === "followup") {
+        const chain = reviewRecordChain(records.map((x) => x.record), records.indexOf(current));
+        if (!chain) return { state: "failure", description: "follow-up review is not rooted in a full review" };
+        if (!(await verifiedReviewChain(records.map((x) => x.record), records.indexOf(current), async (before, after) =>
+          ["ahead", "identical"].includes((await api("GET", `${R}/compare/${before}...${after}`))?.status))))
+          return { state: "failure", description: "follow-up review does not continue its reviewed commit; full review required" };
+      }
+      appComplete = true;
+    }
+    if (!appComplete && earlier.length) return { state: "failure", description: "earlier independent findings still require explicit verification", details: earlier.map((f) => `${f.id}: ${f.text}`) };
+    const bot = (u) => /codex/i.test(u?.login ?? "") && u?.type === "Bot", MARK = "<!-- codex-pull-request-review-summary -->";
     const summary = comments.filter((c) => bot(c.user) && c.body?.includes(MARK)).at(-1);
     const row = summary?.body.match(/\|[^|\n]*Code Review[^|\n]*\|([^|\n]*)\|\s*`([0-9a-f]{7,40})`\s*\|/i);
-    const reviews = await all(`${R}/pulls/${n}/reviews`);
-    const reviewed = (row && /Completed/i.test(row[1])) || reviews.some((r) => bot(r.user));
-    if (!summary && !reviewed) {
-      // Codex skips drafts and may skip bot PRs, so sample up to 20 recent ready PRs by people.
-      let seen = false;
-      for (const p of ((await api("GET", `${R}/pulls?state=all&per_page=40`)) ?? []).filter((p) => p.number !== n && !p.draft && p.user?.type !== "Bot").slice(0, 20))
-        if (((await api("GET", `${R}/issues/${p.number}/comments?per_page=100`)) ?? []).some((c) => bot(c.user) && c.body?.includes(MARK))) { seen = true; break; }
-      if (!seen) return { state: "success", description: "no Codex reviews on this repo's recent PRs" };
+    const reviews = appComplete ? [] : await all(`${R}/pulls/${n}/reviews`);
+    const timeline = appComplete ? [] : await all(`${R}/issues/${n}/timeline`);
+    const baseChanges = timeline.filter((e) => e.event === "base_ref_changed").map((e) => Date.parse(e.created_at));
+    if (!appComplete && baseChanges.some((at) => !Number.isFinite(at)))
+      return { state: "failure", description: "cannot establish when the PR base changed; native review coverage is uncheckable" };
+    const baseChangedAt = Math.max(0, ...baseChanges);
+    const afterRetarget = (at) => !baseChangedAt || Date.parse(at ?? "") > baseChangedAt;
+    // Security activity can edit the shared summary later; its code-review row owns this timestamp.
+    const summaryAt = /datetime="([^"]+)"/.exec(row?.[1] ?? "")?.[1];
+    // A displayed abbreviation cannot bind coverage to a head: colliding commits
+    // can share that prefix. The summary or submitted review must name the full SHA.
+    const reviewed = appComplete || (row && /Completed/i.test(row[1]) && row[2] === head && afterRetarget(summaryAt))
+      || reviews.some((r) => bot(r.user) && r.commit_id === head && r.state !== "DISMISSED" && r.state !== "PENDING" && afterRetarget(r.submitted_at));
+    if (reviewed && !appComplete && baseHead) {
+      const comparison = await api("GET", `${R}/compare/${baseHead}...${head}`);
+      if (!comparison || !["ahead", "identical"].includes(comparison.status))
+        return { state: "failure", description: "reviewed head does not contain the current base; update the branch and review its integration" };
     }
-    if (reviewed) {
-      const query = `query($o:String!,$r:String!,$n:Int!,$c:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$c){pageInfo{hasNextPage endCursor} nodes{isResolved comments(first:1){nodes{author{login} url}}}}}}}`;
-      const threads = [];
-      for (let c = null; ; ) {
-        const page = (await api("POST", "/graphql", { query, variables: { o: owner, r: repo, n, c } }))?.data?.repository?.pullRequest?.reviewThreads;
-        if (!page) throw new Error("could not read review threads");
-        threads.push(...page.nodes);
-        if (!page.pageInfo?.hasNextPage) break;
-        c = page.pageInfo.endCursor;
-      }
-      const open = threads.filter((t) => !t.isResolved && /codex/i.test(t.comments.nodes[0]?.author?.login ?? ""));
-      if (open.length) return { state: "failure", description: `${open.length} unresolved Codex thread(s): fix each or reply why, then resolve`, details: open.map((t) => `open: ${t.comments.nodes[0].url}`) };
-      return { state: "success", description: "Codex review complete, no open findings" };
+    const query = `query($o:String!,$r:String!,$n:Int!,$c:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$c){pageInfo{hasNextPage endCursor} nodes{isResolved comments(first:1){nodes{author{login} url}}}}}}}`;
+    const threads = [];
+    for (let c = null; ; ) {
+      const page = (await api("POST", "/graphql", { query, variables: { o: owner, r: repo, n, c } }))?.data?.repository?.pullRequest?.reviewThreads;
+      if (!page) throw new Error("could not read review threads");
+      threads.push(...page.nodes);
+      if (!page.pageInfo?.hasNextPage) break;
+      c = page.pageInfo.endCursor;
     }
-    // Waiting counts from the PR's creation or its last ready_for_review.
-    const timeline = await all(`${R}/issues/${n}/timeline`);
+    const open = threads.filter((t) => !t.isResolved);
+    if (open.length) return { state: "failure", description: `${open.length} unresolved review thread(s): verify and answer each, then resolve`, details: open.map((t) => `open: ${t.comments.nodes[0]?.url ?? "unknown thread"}`) };
+    if (reviewed) return { state: "success", description: appComplete ? "independent review complete for this head and base" : "Codex review complete, no open findings" };
     const readyAt = timeline.filter((e) => e.event === "ready_for_review").map((e) => Date.parse(e.created_at));
-    const since = Math.max(Date.parse(pr.created_at ?? 0) || 0, ...readyAt), mins = Math.floor((now - since) / 60000);
-    if (mins < 20) return { state: "pending", description: `awaiting a Codex review (${mins} min)` };
-    return { state: "failure", description: `no Codex review after ${mins} min; request a review` };
+    const since = Math.max(Date.parse(pr.created_at ?? 0) || 0, baseChangedAt, ...readyAt), mins = Math.floor((now - since) / 60000);
+    const candidate = baseChangedAt ? "this head and base" : "this head";
+    if (mins < 20) return { state: "pending", description: `awaiting a completed review of ${candidate} (${mins} min)` };
+    return { state: "failure", description: `no completed review of ${candidate} after ${mins} min; request a review` };
   }
 }
