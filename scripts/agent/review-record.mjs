@@ -27,3 +27,14 @@ export function renderReviewRecord(r) {
   if (!validReviewRecord(r)) throw new Error("incomplete review record");
   return `<!-- std:review ${JSON.stringify(r).replaceAll("<", "\\u003c").replaceAll(">", "\\u003e")} -->`;
 }
+
+// A later empty clean report cannot erase a known finding: only an explicit
+// independently verified disposition removes it from the outstanding ledger.
+export function outstandingReviewFindings(records) {
+  const pending = new Map();
+  for (const r of records) {
+    for (const o of r.outcomes) if (o.status !== "blocking") pending.delete(o.id);
+    for (const f of r.findings) pending.set(f.id, f);
+  }
+  return [...pending.values()];
+}

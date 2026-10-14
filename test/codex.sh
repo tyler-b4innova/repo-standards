@@ -21,8 +21,8 @@ st() {
     const [draft, user, ref, sha, status, ago, threads, recent] = process.argv.slice(1), bot = { login: "chatgpt-codex-connector[bot]", type: "Bot" };
     const sum = (s) => ({ user: bot, updated_at: process.env.SUMMARY_AT || new Date().toISOString(), body: "<!-- codex-pull-request-review-summary -->\n| Review | Status | Commit | Trigger |\n| --- | --- | --- | --- |\n| 📝 **Code Review** | " + status + " | `" + s.slice(0, 7) + "` | New commits |" });
     const when = new Date(Date.now() - Number(ago) * 60000).toISOString();
-    console.log(JSON.stringify({ pr: { number: 7, draft: draft === "true", user: { login: user }, head: { sha: process.argv[9], ref }, created_at: when },
-      comments: { 7: sha === "none" ? [] : [sum(sha)], 3: recent === "yes" ? [sum(process.argv[10])] : [] },
+    console.log(JSON.stringify({ pr: { number: 7, draft: draft === "true", user: { login: user }, head: { sha: process.argv[9], ref }, created_at: when, base: { ref: "main", sha: process.argv[10] } },
+      branchHeads: { main: process.argv[10] }, comments: { 7: sha === "none" ? [] : [sum(sha)], 3: recent === "yes" ? [sum(process.argv[10])] : [] },
       recent: [{ number: 7 }, { number: 3 }], threads: JSON.parse(threads || "[]"), reviews: JSON.parse(process.env.REVIEWS || "[]"),
       files: { "scripts/agent/pack.json": { content: require("fs").readFileSync(process.env.PACK).toString("base64") } } }));
   ' "$@" > "$T/state.json"; }
@@ -39,6 +39,9 @@ st false alice feat "$HEAD1" '✅ **Completed** now' 5 "$OPEN" yes "$HEAD1" "$HE
 # a review still running is not a review yet; once 20 minutes pass without one the rule fails
 st false alice feat "$OLD" '🔄 **Running** since' 5 "[]" yes "$HEAD1" "$OLD"; chk 1 "awaiting a completed review"
 st false alice feat none x 30 "[]" yes "$HEAD1" "$OLD"; chk 1 "no completed review of this head after"
+st false alice feat "$HEAD1" '✅ **Completed** now' 5 "$DONE" yes "$HEAD1" "$OLD"
+node -e 'const f=process.argv[1],s=require(f);s.compareStatus="diverged";require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json"
+chk 1 "does not contain the current base"
 st true alice feat none x 30 "[]" yes "$HEAD1" "$OLD"; chk 0 "not judged"
 st false alice feat none x 30 "[]" no "$HEAD1" "$OLD"; chk 1 "no completed review of this head after"
 # a pack-sync fallback PR is reviewed like any other (anyone with write access can push to its branch)
@@ -70,6 +73,8 @@ s.pr.base = { ref: "main", sha: base }; s.branchHeads = { main: base };
 const author = { login: "example-sync[bot]", type: "Bot" };
 const prior = { schema: 1, head: base, base, panel: "panel", phase: "full", verdict: "findings", findings: [{ id: "F1", text: "retry leaves no alarm" }], outcomes: [] };
 const current = { schema: 1, head, base, panel: "panel", phase: "full", verdict: "clean", findings: [], outcomes: [] };
+if (mode === "full" || mode === "thread") current.outcomes = [{ id: "F1", status: "fixed", reason: "the full review verified the retry", evidence: "campaign retry sequence" }];
+if (mode === "full-missing") current.outcomes = [];
 if (mode.startsWith("followup")) { current.phase = "followup"; current.from = base; current.outcomes = [{ id: "F1", status: "fixed", reason: "retry schedules an alarm", evidence: "retry sequence passes through the campaign entry point" }]; }
 if (mode === "followup-missing") current.outcomes = [];
 if (mode === "stale-head") current.head = base;
@@ -84,7 +89,8 @@ JS
 }
 record_state full; chk 0 "independent review complete for this head and base"
 record_state followup; chk 0 "independent review complete for this head and base"
-for mode in author stale-head stale-base; do record_state "$mode"; chk 1 "no completed review of this head"; done
+for mode in author stale-head stale-base; do record_state "$mode"; chk 1 "earlier independent findings still require explicit verification"; done
+record_state full-missing; chk 1 "has not verified every earlier finding"
 record_state followup-missing; chk 1 "has not verified every earlier finding"
 record_state followup-diverged; chk 1 "does not continue its reviewed commit"
 record_state findings; chk 1 "independent review has unresolved findings"

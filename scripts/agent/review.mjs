@@ -1,4 +1,4 @@
-import { parseReviewRecord } from "./review-record.mjs";
+import { parseReviewRecord, outstandingReviewFindings } from "./review-record.mjs";
 
 // The review rule for a pull request: everything that lives in its conversation, not its code. Gate checks the code;
 // this checks the Codex verdict and its threads and the evidence comment for UI changes. It only reads, through the caller's GitHub API function, so a launcher or merge helper can ask it before
@@ -150,10 +150,13 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.n
     const trusted = comments.filter((c) => pack.sync_app_login && c.user?.login === pack.sync_app_login && c.user?.type === "Bot");
     const records = trusted.map((c) => ({ comment: c, record: parseReviewRecord(c.body) })).filter((x) => x.record);
     const current = records.filter((x) => x.record.head === head && x.record.base === baseHead).at(-1);
+    const earlier = outstandingReviewFindings((current ? records.slice(0, records.indexOf(current)) : records).map((x) => x.record));
     let appComplete = false;
     if (current) {
       const r = current.record;
       if (r.verdict !== "clean") return { state: "failure", description: "independent review has unresolved findings", details: r.findings.map((f) => `${f.id}: ${f.text}`) };
+      if (earlier.some((f) => !r.outcomes.some((o) => o.id === f.id && o.status !== "blocking")))
+        return { state: "failure", description: "review has not verified every earlier finding" };
       if (r.phase === "followup") {
         const previous = records.slice(0, records.indexOf(current)).filter((x) => x.record.head === r.from && x.record.base === r.base && x.record.panel === r.panel && Date.parse(x.comment.created_at ?? 0) <= Date.parse(current.comment.created_at ?? 0)).at(-1)?.record;
         if (!previous || previous.findings.some((f) => !r.outcomes.some((o) => o.id === f.id && o.status !== "blocking")))
@@ -164,11 +167,17 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.n
       }
       appComplete = true;
     }
+    if (!appComplete && earlier.length) return { state: "failure", description: "earlier independent findings still require explicit verification", details: earlier.map((f) => `${f.id}: ${f.text}`) };
     const bot = (u) => /codex/i.test(u?.login ?? "") && u?.type === "Bot", MARK = "<!-- codex-pull-request-review-summary -->";
     const summary = comments.filter((c) => bot(c.user) && c.body?.includes(MARK)).at(-1);
     const row = summary?.body.match(/\|[^|\n]*Code Review[^|\n]*\|([^|\n]*)\|\s*`([0-9a-f]{7,40})`\s*\|/i);
     const reviews = appComplete ? [] : await all(`${R}/pulls/${n}/reviews`);
     const reviewed = appComplete || (row && /Completed/i.test(row[1]) && head.startsWith(row[2])) || reviews.some((r) => bot(r.user) && r.commit_id === head && r.state !== "DISMISSED" && r.state !== "PENDING");
+    if (reviewed && !appComplete && baseHead) {
+      const comparison = await api("GET", `${R}/compare/${baseHead}...${head}`);
+      if (!comparison || !["ahead", "identical"].includes(comparison.status))
+        return { state: "failure", description: "reviewed head does not contain the current base; update the branch and review its integration" };
+    }
     const query = `query($o:String!,$r:String!,$n:Int!,$c:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$c){pageInfo{hasNextPage endCursor} nodes{isResolved comments(first:1){nodes{author{login} url}}}}}}}`;
     const threads = [];
     for (let c = null; ; ) {

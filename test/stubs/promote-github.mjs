@@ -15,6 +15,7 @@ const server = createServer((req, res) => {
   if (p === "/graphql") return send(200, { data: { repository: { pullRequest: { reviewThreads: { nodes: [] } } } } });
   if (p === "") return send(200, { default_branch: "staging", custom_properties: { flow: st.flow ?? "staged" } });
   if (p === "/pulls/7") return send(200, st.pr);
+  if (/^\/compare\//.test(p)) return send(200, { status: "ahead" });
   if (p === "/branches/main") return send(200, { commit: { sha: "c".repeat(40) } });
   if (p === "/pulls/7/files") return list(st.files.map((filename) => ({ filename })));
   if (p === "/pulls/7/reviews") return list(st.reviews);
