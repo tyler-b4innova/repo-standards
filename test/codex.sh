@@ -104,6 +104,30 @@ r=""
 for mode in relayed-evidence relayed-wrapped relayed-diagnostics; do record_state "$mode"; chk 1 "no completed review of this head after"; done
 if [ -z "$r" ]; then ok relayed-review-record-refused; else fail relayed-review-record-refused "$r"; fi
 r=""
+# Retargeting can widen the diff while retaining the reviewed head and an ancestor base.
+native_retarget() {
+  st false alice feat "$HEAD1" '✅ **Completed** now' 30 "[]" no "$HEAD1" "$OLD"
+  node --input-type=module - "$T/state.json" "$1" <<'JS'
+import fs from "node:fs";
+const [file, mode] = process.argv.slice(2), s = JSON.parse(fs.readFileSync(file));
+const at = (minutes) => new Date(Date.now() - minutes * 60000).toISOString();
+s.timeline = [{ event: "base_ref_changed", created_at: at(25) }]; s.compareStatus = "ahead";
+const summary = s.comments[7][0]; summary.updated_at = at(1);
+summary.body = summary.body.replace("Completed** now", `Completed** <relative-time datetime="${at(mode === "fresh-summary" ? 5 : 30)}">`);
+if (mode === "missing-summary-time") summary.body = summary.body.replace(/ <relative-time datetime="[^"]*">/, " now");
+if (mode.includes("review")) { s.comments[7] = []; s.reviews = [{ user: { login: "chatgpt-codex-connector[bot]", type: "Bot" }, commit_id: s.pr.head.sha, state: "COMMENTED", submitted_at: at(mode === "fresh-review" ? 5 : 30) }]; }
+if (mode === "missing-time") { s.timeline[0].created_at = null; }
+fs.writeFileSync(file, JSON.stringify(s));
+JS
+}
+native_retarget stale-summary; chk 1 "no completed review of this head and base"
+native_retarget stale-review; chk 1 "no completed review of this head and base"
+native_retarget missing-summary-time; chk 1 "no completed review of this head and base"
+native_retarget fresh-summary; chk 0 "Codex review complete, no open findings"
+native_retarget fresh-review; chk 0 "Codex review complete, no open findings"
+native_retarget missing-time; chk 1 "coverage is uncheckable"
+if [ -z "$r" ]; then ok native-review-retarget-refused; else fail native-review-retarget-refused "$r"; fi
+r=""
 
 GWF="$R/.github/workflows/std-gate.yml"
 gtrig=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");console.log(y.slice(y.indexOf("\non:"),y.indexOf("permissions:")).replace(/\s+/g," "))' "$GWF")

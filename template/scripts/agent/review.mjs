@@ -172,7 +172,16 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.n
     const summary = comments.filter((c) => bot(c.user) && c.body?.includes(MARK)).at(-1);
     const row = summary?.body.match(/\|[^|\n]*Code Review[^|\n]*\|([^|\n]*)\|\s*`([0-9a-f]{7,40})`\s*\|/i);
     const reviews = appComplete ? [] : await all(`${R}/pulls/${n}/reviews`);
-    const reviewed = appComplete || (row && /Completed/i.test(row[1]) && head.startsWith(row[2])) || reviews.some((r) => bot(r.user) && r.commit_id === head && r.state !== "DISMISSED" && r.state !== "PENDING");
+    const timeline = appComplete ? [] : await all(`${R}/issues/${n}/timeline`);
+    const baseChanges = timeline.filter((e) => e.event === "base_ref_changed").map((e) => Date.parse(e.created_at));
+    if (!appComplete && baseChanges.some((at) => !Number.isFinite(at)))
+      return { state: "failure", description: "cannot establish when the PR base changed; native review coverage is uncheckable" };
+    const baseChangedAt = Math.max(0, ...baseChanges);
+    const afterRetarget = (at) => !baseChangedAt || Date.parse(at ?? "") > baseChangedAt;
+    // Security activity can edit the shared summary later; its code-review row owns this timestamp.
+    const summaryAt = /datetime="([^"]+)"/.exec(row?.[1] ?? "")?.[1];
+    const reviewed = appComplete || (row && /Completed/i.test(row[1]) && head.startsWith(row[2]) && afterRetarget(summaryAt))
+      || reviews.some((r) => bot(r.user) && r.commit_id === head && r.state !== "DISMISSED" && r.state !== "PENDING" && afterRetarget(r.submitted_at));
     if (reviewed && !appComplete && baseHead) {
       const comparison = await api("GET", `${R}/compare/${baseHead}...${head}`);
       if (!comparison || !["ahead", "identical"].includes(comparison.status))
@@ -190,10 +199,10 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.n
     const open = threads.filter((t) => !t.isResolved);
     if (open.length) return { state: "failure", description: `${open.length} unresolved review thread(s): verify and answer each, then resolve`, details: open.map((t) => `open: ${t.comments.nodes[0]?.url ?? "unknown thread"}`) };
     if (reviewed) return { state: "success", description: appComplete ? "independent review complete for this head and base" : "Codex review complete, no open findings" };
-    const timeline = await all(`${R}/issues/${n}/timeline`);
     const readyAt = timeline.filter((e) => e.event === "ready_for_review").map((e) => Date.parse(e.created_at));
-    const since = Math.max(Date.parse(pr.created_at ?? 0) || 0, ...readyAt), mins = Math.floor((now - since) / 60000);
-    if (mins < 20) return { state: "pending", description: `awaiting a completed review of this head (${mins} min)` };
-    return { state: "failure", description: `no completed review of this head after ${mins} min; request a review` };
+    const since = Math.max(Date.parse(pr.created_at ?? 0) || 0, baseChangedAt, ...readyAt), mins = Math.floor((now - since) / 60000);
+    const candidate = baseChangedAt ? "this head and base" : "this head";
+    if (mins < 20) return { state: "pending", description: `awaiting a completed review of ${candidate} (${mins} min)` };
+    return { state: "failure", description: `no completed review of ${candidate} after ${mins} min; request a review` };
   }
 }
