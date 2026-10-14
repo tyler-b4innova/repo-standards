@@ -17,7 +17,9 @@ export function validReviewRecord(r) {
 }
 
 export function parseReviewRecord(body) {
-  const match = /^<!-- std:review (\{[^\n]*\}) -->/m.exec(body ?? "");
+  // App authorship alone does not attest text copied from an author or provider.
+  // Accept only a dedicated review comment, including the Launcher's legacy envelope.
+  const match = /^(?:<!-- independent-review sha=[0-9a-f]{40} reviewer=\S+ model=\S+ verdict=(?:clean|findings) -->\r?\n)?<!-- std:review (\{[^\n]*\}) -->/.exec(body ?? "");
   if (!match) return null;
   try { const r = JSON.parse(match[1]); return validReviewRecord(r) ? r : null; }
   catch { return null; }

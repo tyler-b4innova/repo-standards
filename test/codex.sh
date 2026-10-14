@@ -73,7 +73,7 @@ s.pr.base = { ref: "main", sha: base }; s.branchHeads = { main: base };
 const author = { login: "example-sync[bot]", type: "Bot" };
 const prior = { schema: 1, head: base, base, panel: "panel", phase: "full", verdict: "findings", findings: [{ id: "F1", text: "retry leaves no alarm" }], outcomes: [] };
 const current = { schema: 1, head, base, panel: "panel", phase: "full", verdict: "clean", findings: [], outcomes: [] };
-if (mode === "full" || mode === "thread") current.outcomes = [{ id: "F1", status: "fixed", reason: "the full review verified the retry", evidence: "campaign retry sequence" }];
+if (mode === "full" || mode === "thread" || mode === "wrapped") current.outcomes = [{ id: "F1", status: "fixed", reason: "the full review verified the retry", evidence: "campaign retry sequence" }];
 if (mode === "full-missing") current.outcomes = [];
 if (mode.startsWith("followup")) { current.phase = "followup"; current.from = base; current.outcomes = [{ id: "F1", status: "fixed", reason: "retry schedules an alarm", evidence: "retry sequence passes through the campaign entry point" }]; }
 if (mode === "followup-missing") current.outcomes = [];
@@ -81,6 +81,9 @@ if (mode === "stale-head") current.head = base;
 if (mode === "stale-base") current.base = "e".repeat(40);
 if (mode === "findings") { current.verdict = "findings"; current.findings = prior.findings; }
 s.comments[7] = [ { user: author, body: renderReviewRecord(prior) }, { user: mode === "author" ? { login: "alice", type: "User" } : author, body: renderReviewRecord(current) } ];
+const envelope = `<!-- independent-review sha=${head} reviewer=t3-codex model=m verdict=clean -->\n`;
+if (mode === "wrapped") s.comments[7][1].body = envelope + renderReviewRecord(current);
+if (mode.startsWith("relayed-")) s.comments[7] = [{ user: author, body: (mode === "relayed-diagnostics" ? "The author reported:\n\n" : "## Evidence\n\n![after](https://github.com/user-attachments/assets/proof)\n\n") + (mode === "relayed-wrapped" ? envelope : "") + renderReviewRecord(current) }];
 s.compareStatus = "ahead";
 if (mode === "followup-diverged") s.compareStatus = "diverged";
 if (mode === "thread") s.threads = [{ isResolved: false, comments: { nodes: [{ author: { login: "person" }, url: "thread" }] } }];
@@ -88,6 +91,7 @@ fs.writeFileSync(file, JSON.stringify(s));
 JS
 }
 record_state full; chk 0 "independent review complete for this head and base"
+record_state wrapped; chk 0 "independent review complete for this head and base"
 record_state followup; chk 0 "independent review complete for this head and base"
 for mode in author stale-head stale-base; do record_state "$mode"; chk 1 "earlier independent findings still require explicit verification"; done
 record_state full-missing; chk 1 "has not verified every earlier finding"
@@ -96,6 +100,9 @@ record_state followup-diverged; chk 1 "does not continue its reviewed commit"
 record_state findings; chk 1 "independent review has unresolved findings"
 record_state thread; chk 1 "1 unresolved review thread"
 if [ -z "$r" ]; then ok independent-review-coverage; else fail independent-review-coverage "$r"; fi
+r=""
+for mode in relayed-evidence relayed-wrapped relayed-diagnostics; do record_state "$mode"; chk 1 "no completed review of this head after"; done
+if [ -z "$r" ]; then ok relayed-review-record-refused; else fail relayed-review-record-refused "$r"; fi
 r=""
 
 GWF="$R/.github/workflows/std-gate.yml"
