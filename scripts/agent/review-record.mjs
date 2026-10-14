@@ -53,14 +53,30 @@ export async function verifiedReviewChain(records, index, continues) {
   const target = records[index];
   if (!validReviewRecord(target)) return false;
   if (target.phase === "full") return true;
+  const scope = records.slice(0, index + 1).map((r) => r.base === target.base && r.panel === target.panel ? r : { ...r, phase: "invalid" });
+  return Boolean((await reviewRecordValidity(scope, continues))[index]);
+}
+
+async function reviewRecordValidity(records, continues) {
   const valid = [];
-  for (let i = 0; i <= index; i++) {
+  const edges = new Map();
+  for (let i = 0; i < records.length; i++) {
     const r = records[i];
-    if (!validReviewRecord(r) || r.base !== target.base || r.panel !== target.panel) continue;
+    if (!validReviewRecord(r)) continue;
     if (r.phase === "full") { valid[i] = true; continue; }
-    for (let p = i - 1; p >= 0; p--) if (valid[p] && records[p].head === r.from) { valid[i] = await continues(r.from, r.head); break; }
+    for (let p = i - 1; p >= 0; p--) if (valid[p] && records[p].head === r.from && records[p].base === r.base && records[p].panel === r.panel) {
+      const edge = JSON.stringify([r.from, r.head]);
+      if (!edges.has(edge)) edges.set(edge, Promise.resolve(continues(r.from, r.head)));
+      valid[i] = await edges.get(edge); break;
+    }
   }
-  return Boolean(valid[index]);
+  return valid;
+}
+
+// Invalid receipts can introduce findings, but cannot claim them fixed/rejected.
+export async function verifiedReviewRecords(records, continues) {
+  const valid = await reviewRecordValidity(records, continues);
+  return records.map((r, i) => valid[i] ? r : { ...r, outcomes: [] });
 }
 
 // A later empty clean report cannot erase a known finding: only an explicit

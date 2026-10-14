@@ -118,11 +118,19 @@ if (mode.startsWith("later-")) {
 }
 if (mode.startsWith("chain-")) {
   const middle={schema:1,head:"e".repeat(40),base,panel:"panel",phase:"followup",from:base,verdict:"clean",findings:[],outcomes:[{id:"F1",status:"fixed",reason:"verified the retry",evidence:"retry entry point"}]};
+  if(mode==="chain-diverged-empty") { prior.verdict="clean"; prior.findings=[]; middle.outcomes=[]; }
   current.phase="followup"; current.from=middle.head;
   const chain=mode==="chain-orphan" ? [middle,current] : [prior,middle,current];
   if (mode === "chain-shadowed") chain.splice(2, 0, { ...middle, from: "f".repeat(40) });
   s.comments[7]=chain.map((record)=>({user:author,body:renderReviewRecord(record)}));
-  if(mode==="chain-diverged") s.compareStatuses={ [`${base}...${middle.head}`]: "diverged" };
+  if(mode.startsWith("chain-diverged")) s.compareStatuses={ [`${base}...${middle.head}`]: "diverged" };
+}
+if (mode.startsWith("orphan-outcome")) {
+  const orphan={...current,head:"e".repeat(40),panel:"orphan-panel",phase:"followup",from:base,outcomes:[{id:"F1",status:"fixed",reason:"an orphan claims the retry is fixed",evidence:"unverified ancestry"}]};
+  current.outcomes=[];
+  if(mode!=="orphan-outcome") { orphan.verdict="findings"; orphan.findings=[{id:"F2",text:"the orphan also reports a missing access check"}]; current.outcomes=[{id:"F1",status:"fixed",reason:"new full review verified the retry",evidence:"current candidate retry entry point"}]; }
+  if(mode==="orphan-outcome-verified") current.outcomes.push({id:"F2",status:"rejected",reason:"new full review checked the access caller",evidence:"current candidate access entry point"});
+  s.comments[7]=[prior,orphan,current].map((record)=>({user:author,body:renderReviewRecord(record)}));
 }
 s.compareStatus = "ahead";
 if (mode === "followup-diverged") s.compareStatus = "diverged";
@@ -136,7 +144,7 @@ record_state followup; chk 0 "independent review complete for this head and base
 for mode in author stale-head stale-base; do record_state "$mode"; chk 1 "earlier independent findings still require explicit verification"; done
 record_state full-missing; chk 1 "has not verified every earlier finding"
 record_state followup-missing; chk 1 "has not verified every earlier finding"
-record_state followup-diverged; chk 1 "does not continue its reviewed commit"
+record_state followup-diverged; chk 1 "has not verified every earlier finding"
 record_state findings; chk 1 "independent review has unresolved findings"
 record_state thread; chk 1 "1 unresolved review thread"
 if [ -z "$r" ]; then ok independent-review-coverage; else fail independent-review-coverage "$r"; fi
@@ -157,8 +165,14 @@ r=""
 record_state chain-orphan; chk 1 "not rooted in a full review"
 record_state chain-rooted; chk 0 "independent review complete for this head and base"
 record_state chain-shadowed; chk 0 "independent review complete for this head and base"
-record_state chain-diverged; chk 1 "does not continue its reviewed commit"
+record_state chain-diverged; chk 1 "has not verified every earlier finding"
+record_state chain-diverged-empty; chk 1 "does not continue its reviewed commit"
 if [ -z "$r" ]; then ok review-full-ancestry-required; else fail review-full-ancestry-required "$r"; fi
+r=""
+record_state orphan-outcome; chk 1 "has not verified every earlier finding"
+record_state orphan-outcome-findings; chk 1 "has not verified every earlier finding"
+record_state orphan-outcome-verified; chk 0 "independent review complete for this head and base"
+if [ -z "$r" ]; then ok orphan-review-outcomes-refused; else fail orphan-review-outcomes-refused "$r"; fi
 r=""
 # Retargeting can widen the diff while retaining the reviewed head and an ancestor base.
 native_retarget() {
