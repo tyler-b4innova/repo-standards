@@ -766,6 +766,8 @@ if (cmd === "local") {
   }, SUM = sums[platform];
   if (!SUM) fail(`secret scan unsupported on ${platform}`, "run on macOS or Linux, x64 or arm64");
   const dir = mkdtempSync(`${tmpdir()}/gitleaks-`), tgz = local || `${dir}/gl.tgz`;
+  // The download and binary go with the directory on every exit, including fail() and must(), which call process.exit.
+  process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
   if (!local) {
     const res = await fetch(`https://github.com/gitleaks/gitleaks/releases/download/v${V}/gitleaks_${V}_${platform}.tar.gz`);
     if (!res.ok) fail(`gitleaks download: ${res.status}`, "re-run the job");
