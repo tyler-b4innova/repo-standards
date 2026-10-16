@@ -225,4 +225,39 @@ mut "S.gqlFail=false"
 rm -f "$GATE"
 if [ -z "$why" ]; then ok pr-open-verified; else fail pr-open-verified "$why"; fi
 
+# pr-open-claimed-issue: an issue labelled agent-claimed is refused unless the branch is the launcher's agent/N-* or retro/N-*
+# (N exactly: agent/30-* is not agent/3-*); --dry-run and --claimed-ok do not check it; another label, a cross-repo
+# reference and an unlabelled issue do not refuse.
+since() { sed -n "$(($1 + 1)),\$p" "$LOG"; }
+why=""
+mut "S.issues={3:[{name:'agent-claimed'}]}"
+git checkout -q feat/x
+n=$(lines); out=$("$PR" open "Add x" "$T/body.md" 2>&1) && why="$why; claimed issue accepted on feat/x"
+case "$out" in *"issue #3 is claimed by the launcher"*"agent/3-<slug> or retro/3-<slug>"*"remove agent-claimed first"*) ;; *) why="$why; refusal does not name the claim: $out" ;; esac
+since "$n" | grep -q '"path":"/repos/acme/demo/issues/3"' || why="$why; the claim was not read from issues/3"
+since "$n" | grep -q -E '"method":"(POST|PATCH)"' && why="$why; the refusal wrote to GitHub"
+n=$(lines); out=$("$PR" open --dry-run "Add x" "$T/body.md" 2>&1) || why="$why; dry-run refused a claimed issue: $out"
+[ "$(lines)" = "$n" ] || why="$why; dry-run sent requests"
+n=$(lines); out=$("$PR" open --claimed-ok "Add x" "$T/body.md" 2>&1) || why="$why; --claimed-ok refused: $out"
+[ "$out" = "$URL" ] || why="$why; --claimed-ok printed '$out'"
+since "$n" | grep -q '"path":"/repos/acme/demo/issues/3"' && why="$why; --claimed-ok still read the issue"
+git checkout -q -b agent/3-add-x && git push -q -u origin HEAD 2>/dev/null
+out=$("$PR" open "Add x" "$T/body.md" 2>&1) || why="$why; the launcher's own branch was refused: $out"
+case "$out" in https://github.com/acme/demo/pull/*) ;; *) why="$why; no PR URL for the launcher's branch: $out" ;; esac
+[ "$(state 'S.pulls.some(p=>p.head==="agent/3-add-x"&&p.base==="main")')" = true ] || why="$why; no PR opened from agent/3-add-x"
+git checkout -q -b retro/3-add-x && git push -q -u origin HEAD 2>/dev/null
+out=$("$PR" open "Add x" "$T/body.md" 2>&1) || why="$why; the retro branch was refused: $out"
+[ "$(state 'S.pulls.some(p=>p.head==="retro/3-add-x")')" = true ] || why="$why; no PR opened from retro/3-add-x"
+git checkout -q -b agent/30-add-x && git push -q -u origin HEAD 2>/dev/null
+out=$("$PR" open "Add x" "$T/body.md" 2>&1) && why="$why; agent/30-* accepted for issue 3"
+case "$out" in *"issue #3 is claimed by the launcher"*) ;; *) why="$why; agent/30-* refusal not the claim message: $out" ;; esac
+git checkout -q feat/x
+mut "S.issues={3:[{name:'bug'}]}"
+out=$("$PR" open "Add x" "$T/body.md" 2>&1) || why="$why; a non-claim label refused: $out"
+mut "S.issues={3:[{name:'agent-claimed'}]}"
+printf 'Adds x.\n\nCloses other/repo#3\nCloses #5\n' >"$T/xrepo.md"
+out=$("$PR" open "Add x" "$T/xrepo.md" 2>&1) || why="$why; a cross-repo reference to a claimed number refused: $out"
+mut "S.issues={}"
+if [ -z "$why" ]; then ok pr-open-claimed-issue; else fail pr-open-claimed-issue "$why"; fi
+
 done_cases
