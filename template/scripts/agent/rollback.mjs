@@ -41,26 +41,27 @@ const repoPath = (p) => {
 // a path is a symlink on that side. An entry whose path goes through a symlink is not followed: it is noted, not compared.
 function declaredConfigs(text, tree, isLink, notes) {
   const std = JSON.parse(text ?? "{}") ?? {}, found = [];
-  const file = (p) => { const n = repoPath(p); if (n && configExt.test(n)) found.push(n); };
+  // An entry whose path goes through a symlink is not followed (the base tree holds the link, not its target): it is noted, not compared.
+  const linked = (n) => n.split("/").some((_, i, parts) => isLink(parts.slice(0, i + 1).join("/")));
+  const skip = (what, n) => {
+    const note = `rollback: ${what} ${n} has a symlink in its path; it is not compared (its target is not followed)`;
+    if (!notes.includes(note)) notes.push(note);
+  };
+  const file = (p, what) => { const n = repoPath(p); if (!n || !configExt.test(n)) return; if (linked(n)) skip(what, n); else found.push(n); };
   const entry = (p) => {
     const n = repoPath(p);
     if (!n) return;
-    // Reading through a symlinked ancestor follows the link on disk but not in the base tree, so any link in the path skips the entry.
-    if (n.split("/").some((_, i, parts) => isLink(parts.slice(0, i + 1).join("/")))) {
-      const note = `rollback: workers entry ${n} has a symlink in its path; it is not compared (its target is not followed)`;
-      if (!notes.includes(note)) notes.push(note);
-      return;
-    }
+    if (linked(n)) return skip("workers entry", n);
     // A path holding one of wranglerNames is a directory whatever its name (declaredWorkers finds it the same way on disk); otherwise it is a config file.
     const inside = wranglerNames.map((name) => posix.join(n, name)).filter((f) => tree.has(f));
     if (inside.length) found.push(...inside);
     else if (configExt.test(n) && ![...tree].some((f) => f.startsWith(`${n}/`))) found.push(n);
   };
-  for (const p of Array.isArray(std.release_workers) ? std.release_workers : []) file(p);
+  for (const p of Array.isArray(std.release_workers) ? std.release_workers : []) file(p, "release_workers entry");
   for (const w of Array.isArray(std.workers) ? std.workers : []) {
     const object = w && typeof w === "object" && !Array.isArray(w);
     entry(object ? w.config : w);
-    for (const p of object && Array.isArray(w.release_workers) ? w.release_workers : []) file(p);
+    for (const p of object && Array.isArray(w.release_workers) ? w.release_workers : []) file(p, "release_workers entry");
   }
   return found;
 }

@@ -536,6 +536,14 @@ repo declared-link-utf8; mkdir -p "$R/real/api.json"; echo 'export default {};' 
 echo '{"name":"apid","main":"index.js","kv_namespaces":[{"binding":"CACHE","id":"apid-kv"}],"env":{"staging":{"routes":[],"workers_dev":true,"kv_namespaces":[{"binding":"CACHE","id":"apid-kv-stage"}]}},"previews":{"kv_namespaces":[{"binding":"CACHE","id":"apid-kv-stage"}]}}' > "$R/real/api.json/wrangler.jsonc"
 ln -s real/api.json "$R/api-é.json"; declare_workers 'o.workers=["wrangler.jsonc","api-é.json"]'
 expect 0 'NOTE: rollback: workers entry api-é.json has a symlink in its path' "unchanged symlink with a non-ASCII name"
+# A nested release_workers config beneath a symlinked ancestor is noted, not compared: the base tree cannot read it, so its bindings would pass silently.
+repo declared-nested-link; mkdir -p "$R/real" "$R/api"
+echo 'export default {};' > "$R/real/index.js"; echo 'export default {};' > "$R/api/index.js"
+echo '{"name":"jobs","main":"index.js","kv_namespaces":[{"binding":"JOBS","id":"jobs-kv"}],"env":{"staging":{"routes":[],"workers_dev":true,"kv_namespaces":[{"binding":"JOBS","id":"jobs-kv-stage"}]}},"previews":{"kv_namespaces":[{"binding":"JOBS","id":"jobs-kv-stage"}]}}' > "$R/real/jobs.jsonc"
+echo '{"name":"api","main":"api/index.js","kv_namespaces":[{"binding":"CACHE","id":"api-kv"}],"env":{"staging":{"routes":[],"workers_dev":true,"kv_namespaces":[{"binding":"CACHE","id":"api-kv-stage"}]}},"previews":{"kv_namespaces":[{"binding":"CACHE","id":"api-kv-stage"}]}}' > "$R/wrangler.api.jsonc"
+ln -s real "$R/link"; declare_workers 'o.workers=["wrangler.jsonc",{"config":"wrangler.api.jsonc","release_workers":["link/jobs.jsonc"]}]'
+node -e 'const fs=require("fs"),f=process.argv[1],o=JSON.parse(fs.readFileSync(f));delete o.kv_namespaces;fs.writeFileSync(f,JSON.stringify(o))' "$R/real/jobs.jsonc"
+expect 0 'NOTE: rollback: release_workers entry link/jobs.jsonc has a symlink in its path' "nested release_workers under a symlinked ancestor"
 if [ -z "$why" ]; then ok rollback-declared-workers; else fail rollback-declared-workers "$why"; fi
 done_cases
 done_cases
