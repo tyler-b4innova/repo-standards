@@ -81,6 +81,7 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 - **`exception-keys-removed`**: no `standards.json` key exempts a repository from a rule (stated rule: no per-repo exceptions). A leftover `nested_instructions`, `allow_paths`, `duplicate_check_exceptions` or `deploy_workflow` gets one `--check` warning each, saying what replaced it, and is never validated (a value the old checks refused passes); none lets anything through: a declared nested `AGENTS.md`, an allowed `.mcp.json`, a hash-pinned duplicate workflow and a declared deploy workflow on push each fail.
 - **`jobs-have-timeouts`**: a workflow job without `timeout-minutes` fails `--check` (GitHub's default is 360 minutes); the fix points at the org's one setting, `gate.timeout_minutes`, and names no minutes of its own.
 - **`secrets-scan-changes-only`**: the secret scan covers the pull request's own commits, including on a dispatch re-gate of the merge ref, so an old leak already on the base does not fail it.
+- **`gitleaks-temp-dir-removed`**: the secret scan's `gitleaks-*` temp directory (the download and the binary, about 9 MB) is removed after a success, after a checksum failure, and after a SIGTERM during the download, so no gate run leaves one in `tmpdir()`. Incident: each gate run left about 9 MB behind (#185).
 
 Retired before any release, with the transition: `evidence-old-pinned-rejected` (the pinned form was accepted until the cut-over; see `evidence-pinned-transition`).
 

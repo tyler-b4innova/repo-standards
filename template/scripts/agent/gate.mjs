@@ -6,7 +6,7 @@
 import { execFileSync as ex, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync as has, mkdtempSync, readdirSync as ls, readFileSync as rd, rmSync, statSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { constants as osConstants, homedir, tmpdir } from "node:os";
 import { resolve as resolvePath } from "node:path";
 import { createConnection } from "node:net";
 import { localConfig, localWorkerConfig } from "./local.mjs";
@@ -36,6 +36,12 @@ const pm = has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : "npm";
 const fail = (msg, fix) => { console.log(`::error::${msg}\nfix: ${fix}`); process.exit(1); };
 const sh = (c, a) => spawnSync(c, a, { stdio: "inherit" }).status ?? 1;
 const must = (c, a) => { const s = sh(c, a); if (s) process.exit(s); };
+// Removes a temp directory on every exit. A signal that stops the run ends Node without emitting `exit`, so the signals
+// that stop it go through process.exit instead (status 128 + the signal number, as the shell reports it).
+const removeOnExit = (dir) => {
+  process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
+  for (const s of ["SIGHUP", "SIGINT", "SIGTERM"]) process.on(s, () => process.exit(128 + osConstants.signals[s]));
+};
 const glob = (g) => new RegExp("^" + g.replace(/[.+^$()|[\]\\]/g, "\\$&").replace(/\{([^}]+)\}/g, (_, a) => `(${a.split(",").join("|")})`)
   .replace(/\*\*\//g, "\0").replace(/\*\*/g, "\x01").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]").replace(/\0/g, "(.*/)?").replace(/\x01/g, ".*") + "$");
 // The pull request this run is for: the event's, or a workflow_dispatch re-gate's `pr` input (base retargets).
@@ -766,10 +772,11 @@ if (cmd === "local") {
   }, SUM = sums[platform];
   if (!SUM) fail(`secret scan unsupported on ${platform}`, "run on macOS or Linux, x64 or arm64");
   const dir = mkdtempSync(`${tmpdir()}/gitleaks-`), tgz = local || `${dir}/gl.tgz`;
-  // The download and binary go with the directory on every exit, including fail() and must(), which call process.exit.
-  process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
+  // The download and binary go with the directory on every exit, including fail(), must() and a signal.
+  removeOnExit(dir);
   if (!local) {
-    const res = await fetch(`https://github.com/gitleaks/gitleaks/releases/download/v${V}/gitleaks_${V}_${platform}.tar.gz`);
+    // GATE_GITLEAKS_BASE: a test stand-in for the release host; the pinned checksum still applies to what it serves.
+    const res = await fetch(`${env.GATE_GITLEAKS_BASE || "https://github.com/gitleaks/gitleaks/releases/download"}/v${V}/gitleaks_${V}_${platform}.tar.gz`);
     if (!res.ok) fail(`gitleaks download: ${res.status}`, "re-run the job");
     writeFileSync(tgz, Buffer.from(await res.arrayBuffer()));
   }
