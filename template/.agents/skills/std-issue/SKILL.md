@@ -1,11 +1,11 @@
 ---
 name: std-issue
-description: Turn an idea into ONE complete GitHub issue an agent can run - grill for what is missing, copy context in, write the launcher's shape, flag work too big for one PR. Use for "write an issue", "I have an idea", "scope this", "file a task".
+description: Turn an idea into one complete GitHub issue for one concern - grill for what is missing, copy context in, write the launcher's shape. Use for "write an issue", "I have an idea", "scope this", "file a task".
 ---
 
 # Write the issue
 
-Produce one self-contained issue an agent can finish in one PR with nobody to ask. Read the repo first (README, AGENTS.md, the files involved) and check the idea against what the code does today; never ask what the code answers, and say so if the idea does not match it.
+Produce one self-contained issue for one concern, with checkable acceptance criteria and enough context to implement it. Read the repo first (README, AGENTS.md, the files involved) and check the idea against what the code does today; never ask what the code answers, and say so if the idea does not match it.
 
 1. Grill, one question at a time, only for what is missing, each with your best guess to accept or correct:
    - the outcome, and who sees it;
@@ -23,5 +23,5 @@ Produce one self-contained issue an agent can finish in one PR with nobody to as
    - `## Evidence`: what to show (before/after screenshots, command output).
    - `## Out of scope`: what must not change.
    Plain words. Say what and why; never a model, subagent, lane, effort or how-to-run instruction.
-4. Size check: one PR, one concern, reviewable in one sitting. If it is multi-day, has a slice needing separate approval, or has 3+ independent slices, do not write one giant issue. Propose a parent issue (its Goal and Acceptance criteria are the whole outcome; plus the plan and shared constraints) and sub-issues, every one written in the shape above, and a linked branch `feat/<n>-<slug>` they merge into. Wait for the person to confirm.
+4. Group related work under one concern. Split independent outcomes during scoping, writing each issue in the shape above and linking dependencies. Ask about a specific missing decision or required approval; estimated duration, complexity, or a count of implementation steps is not a reason to delay filing or dispatch.
 5. Show the issue, apply corrections, and only when the person says so file it (`gh issue create --body-file`, or paste into GitHub's Agent task form). Add `agent-ready` to a single issue, or to sub-issues as they become unblocked, never to a parent. Reply with the link.
