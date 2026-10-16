@@ -345,7 +345,8 @@ export function rollbackFindings({ built = false } = {}) {
     }
     const oldFiles = git("ls-tree", "-r", "--name-only", "-z", base).split("\0").filter(Boolean);
     // Configs are paired by file name and by the declarations of both sides' standards.json, so a Worker declared on one side is still compared.
-    const baseLink = (f) => { try { return git("ls-tree", base, "--", f).split("\n").some((l) => l.startsWith("120000 ") && l.endsWith(`\t${f}`)); } catch { return false; } };
+    // -z: ls-tree quotes non-ASCII names otherwise, so the exact path is compared unquoted.
+    const baseLink = (f) => { try { return git("ls-tree", "-z", base, "--", f).split("\0").some((l) => l.startsWith("120000 ") && l.endsWith(`\t${f}`)); } catch { return false; } };
     const headLink = (f) => { try { return lstatSync(f).isSymbolicLink(); } catch { return false; } };
     const configs = [...new Set([...oldFiles, ...files].filter((f) => configFile.test(f))
       .concat(declaredConfigs(before(base, "standards.json"), new Set(oldFiles), baseLink, notes), declaredConfigs(read("standards.json"), new Set(files), headLink, notes)))];

@@ -531,6 +531,11 @@ repo declared-link-ancestor; mkdir -p "$R/real/api.json"; echo 'export default {
 echo '{"name":"apid","main":"index.js","kv_namespaces":[{"binding":"CACHE","id":"apid-kv"}],"env":{"staging":{"routes":[],"workers_dev":true,"kv_namespaces":[{"binding":"CACHE","id":"apid-kv-stage"}]}},"previews":{"kv_namespaces":[{"binding":"CACHE","id":"apid-kv-stage"}]}}' > "$R/real/api.json/wrangler.jsonc"
 ln -s real "$R/link"; declare_workers 'o.workers=["wrangler.jsonc","link/api.json"]'
 expect 0 'NOTE: rollback: workers entry link/api.json has a symlink in its path' "unchanged directory entry under a symlinked ancestor"
+# ls-tree quotes a non-ASCII name unless -z is given: the symlink is still recognised by its exact path.
+repo declared-link-utf8; mkdir -p "$R/real/api.json"; echo 'export default {};' > "$R/real/api.json/index.js"
+echo '{"name":"apid","main":"index.js","kv_namespaces":[{"binding":"CACHE","id":"apid-kv"}],"env":{"staging":{"routes":[],"workers_dev":true,"kv_namespaces":[{"binding":"CACHE","id":"apid-kv-stage"}]}},"previews":{"kv_namespaces":[{"binding":"CACHE","id":"apid-kv-stage"}]}}' > "$R/real/api.json/wrangler.jsonc"
+ln -s real/api.json "$R/api-é.json"; declare_workers 'o.workers=["wrangler.jsonc","api-é.json"]'
+expect 0 'NOTE: rollback: workers entry api-é.json has a symlink in its path' "unchanged symlink with a non-ASCII name"
 if [ -z "$why" ]; then ok rollback-declared-workers; else fail rollback-declared-workers "$why"; fi
 done_cases
 done_cases
