@@ -513,5 +513,14 @@ expect 1 'Worker api is deleted whole, but it is declared (standards.json worker
 repo declared-root; declare_api
 echo 'DROP TABLE users;' > "$R/db/0002.sql"
 expect 1 'db/0002.sql: DROP TABLE users; contract requires' "root Worker still compared beside declared ones"
+# A directory whose name ends like a config (api.json/) is a directory, as declaredWorkers reads it: an unchanged one passes, and its config is compared.
+repo declared-dir-named
+mkdir -p "$R/api.json"; echo 'export default {};' > "$R/api.json/index.js"
+echo '{"name":"apid","main":"index.js","kv_namespaces":[{"binding":"CACHE","id":"apid-kv"}],"env":{"staging":{"routes":[],"workers_dev":true,"kv_namespaces":[{"binding":"CACHE","id":"apid-kv-stage"}]}},"previews":{"kv_namespaces":[{"binding":"CACHE","id":"apid-kv-stage"}]}}' > "$R/api.json/wrangler.jsonc"
+declare_workers 'o.workers=["wrangler.jsonc","api.json"]'
+expect 0 'rollback-safe ok' "unchanged directory entry named like a config"
+node -e 'const fs=require("fs"),f=process.argv[1],o=JSON.parse(fs.readFileSync(f));delete o.kv_namespaces;fs.writeFileSync(f,JSON.stringify(o))' "$R/api.json/wrangler.jsonc"
+expect 1 'api.json/wrangler.jsonc: removed production binding kv_namespaces CACHE' "binding removed from a directory entry named like a config"
 if [ -z "$why" ]; then ok rollback-declared-workers; else fail rollback-declared-workers "$why"; fi
+done_cases
 done_cases

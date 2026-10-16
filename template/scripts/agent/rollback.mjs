@@ -44,8 +44,10 @@ function declaredConfigs(text, tree) {
   const entry = (p) => {
     const n = repoPath(p);
     if (!n) return;
-    if (configExt.test(n)) found.push(n);
-    else for (const name of wranglerNames) if (tree.has(posix.join(n, name))) found.push(posix.join(n, name));
+    // A path holding one of wranglerNames is a directory whatever its name (declaredWorkers finds it the same way on disk); otherwise it is a config file.
+    const inside = wranglerNames.map((name) => posix.join(n, name)).filter((f) => tree.has(f));
+    if (inside.length) found.push(...inside);
+    else if (configExt.test(n) && ![...tree].some((f) => f.startsWith(`${n}/`))) found.push(n);
   };
   for (const p of Array.isArray(std.release_workers) ? std.release_workers : []) file(p);
   for (const w of Array.isArray(std.workers) ? std.workers : []) {
