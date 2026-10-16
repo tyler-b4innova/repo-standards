@@ -402,15 +402,16 @@ if node -e 'process.exit(["linux", "darwin"].includes(process.platform) && ["x64
   else fail secrets-scan-changes-only "clean=$x1 leak=$x2: $o1 | $o2"; fi
 else echo "skip secrets-scan-changes-only (no pinned gitleaks build for this platform)"; fi
 
-# gitleaks-download-retry: a download that answers 504 is retried, each attempt's URL and status logged; the stand-in then
-# serves bytes that are not the pinned archive, so the run stops at the checksum after two attempts, with no temp dir left
-if node -e 'process.exit(["linux", "darwin"].includes(process.platform) && ["x64", "arm64"].includes(process.arch) ? 0 : 1)'; then
-  GT=$(mktemp -d "$T/gl.XXXXXX"); mkdir "$GT/tmp"
-  node -e 'const n=[];require("http").createServer((q,r)=>{n.push(q.url);if(n.length===1){r.writeHead(504);r.end();return}r.writeHead(200);r.end("not the archive")}).listen(0,"127.0.0.1",function(){require("fs").writeFileSync(process.argv[1],String(this.address().port))})' "$GT/port" & PIDS="$PIDS $!"
-  gp=$(wait_port "$GT/port")
-  W=$(mkrepo)
-  o=$(cd "$W" && GATE_GITLEAKS_BASE="http://127.0.0.1:$gp" GATE_GITLEAKS_BACKOFF_MS=0 TMPDIR="$GT/tmp" node scripts/agent/gate.mjs secrets 2>&1); x=$?
-  if [ $x -eq 1 ] && has "download 1 of 3: http://127.0.0.1:$gp/v8.30.1/gitleaks_8.30.1_" "$o" && has "-> 504" "$o" && has "download 2 of 3" "$o" && has "-> 200" "$o" && has "checksum mismatch" "$o" && [ -z "$(ls -A "$GT/tmp")" ]; then ok gitleaks-download-retry
-  else fail gitleaks-download-retry "exit=$x: $o"; fi
-else echo "skip gitleaks-download-retry (no pinned gitleaks build for this platform)"; fi
+# gitleaks-cache-wiring: std-gate restores the gitleaks archive before its secrets step, under the key std-cache-warm saves on
+# main, and the gate never saves a cache; std-cache-warm saves it after gitleaks-fetch fills the directory
+CWF=$ENGINE/template/.github/workflows/std-gate.yml; CWW=$ENGINE/template/.github/workflows/std-cache-warm.yml
+gl_key="key: std-gitleaks-\${{ runner.os }}-\${{ runner.arch }}-\${{ hashFiles('scripts/agent/gate.mjs') }}"; gl_path="path: \${{ runner.temp }}/std-gitleaks"
+gw=""
+grep -qF "$gl_key" "$CWF" && grep -qF "$gl_path" "$CWF" && grep -qF "uses: actions/cache/restore@" "$CWF" || gw="$gw; gate restore"
+grep -qF "$gl_key" "$CWW" && grep -qF "$gl_path" "$CWW" && grep -qF "uses: actions/cache@" "$CWW" || gw="$gw; warm save"
+grep -qF "GATE_GITLEAKS_CACHE: \${{ runner.temp }}/std-gitleaks" "$CWF" || gw="$gw; gate env"
+[ "$(step_run "$CWW" "gitleaks archive")" = "node scripts/agent/gate.mjs gitleaks-fetch" ] || gw="$gw; warm fetch"
+grep -q "uses: actions/cache@" "$CWF" && gw="$gw; gate saves a cache"
+[ "$(grep -n "name: gitleaks cache" "$CWF" | cut -d: -f1)" -lt "$(grep -n "name: secrets" "$CWF" | cut -d: -f1)" ] || gw="$gw; restore after secrets"
+if [ -z "$gw" ]; then ok gitleaks-cache-wiring; else fail gitleaks-cache-wiring "$gw"; fi
 done_cases

@@ -65,10 +65,19 @@ async function gitleaksArchive(dir) {
     const url = `${env.GATE_GITLEAKS_BASE || "https://github.com/gitleaks/gitleaks/releases/download"}/v${V}/${name}`;
     const tries = 3, pause = Number(env.GATE_GITLEAKS_BACKOFF_MS ?? 2000);
     for (let n = 1; ; n++) {
+      // a failed status, a body cut short and bytes that are not the pinned archive are all transient: each is an attempt
       const res = await fetch(url).catch((e) => ({ ok: false, status: e.cause?.code || e.message }));
-      console.log(`secrets: gitleaks download ${n} of ${tries}: ${url} -> ${res.status}`);
-      if (res.ok) { writeFileSync(tgz, Buffer.from(await res.arrayBuffer())); break; }
-      if (n === tries) fail(`gitleaks download: ${res.status} after ${tries} attempts`, "re-run the job");
+      let state = `${res.status}`, verified = false;
+      if (res.ok) {
+        try {
+          writeFileSync(tgz, Buffer.from(await res.arrayBuffer()));
+          verified = sha(tgz) === SUM;
+          state = `200, ${verified ? "verified" : "not the pinned archive"}`;
+        } catch (e) { state = `200, body: ${e.message}`; }
+      }
+      console.log(`secrets: gitleaks download ${n} of ${tries}: ${url} -> ${state}`);
+      if (verified) break;
+      if (n === tries) fail(`gitleaks download failed after ${tries} attempts (last: ${state})`, "re-run the job");
       await new Promise((r) => setTimeout(r, pause * n));
     }
   }

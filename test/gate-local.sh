@@ -39,7 +39,7 @@ export GATE_GITLEAKS_ARCHIVE=$T/gitleaks.tgz
 curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_${platform}.tar.gz" -o "$GATE_GITLEAKS_ARCHIVE" || exit 1
 run() { local name=$1; shift; rm -f "$R/.gate-order"; (cd "$R" && env HOME="$T/home" USERPROFILE="$T/home" GATE_LOCAL_WAIT_S=${GATE_LOCAL_WAIT_S:-20} node scripts/agent/gate.mjs local "$@") > "$T/$name.log" 2>&1; }
 jset() { node -e 'const fs=require("fs"),f=process.argv[1],o=JSON.parse(fs.readFileSync(f));new Function("o",process.argv[2])(o);fs.writeFileSync(f,JSON.stringify(o,null,2)+"\n")' "$R/standards.json" "$1"; }
-has() { grep -qF "$1" "$T/$2.log"; }
+has() { grep -qF -e "$1" "$T/$2.log"; } # -e: a needle may start with a dash
 closed() { node - "${1:-8787}" <<'JS'
 const s=require('net').createConnection({host:'127.0.0.1',port:Number(process.argv[2])});
 s.once('connect',()=>{s.destroy();process.exit(1)});
@@ -257,6 +257,23 @@ if [ "$knob" -eq 1 ] && [ "$tc" -eq 0 ] && [ "$tg" -eq 0 ] && [ "$tl" -eq 0 ] &&
 else fail gate-local-trusts-checkout "scrubbed-home git (knob works: $knob): $scrubbed | exit=$tc summary: $tsum | caller global exit=$tg summary: $gsum | linked worktree exit=$tl summary: $lsum"; grep -m3 -i 'dubious\|caller.*git' "$T/trust.log" "$T/trust-global.log" "$T/trust-linked.log"; fi
 printf '\nLocal gate evidence (real Worker):\n'; tail -1 "$T/default.log"; tail -1 "$T/failing.log"; tail -1 "$T/optout.log"
 printf 'Local gate evidence (steps that ran nothing):\n'; echo "$skipsum"; echo "$nssum"
+# gitleaks-download-retry: a 504, then a body cut short, then the pinned archive: each failed attempt is logged and retried,
+# and the real secrets entry point completes the scan with no temp directory left
+if node -e 'process.exit(["linux", "darwin"].includes(process.platform) && ["x64", "arm64"].includes(process.arch) ? 0 : 1)'; then
+  rt=$T/retry-tmp; mkdir -p "$rt"
+  node -e 'const fs = require("fs"), http = require("http"), body = fs.readFileSync(process.argv[1]); let n = 0;
+    http.createServer((q, r) => { n++;
+      if (n === 1) { r.writeHead(504); r.end(); return; }
+      r.writeHead(200, { "Content-Length": body.length });
+      if (n === 2) { r.write(body.subarray(0, body.length >> 1)); setTimeout(() => r.destroy(), 50); return; }
+      r.end(body);
+    }).listen(0, "127.0.0.1", function () { fs.writeFileSync(process.argv[2], String(this.address().port)); });' "$GATE_GITLEAKS_ARCHIVE" "$T/retry.port" & retry_srv=$!
+  for i in $(seq 100); do [ -s "$T/retry.port" ] && break; sleep 0.1; done
+  (cd "$R" && exec env -u GITHUB_EVENT_PATH -u GITHUB_EVENT_NAME -u GATE_GITLEAKS_ARCHIVE -u GATE_GITLEAKS_CACHE GATE_GITLEAKS_BASE="http://127.0.0.1:$(cat "$T/retry.port")" GATE_GITLEAKS_BACKOFF_MS=0 TMPDIR="$rt" node scripts/agent/gate.mjs secrets) > "$T/retry.log" 2>&1; rx=$?
+  kill "$retry_srv" 2>/dev/null; wait "$retry_srv" 2>/dev/null
+  if [ "$rx" -eq 0 ] && has "download 1 of 3" retry && has "-> 504" retry && has "download 2 of 3" retry && has "-> 200, body:" retry && has "download 3 of 3" retry && has "-> 200, verified" retry && has "no leaks found" retry && [ -z "$(ls -A "$rt")" ]; then ok gitleaks-download-retry
+  else fail gitleaks-download-retry "exit=$rx dir=[$(ls -A "$rt")]: $(cat "$T/retry.log")"; fi
+else echo "skip gitleaks-download-retry (no pinned gitleaks build for this platform)"; fi
 # gitleaks-temp-dir-removed: the secret scan's temp directory is gone after a success, after a checksum failure and after
 # a SIGTERM during the download (a signal ends Node without its exit event, so the handler must route it through exit)
 if node -e 'process.exit(["linux", "darwin"].includes(process.platform) && ["x64", "arm64"].includes(process.arch) ? 0 : 1)'; then
