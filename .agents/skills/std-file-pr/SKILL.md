@@ -19,7 +19,7 @@ Title: Conventional Commit in plain language. Body (file outside the repo), per 
 1. Commit locally. Write the title on the first line of `.evidence/pr.md`, then the body; leave it uncommitted for the launcher.
 2. End with "diff ready", the branch name and the commit SHA. Never say a PR was opened.
 
-Open PRs as drafts and keep them drafts while iterating: a draft is not gated (no CI job runs and no `gate` check exists on a draft head), so iterate with `node scripts/agent/gate.mjs local`. The one full gate (`checks` plus one `test` job) runs when a PR becomes ready, so mark it ready once: when `node scripts/agent/gate.mjs local` has passed on the pushed head, run `scripts/agent/pr.sh ready <pr>` (it refuses without that pass). The GitHub Codex review is the one review; fix its findings in one push (see `std-babysit`).
+Open PRs as drafts and keep them drafts while iterating: drafts start no billed gate job. Iterate with `node scripts/agent/gate.mjs local`. With Launcher reviewers enabled, full review, batched fixes and independent follow-up verification finish in draft; the Launcher marks the locally verified candidate ready and the one job `gate` runs. For a manually managed or GitHub-only PR, mark ready after local proof to start its configured review and gate. A later changed candidate requires fresh review coverage and gate success. See `std-babysit` for findings.
 
 If you close a PR without merging, delete its branch.
 

@@ -7,11 +7,14 @@ cd "$(dirname "$0")/.."
 unset GATE_SELECT GATE_AFFECTED GATE_AFFECTED_E2E # inherited when this suite is the gate e2e command; cases set their own
 status=0 log=$(mktemp)
 trap 'rm -f "$log"' EXIT
+files=()
 for f in test/[a-z]*.sh $( [ -f org/test.sh ] && echo org/test.sh ); do
   case "$f" in test/lib.sh | test/run.sh) continue ;; esac
-  bash "$f" | tee -a "$log"
-  [ "${PIPESTATUS[0]}" -eq 0 ] || status=1
+  files+=("$f")
 done
+# in parallel, TEST_JOBS at a time (default one per CPU); output arrives whole and in file order (tools/parallel.sh)
+bash tools/parallel.sh "${files[@]}" | tee -a "$log"
+[ "${PIPESTATUS[0]}" -eq 0 ] || status=1
 want=$(grep -oE '^- \*\*`[a-z0-9-]+`\*\*' SCENARIOS.md | sed -E 's/^- \*\*`([^`]+)`\*\*/\1/' | sort -u)
 got=$(sed -nE 's/^(ok|FAIL|skip) ([a-z0-9-]+).*/\2/p' "$log" | sort -u)
 skipped=""; [ -z "${CI:-}" ] || skipped=$(sed -nE 's/^skip ([a-z0-9-]+).*/\1/p' "$log" | sort -u)

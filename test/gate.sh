@@ -118,7 +118,7 @@ cp "$T/pw.orig" "$R/node_modules/.bin/playwright"; echo '{"name":"app","private"
 echo '{"name":"app","private":true,"devDependencies":{"@playwright/test":"1.63.0"}}' > "$R/package.json"
 bwf=$(node -e '
 const y=require("fs").readFileSync(process.argv[1],"utf8"),out=[],body=(j)=>{const i=y.indexOf("\n  "+j+":\n");const r=y.slice(i+1).split("\n").slice(1);const e=r.findIndex(l=>/^  \S/.test(l));return (e<0?r:r.slice(0,e)).join("\n")};
-for(const j of ["test"]){const b=body(j);
+for(const j of ["gate"]){const b=body(j);
  if(!/actions\/cache\/restore@[0-9a-f]{40} # v/.test(b)||!b.includes("path: ~/.cache/ms-playwright")||!/steps\.pw\.outputs\.key/.test(b))out.push(j+" caches no browsers");
  if(!/gate\.mjs install --no-browsers/.test(b)||!/gate\.mjs install --browsers-only/.test(b)||/gate\.mjs install$/m.test(b))out.push(j+" installs browsers uncached")}
 console.log(out.join("; ")||"ok")' "$R/$WF")
@@ -126,16 +126,6 @@ if [ -z "$bwhy" ] && has "install-deps chromium" "$bunk" && has "install-deps ch
   && has "key=playwright-" "$bkey" && has "-1.63.0-chromium+firefox" "$bkey" && has "-1.63.0-chromium" "$bkey1" && ! has "firefox" "$bkey1" && [ "$bnokey" = "key=" ] && [ "$bwf" = ok ]
 then ok gate-browser-cache; else fail gate-browser-cache "layouts=${bwhy#; } | unknown=$bunk | firefox=$bff | none=$bnone | key=$bkey | $bkey1 | nokey=$bnokey | workflow=$bwf"; fi
 
-# ---- the gate never writes a cache: a re-gate on the default branch (workflow_dispatch) runs a pull request's tree, so
-# a cache saved there would be seeded by that tree. Only std-cache-warm (pushes to the default branch, no PR code) saves.
-cw=$R/.github/workflows/std-cache-warm.yml
-cwhy=""
-grep -Eq 'uses: actions/cache@|^\s+cache:' "$R/$WF" && cwhy="$cwhy; gate saves a cache"
-grep -Eq 'uses: actions/cache/restore@[0-9a-f]{40}' "$R/$WF" || cwhy="$cwhy; gate restores nothing"
-grep -Eq 'uses: actions/cache@[0-9a-f]{40}' "$cw" || cwhy="$cwhy; warm saves nothing"
-grep -Eq 'pull_request|workflow_dispatch|^\s+ref:' "$cw" && cwhy="$cwhy; warm can run or check out pull request code"
-grep -Eq '^    branches: \[main\]' "$cw" || cwhy="$cwhy; warm not main-only"
-if [ -z "$cwhy" ]; then ok gate-never-writes-cache; else fail gate-never-writes-cache "$cwhy"; fi
 # e2e-budget-removed: a slow suite passes, a leftover e2e.budget warns in --check and changes nothing, and an overlay still setting gate.budget loads with one notice
 R=$(mkrepo)
 jset "$R/standards.json" 'o.e2e={command:"sleep 2",budget:0.01}'
@@ -174,7 +164,7 @@ for (const f of fs.readdirSync(dir)) {
   const jobs=L.slice(j+1).filter(l=>/^  [A-Za-z0-9_-]+:\s*$/.test(l)).map(l=>l.trim().slice(0,-1));
   gates+=L.slice(j+1).filter(l=>/^    name: .*\|\| .gate. \}\}\s*$/.test(l)).length;
   if (f==="std-gate.yml") {
-    if (jobs.join()!=="checks,test,gate") out.push("jobs: "+jobs.join());
+    if (jobs.join()!=="gate") out.push("jobs: "+jobs.join());
     const runs=L.slice(j+1).join("\n");
     for (const s of ["scripts/agent/setup.sh --check","gate.mjs secrets","gate.mjs install","gate.mjs run typecheck","gate.mjs run build","gate.mjs e2e","scripts/agent/gate.local.sh"])
       if (!runs.includes(s)) out.push("missing step: "+s);
@@ -185,36 +175,49 @@ if (gates!==1) out.push(gates+" jobs named gate");
 console.log(out.join("; ")||"ok")')
 if [ "$shape" = ok ]; then ok gate-fails-without-e2e; else fail gate-fails-without-e2e "$shape"; fi
 
-# one-test-job / one-gate-run-per-push: the full gate is `checks` plus ONE `test` job that installs once and runs
-# typecheck, build, the repo checks and e2e in that order (the preview wait just before e2e); a push to a draft starts no
-# jobs and a cancelled run posts no gate; the verdict needs exactly checks and test
+# one-test-job / one-gate-run-per-push: the full gate is ONE job named `gate`: one checkout and one install (with the cache
+# restores), then the checks steps, then the test steps (typecheck, build, the repo checks, preview, e2e, in that order)
+# for a full plan on a ready head, then the verdict, which reads the outcomes of the checks part and the test part. A push
+# to a draft starts no job, a draft's job is named `draft (not gated)`, and a cancelled run runs no verdict
 why=""; WFT=$ENGINE/template/.github/workflows/std-gate.yml
 node --input-type=module - "$WFT" <<'JS' || why="$why; $?"
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 const y = readFileSync(process.argv[2], "utf8"), parts = y.slice(y.indexOf("\njobs:")).split(/^  ([\w-]+):\s*$/m), jobs = {};
 for (let i = 1; i < parts.length; i += 2) jobs[parts[i]] = parts[i + 1];
-assert.deepEqual(Object.keys(jobs), ["checks", "test", "gate"]);
-assert.equal((jobs.test.match(/gate\.mjs install --no-browsers/g) ?? []).length, 1, "one install");
-assert.equal((jobs.test.match(/actions\/checkout@/g) ?? []).length, 1, "one checkout");
-const order = ["run typecheck", "run build", "gate.local.sh", "gate.mjs preview", "gate.mjs e2e"].map((k) => jobs.test.indexOf(k));
-assert.ok(order.every((n, i) => n > 0 && (i === 0 || n > order[i - 1])), "typecheck, build, repo checks, preview, e2e in order: " + order);
-assert.match(jobs.gate, /needs: \[checks, test\]/);
-assert.match(jobs.checks, /^    if: github\.event\.pull_request\.draft != true$/m, "a draft starts no checks");
-assert.match(jobs.gate, /^    name: \$\{\{ \(github\.event\.pull_request\.draft == true \|\| needs\.checks\.outputs\.rollback_draft == 'true'\) && 'draft \(not gated\)' \|\| 'gate' \}\}$/m, "a draft's gate job is not named gate");
-assert.match(jobs.gate, /^    if: \$\{\{ always\(\) && !cancelled\(\) && github\.event\.pull_request\.draft != true && needs\.checks\.outputs\.rollback_draft != .true. \}\}$/m, "gate is skipped for a draft, never skipped otherwise");
+assert.deepEqual(Object.keys(jobs), ["gate"]);
+const gate = jobs.gate;
+assert.equal((gate.match(/gate\.mjs install --no-browsers/g) ?? []).length, 1, "one install");
+assert.equal((gate.match(/actions\/checkout@/g) ?? []).length, 1, "one checkout");
+assert.equal((gate.match(/actions\/setup-node@/g) ?? []).length, 1, "one setup-node");
+const order = ["setup.sh --check", "gate.mjs syntax", "gate.mjs install", "run typecheck", "run build", "gate.local.sh", "gate.mjs preview", "gate.mjs e2e", "gate.mjs verdict"].map((k) => gate.indexOf(k));
+assert.ok(order.every((n, i) => n > 0 && (i === 0 || n > order[i - 1])), "checks, install, typecheck, build, repo checks, preview, e2e, verdict in order: " + order);
+assert.match(gate, /^    name: \$\{\{ github\.event\.pull_request\.draft == true && 'draft \(not gated\)' \|\| 'gate' \}\}$/m, "a draft's job is named draft (not gated)");
+assert.match(gate, /^    if: github\.event\.pull_request\.draft != true$/m, "the job is skipped for a draft, never for a ready head");
+assert.ok(!/needs\b/.test(gate), "no needs: one job, no job results to read");
 assert.ok(!y.includes("STD_GATE_DRAFT_PUSHES"), "no draft opt-in knob");
-// a ready run queued before the PR was converted to draft: the plan's live draft output skips test and gate and names the gate job
-assert.match(jobs.test, /^    if: needs\.checks\.outputs\.mode == 'full' && needs\.checks\.outputs\.rollback_draft != 'true'$/m, "test skips on a live draft");
-assert.match(jobs.gate, /^    name: .*needs\.checks\.outputs\.rollback_draft == 'true'\) && 'draft/m, "gate job name follows the plan's live draft");
-assert.match(jobs.test, /needs: checks/);
+// every test step runs only for a full plan on a ready head (a ready run queued before the PR was converted to draft
+// carries the plan's live draft output, and the verdict fails it)
+const stepsOf = (text) => text.split(/^      - /m).slice(1);
+const testSteps = ["dependency cache", "install", "playwright", "browser cache", "browsers", "typecheck", "build", "repo checks", "preview", "e2e"];
+for (const s of stepsOf(gate)) {
+  const name = (s.match(/^name: (.*)$/m) ?? [])[1] ?? "";
+  if (testSteps.includes(name)) assert.match(s, /if: steps\.plan\.outputs\.mode == 'full' && steps\.plan\.outputs\.rollback_draft != 'true'/, name + " is not gated on a full plan on a ready head");
+}
+const verdict = stepsOf(gate).find((s) => /^name: verdict$/m.test(s));
+assert.match(verdict, /if: \$\{\{ !cancelled\(\) \}\}/, "a cancelled run runs no verdict");
+assert.match(verdict, /CHECKS: \$\{\{ steps\.syntax\.outcome \}\}/, "the checks part is the syntax step's outcome");
+assert.match(verdict, /TEST: \$\{\{ steps\.e2e\.outcome \}\}/, "the test part is the e2e step's outcome");
 JS
-NEEDS_OK='{"checks":{"result":"success","outputs":{"mode":"full"}},"test":{"result":"success"}}'
-v1=$(NEEDS="$NEEDS_OK" node template/scripts/agent/gate.mjs verdict 2>&1); x1=$?
-v2=$(NEEDS='{"checks":{"result":"success","outputs":{"mode":"full"}},"test":{"result":"failure"}}' node template/scripts/agent/gate.mjs verdict 2>&1); x2=$?
-v3=$(NEEDS='{"checks":{"result":"success","outputs":{"mode":"cheap"}},"test":{"result":"skipped"}}' node template/scripts/agent/gate.mjs verdict 2>&1); x3=$?
-v4=$(NEEDS='{"checks":{"result":"success","outputs":{"mode":"full"}},"test":{"result":"skipped"}}' node template/scripts/agent/gate.mjs verdict 2>&1); x4=$?
-{ [ $x1 -eq 0 ] && [ $x2 -ne 0 ] && [ $x3 -ne 0 ] && [ $x4 -ne 0 ]; } || why="$why; verdict $x1 $x2 $x3 $x4: $v1 $v2 $v3 $v4"
+v() { (cd "$ENGINE/template" >/dev/null && env MODE="$1" LIVE_DRAFT="$2" CHECKS="$3" TEST="$4" GITHUB_EVENT_PATH= node scripts/agent/gate.mjs verdict 2>&1); }
+v1=$(v full false success success); x1=$?
+v2=$(v full false success failure); x2=$?
+v3=$(v cheap false success skipped); x3=$?
+v4=$(v full false success skipped); x4=$?
+v5=$(v full true success success); x5=$?
+v6=$(v full false failure skipped); x6=$?
+v7=$(v full false cancelled skipped); x7=$?
+{ [ $x1 -eq 0 ] && [ $x2 -ne 0 ] && [ $x3 -ne 0 ] && [ $x4 -ne 0 ] && [ $x5 -ne 0 ] && [ $x6 -ne 0 ] && [ $x7 -ne 0 ]; } || why="$why; verdict $x1..$x7: $v1 | $v2 | $v3 | $v4 | $v5 | $v6 | $v7"
 if [ -z "$why" ]; then ok one-test-job; ok one-gate-run-per-push; else fail one-test-job "$why"; fail one-gate-run-per-push "$why"; fi
 
 # gate-run-name: the run-name carries the pull request's identity in the contract format, for pull_request events only
@@ -261,31 +264,38 @@ R=$(mkrepo)
 out1=$(cd "$R" && scripts/agent/setup.sh --check 2>&1); s1=$?
 mkdir -p "$R/.evidence" && printf 'png' > "$R/.evidence/after-home-400.png" && commit "$R"
 out2=$(cd "$R" && scripts/agent/setup.sh --check 2>&1); s2=$?
-if [ $s1 -eq 0 ] && [ $s2 -eq 1 ] && has ".evidence/ is tracked (.evidence/after-home-400.png)" "$out2"; then ok no-evidence-on-main
+if [ $s1 -eq 0 ] && [ $s2 -eq 1 ] && has ".evidence/ is tracked (.evidence/after-home-400.png)" "$out2" && has "git rm -r --cached .evidence" "$out2" && has "pr.sh evidence" "$out2"; then ok no-evidence-on-main
 else fail no-evidence-on-main "untracked=$s1 tracked=$s2: $out2"; fi
 
-# Evidence repos are clones of one repo, so the pinned evidence commit is in every PR head's history.
+# Evidence repos are clones of one repo, so the marked head is in every PR head's history.
 EV=$(mkrepo); mkev() { local d; d=$(mktemp -d "$T/ev.XXXXXX"); git clone -q "$EV" "$d" && echo "$d"; }
 FX=$T/fixture.json LOG=$T/stub.log SHA=$(git -C "$EV" rev-parse HEAD)
 export FX SHA
 echo '{"repo":"acme/demo"}' > "$FX"
 node test/stubs/gate-github.mjs "$T/port" "$LOG" "$FX" & PIDS="$PIDS $!"
 PORT=$(wait_port "$T/port") || { fail stub-start "gate-github stub did not start"; exit 1; }
-# fx '<js object>': write the fixture; helpers c(id, login, body, app) and img(url-suffix); files: {pr: [...]}
-fx() { node -e 'const S=process.env.SHA,U="https://github.com/acme/demo/blob/"+S+"/.evidence/",img=(u)=>"![shot]("+u+")",
-c=(id,login,body,app)=>({id,html_url:"https://github.com/acme/demo/pull/9#issuecomment-"+id,user:{login},performed_via_github_app:app?{slug:"evidence-app"}:null,body});
-require("fs").writeFileSync(process.env.FX,JSON.stringify({repo:"acme/demo",files:{},comments:{},contents:["before","after"].flatMap((b)=>[S+":.evidence/"+b+"-home-400.png",S+":.evidence/"+b+"-home-1280.png"]),...eval("("+process.argv[1]+")")}))' "$1"; }
+# fx '<js object>': write the fixture. The spec can use: c(id, login, body, app) for a comment; img(name) for an
+# attachment named by its alt text; MK (the marker for the marked head); GOOD (before and after at 400 and 1280px);
+# PAGES (before-1, after-1, after-2 as attachments); PINGOOD (before and after at 400 and 1280px as pinned .evidence/
+# blob links) with PINFILES (those files, as the fixture's contents).
+fx() { node -e 'const S=process.env.SHA, MK="<!-- std:evidence head="+S+" -->\n### Evidence\n", img=(n)=>"!["+n+"](https://github.com/user-attachments/assets/"+n.replace(/[^a-z0-9]/gi,"-")+"-id)",
+c=(id,login,body,app,at="2026-10-13T09:00:00Z",edited)=>({id,created_at:at,updated_at:edited??at,html_url:"https://github.com/acme/demo/pull/9#issuecomment-"+id,user:{login},performed_via_github_app:app?{slug:"evidence-app"}:null,body}),
+GOOD=MK+["before","after"].flatMap((b)=>[img(b+"-home-400.png"),img(b+"-home-1280.png")]).join("\n"),
+PAGES=[img("before-1.png"),img("after-1.png"),img("after-2.png")].join("\n"),
+PIN=(n)=>"!["+n+"](https://github.com/acme/demo/blob/"+S+"/.evidence/"+n+"?raw=true)",
+PINGOOD=["before","after"].flatMap((b)=>[PIN(b+"-home-400.png"),PIN(b+"-home-1280.png")]).join("\n"),
+PINFILES=["before","after"].flatMap((b)=>[S+":.evidence/"+b+"-home-400.png",S+":.evidence/"+b+"-home-1280.png"]);
+require("fs").writeFileSync(process.env.FX,JSON.stringify({repo:"acme/demo",files:{},comments:{},...eval("("+process.argv[1]+")")}))' "$1"; }
 # ev <repo> <pr>: the review rule (repo-standards/review, as a launcher calls it); the stand-in answers commits,
 # compares and the policy files from <repo>
 ev() {
   node -e 'const f=process.env.FX,x=JSON.parse(require("fs").readFileSync(f,"utf8"));x.head=process.argv[1];x.gitDir=process.argv[2];require("fs").writeFileSync(f,JSON.stringify(x))' "$(git -C "$1" rev-parse HEAD)" "$1"
   GITHUB_API_URL="http://127.0.0.1:$PORT" GITHUB_REPOSITORY=acme/demo node "$ENGINE/test/review-run.mjs" "$2" 2>&1; }
-GOOD='["before","after"].flatMap((b)=>[img(U+b+"-home-400.png?raw=true"),img(U+b+"-home-1280.png?raw=true")]).join("\n")'
 
 R=$(mkev)
 fx '{files:{1:[...Array.from({length:150},(_,i)=>"lib/m"+i+".mjs"),"src/components/Button.tsx"]}}'
 : > "$LOG"; out1=$(ev "$R" 1); s1=$?; log=$(cat "$LOG")
-fx '{files:{1:[...Array.from({length:150},(_,i)=>"lib/m"+i+".mjs"),"src/components/Button.tsx"]},comments:{1:[c(11,"alice",'"$GOOD"')]}}'
+fx '{files:{1:[...Array.from({length:150},(_,i)=>"lib/m"+i+".mjs"),"src/components/Button.tsx"]},comments:{1:[c(11,"alice",GOOD)]}}'
 out2=$(ev "$R" 1); s2=$?
 if [ $s1 -eq 1 ] && has "src/components/Button.tsx" "$out1" && has "no accepted evidence comment" "$out1" && has '"path":"/repos/acme/demo/pulls/1/files","query":"?per_page=100&page=2"' "$log" &&
   [ $s2 -eq 0 ] && has "evidence: accepted" "$out2"; then ok ui-paths-evidence-required
@@ -313,57 +323,67 @@ jset "$R/standards.json" 'o.ui_paths=["content/**"]'; mkdir -p "$R/content" && e
 cls=$(G "$R" classify HEAD)
 if [ -z "$r" ] && has content/a.txt "$cls" && ! has app.css "$cls"; then ok ui-paths-repo-override; else fail ui-paths-repo-override "$r classify=$cls"; fi
 
+# evidence-comment-author-or-app: only the PR author, an app or a trusted login may post the evidence
 R=$(mkev)
-fx '{files:{5:["src/app.css"]},comments:{5:[c(21,"mallory",'"$GOOD"')]}}'; out1=$(ev "$R" 5); s1=$?
-fx '{files:{5:["src/app.css"]},comments:{5:[c(22,"evidence-app[bot]",'"$GOOD"',true)]}}'; out2=$(ev "$R" 5); s2=$?
-fx '{files:{5:["src/app.css"]},comments:{5:[c(23,"alice",'"$GOOD"')]}}'; out3=$(ev "$R" 5); s3=$?
+fx '{files:{5:["src/app.css"]},comments:{5:[c(21,"mallory",GOOD)]}}'; out1=$(ev "$R" 5); s1=$?
+fx '{files:{5:["src/app.css"]},comments:{5:[c(22,"evidence-app[bot]",GOOD,true)]}}'; out2=$(ev "$R" 5); s2=$?
+fx '{files:{5:["src/app.css"]},comments:{5:[c(23,"alice",GOOD)]}}'; out3=$(ev "$R" 5); s3=$?
 if [ $s1 -eq 1 ] && has "#issuecomment-21 by @mallory" "$out1" && [ $s2 -eq 0 ] && has "#issuecomment-22" "$out2" && [ $s3 -eq 0 ]; then ok evidence-comment-author-or-app
 else fail evidence-comment-author-or-app "other-user=$s1 app=$s2 author=$s3: $out1"; fi
 
-B1="https://github.com/acme/demo/blob/main/.evidence/after-home-400.png" B2="https://github.com/other/demo/blob/$SHA/.evidence/after-home-400.png" B3="https://github.com/acme/demo/blob/$SHA/.evidence/missing.png"
-fx "{files:{6:[\"src/app.css\"]},comments:{6:[c(31,\"alice\",img(\"$B1\")),c(32,\"alice\",img(\"$B2\")),c(33,\"alice\",$GOOD+img(\"$B3\"))]}}"
-: > "$LOG"; out1=$(ev "$R" 6); s1=$?; log=$(cat "$LOG")
-fx '{files:{6:["src/app.css"]},comments:{6:[c(34,"alice",'"$GOOD"')]}}'; out2=$(ev "$R" 6); s2=$?
-# an undecodable path is rejected evidence, never an error that leaves an old verdict standing
-fx '{files:{6:["src/app.css"]},comments:{6:[c(35,"alice",'"$GOOD"'+img(U+"after-%ZZ-400.png"))]}}'; out3=$(ev "$R" 6); s3=$?
-# a path under something that is a file, not a folder, is rejected too (the listing is a file object)
-fx '{files:{6:["src/app.css"]},contents:["before","after"].flatMap((b)=>[process.env.SHA+":.evidence/"+b+"-home-400.png",process.env.SHA+":.evidence/"+b+"-home-1280.png"]).concat([process.env.SHA+":.evidence/foo"]),comments:{6:[c(36,"alice",'"$GOOD"'+img(U+"foo/bar.png"))]}}'; out4=$(ev "$R" 6); s4=$?
-if [ $s1 -eq 1 ] && has "$B1" "$out1" && has "$B2" "$out1" && has "$B3" "$out1" && ! has "after-home-1280" "$out1" &&
-  has "\"method\":\"GET\",\"path\":\"/repos/acme/demo/contents/.evidence\",\"query\":\"?ref=$SHA\"" "$log" && ! has "contents/.evidence/after-home-400.png" "$log" && [ $s2 -eq 0 ] \
-  && [ $s3 -eq 1 ] && has "unresolved" "$out3" && ! has "URIError" "$out3" && [ $s4 -eq 1 ] && has "unresolved" "$out4" && ! has "TypeError" "$out4"; then ok evidence-images-pinned-resolving
-else fail evidence-images-pinned-resolving "bad-images=$s1 good=$s2: $out1"; fi
+# evidence-pinned-transition: the pinned .evidence/ form is accepted before the cut-over while its links resolve at their
+# commit and no UI commit follows; unresolved or stale pinned evidence is refused. evidence-marker-required: a marker-less comment is
+# refused with the reason; a missing width and a repeated upload are refused as missing captures.
+R=$(mkev)
+fx '{files:{6:["src/app.css"]},contents:PINFILES,comments:{6:[c(31,"alice","<!-- std:evidence -->\n"+PINGOOD)]}}'; out1=$(ev "$R" 6); s1=$?
+fx '{files:{6:["src/app.css"]},contents:PINFILES.slice(1),comments:{6:[c(36,"alice",PINGOOD)]}}'; out6=$(ev "$R" 6); s6=$?
+R2=$(mkev); echo "a{}" > "$R2/app.css" && commit "$R2" "UI after the pinned evidence"
+fx '{files:{7:["app.css"]},contents:PINFILES,comments:{7:[c(37,"alice",PINGOOD)]}}'; out7=$(ev "$R2" 7); s7=$?
+fx '{files:{6:["src/app.css"]},comments:{6:[c(32,"alice",GOOD.replace(/<!-- std:evidence head=[0-9a-f]+ -->/,"<!-- std:evidence -->"))]}}'; out2=$(ev "$R" 6); s2=$?
+fx '{files:{6:["src/app.css"]},comments:{6:[c(33,"alice",MK+[img("before-home-400.png"),img("before-home-1280.png"),img("after-home-400.png")].join("\n"))]}}'; out3=$(ev "$R" 6); s3=$?
+fx '{files:{6:["src/app.css"]},comments:{6:[c(34,"alice",GOOD)]}}'; out4=$(ev "$R" 6); s4=$?
+fx '{files:{6:["src/app.css"]},comments:{6:[c(35,"alice",MK+["before-home-400.png","before-home-1280.png","after-home-400.png","after-home-1280.png"].map((n)=>"![" + n + "](https://github.com/user-attachments/assets/one-upload)").join("\n"))]}}'; out5=$(ev "$R" 6); s5=$?
+if [ $s1 -eq 0 ] && has "evidence: accepted" "$out1" && [ $s6 -eq 1 ] && has "unresolved" "$out6" && [ $s7 -eq 1 ] && has "UI changed after the evidence" "$out7"; then ok evidence-pinned-transition
+else fail evidence-pinned-transition "valid=$s1 unresolved=$s6 stale=$s7: $out1 | $out6 | $out7"; fi
+# pinned-cut-over: a pinned comment created or edited at or after the cut-over (2026-10-13T10:00:00Z) is refused with the re-post
+# message, the same links created just before it are accepted, and an attachment comment created after it is still accepted.
+R=$(mkev)
+fx '{files:{8:["src/app.css"]},contents:PINFILES,comments:{8:[c(41,"alice","<!-- std:evidence -->\n"+PINGOOD,false,"2026-10-13T09:59:59Z")]}}'; out8=$(ev "$R" 8); s8=$?
+fx '{files:{8:["src/app.css"]},contents:PINFILES,comments:{8:[c(42,"alice","<!-- std:evidence -->\n"+PINGOOD,false,"2026-10-13T10:00:00Z")]}}'; out9=$(ev "$R" 8); s9=$?
+fx '{files:{8:["src/app.css"]},comments:{8:[c(43,"alice",GOOD,false,"2026-10-13T10:00:00Z")]}}'; out10=$(ev "$R" 8); s10=$?
+fx '{files:{8:["src/app.css"]},contents:PINFILES,comments:{8:[c(44,"alice","<!-- std:evidence -->\n"+PINGOOD,false,"2026-10-13T09:00:00Z","2026-10-13T10:00:00Z")]}}'; out11=$(ev "$R" 8); s11=$?
+if [ $s8 -eq 0 ] && has "evidence: accepted" "$out8" && [ $s9 -eq 1 ] && has "pinned .evidence/ links are no longer accepted; re-post with pr.sh evidence" "$out9" && [ $s10 -eq 0 ] && has "evidence: accepted" "$out10" && [ $s11 -eq 1 ] && has "pinned .evidence/ links are no longer accepted" "$out11"; then ok evidence-pinned-transition
+else fail evidence-pinned-transition "before=$s8 after=$s9 attachment=$s10 edited-after=$s11: $out8 | $out9 | $out10 | $out11"; fi
+if [ $s2 -eq 1 ] && has "no <!-- std:evidence head=<40-hex sha> --> marker; re-post with pr.sh evidence" "$out2"; then ok evidence-marker-required; else fail evidence-marker-required "marker-less=$s2: $out2"; fi
+if [ $s3 -eq 1 ] && has "missing after 1280px" "$out3" && [ $s4 -eq 0 ] && has "evidence: accepted" "$out4" && [ $s5 -eq 1 ] && has "missing before 400px" "$out5"; then ok evidence-attachments-pinned
+else fail evidence-attachments-pinned "missing-width=$s3 accepted=$s4 one-asset=$s5: $out3 | $out4 | $out5"; fi
 
-# Stale or incomplete evidence: a later UI commit, a commit outside the PR, or no 1280px capture.
+# Stale or incomplete evidence: a later UI commit, a marked head outside the PR, or a merged side branch with UI.
 R=$(mkev); echo "a{}" > "$R/app.css" && commit "$R" "UI after the evidence"
-fx '{files:{7:["app.css"]},comments:{7:[c(41,"alice",'"$GOOD"')]}}'; st1=$(ev "$R" 7); x1=$?
+fx '{files:{7:["app.css"]},comments:{7:[c(41,"alice",GOOD)]}}'; st1=$(ev "$R" 7); x1=$?
 # A side branch with a UI change merged after the evidence makes it stale too.
 R=$(mkev); gc -C "$R" checkout -qb side; echo "b{}" > "$R/side.css" && commit "$R" "side UI"; gc -C "$R" checkout -q main
 echo x > "$R/notes.txt" && commit "$R" "unrelated"; gc -C "$R" merge -q --no-ff --no-edit side
-fx '{files:{7:["side.css"]},comments:{7:[c(44,"alice",'"$GOOD"')]}}'; st4=$(ev "$R" 7); x4=$?
+fx '{files:{7:["side.css"]},comments:{7:[c(44,"alice",GOOD)]}}'; st4=$(ev "$R" 7); x4=$?
 R=$(mkev); RND=$(node -e 'console.log(require("crypto").randomBytes(20).toString("hex"))')
-fx "{files:{7:[\"app.css\"]},contents:[\"before\",\"after\"].flatMap((b)=>[\"$RND:.evidence/\"+b+\"-a-400.png\",\"$RND:.evidence/\"+b+\"-a-1280.png\"]),comments:{7:[c(42,\"alice\",[\"before\",\"after\"].flatMap((b)=>[img(\"https://github.com/acme/demo/blob/$RND/.evidence/\"+b+\"-a-400.png\"),img(\"https://github.com/acme/demo/blob/$RND/.evidence/\"+b+\"-a-1280.png\")]).join(\"\"))]}}"; st2=$(ev "$R" 7); x2=$?
-fx '{files:{7:["app.css"]},comments:{7:[c(43,"alice",img(U+"before-home-400.png?raw=true")+img(U+"after-home-400.png?raw=true")+img(U+"after-home-1280.png?raw=true"))]}}'; st3=$(ev "$R" 7); x3=$?
-# Two files cannot stand in for four captures, and only image files count.
-fx '{files:{7:["app.css"]},contents:[process.env.SHA+":.evidence/before-after-400.txt",process.env.SHA+":.evidence/before-after-1280.txt"],comments:{7:[c(45,"alice",img(U+"before-after-400.txt")+img(U+"before-after-1280.txt"))]}}'; st5=$(ev "$R" 7); x5=$?
-if [ $x1 -eq 1 ] && has "UI changed after the evidence" "$st1" && [ $x2 -eq 1 ] && has "not in this PR's history" "$st2" && [ $x3 -eq 1 ] && has "missing before 1280px" "$st3" && [ $x4 -eq 1 ] && has "UI changed after the evidence" "$st4" &&
-  [ $x5 -eq 1 ] && has "missing before 400px, before 1280px, after 400px, after 1280px" "$st5"; then ok evidence-images-pinned-resolving
-else fail evidence-images-pinned-resolving "stale=$x1 outside=$x2 no1280=$x3 merged=$x4 two-files=$x5: $st1 | $st2 | $st3 | $st4 | $st5"; fi
+fx "{files:{7:[\"app.css\"]},comments:{7:[c(42,\"alice\",GOOD.replace(S,\"$RND\"))]}}"; st2=$(ev "$R" 7); x2=$?
+fx '{files:{7:["app.css"]},comments:{7:[c(43,"alice",MK+[img("before-home-400.png"),img("after-home-400.png"),img("after-home-1280.png")].join("\n"))]}}'; st3=$(ev "$R" 7); x3=$?
+if [ $x1 -eq 1 ] && has "UI changed after the evidence" "$st1" && [ $x2 -eq 1 ] && has "not in this PR's history" "$st2" && [ $x3 -eq 1 ] && has "missing before 1280px" "$st3" && [ $x4 -eq 1 ] && has "UI changed after the evidence" "$st4"; then ok evidence-attachments-pinned
+else fail evidence-attachments-pinned "stale=$x1 outside=$x2 no1280=$x3 merged=$x4: $st1 | $st2 | $st3 | $st4"; fi
 
 # A PR changing only documents accepts before-N/after-N page images; a web change does not.
-R=$(mkev); PAGES='img(U+"before-1.png")+img(U+"after-1.png")+img(U+"after-2.png")'
-PC='contents:["before-1","after-1","after-2"].map((n)=>process.env.SHA+":.evidence/"+n+".png")'
-fx "{files:{8:[\"docs/report.docx\",\"deck/q3.pptx\"]},$PC,comments:{8:[c(51,\"alice\",$PAGES)]}}"; d1=$(ev "$R" 8); y1=$?
-fx "{files:{8:[\"docs/report.docx\",\"app.css\"]},$PC,comments:{8:[c(52,\"alice\",$PAGES)]}}"; d2=$(ev "$R" 8); y2=$?
+R=$(mkev)
+fx '{files:{8:["docs/report.docx","deck/q3.pptx"]},comments:{8:[c(51,"alice",MK+PAGES)]}}'; d1=$(ev "$R" 8); y1=$?
+fx '{files:{8:["docs/report.docx","app.css"]},comments:{8:[c(52,"alice",MK+PAGES)]}}'; d2=$(ev "$R" 8); y2=$?
 # mixed: the web set alone lacks pages; web set plus pages passes
-fx "{files:{8:[\"docs/report.docx\",\"app.css\"]},comments:{8:[c(56,\"alice\",$GOOD)]}}"; d6=$(ev "$R" 8); y6=$?
-fx "{files:{8:[\"docs/report.docx\",\"app.css\"]},contents:[\"before-home-400\",\"before-home-1280\",\"after-home-400\",\"after-home-1280\",\"before-1\",\"after-1\",\"after-2\"].map((n)=>process.env.SHA+\":.evidence/\"+n+\".png\"),comments:{8:[c(57,\"alice\",$GOOD+$PAGES)]}}"; d7=$(ev "$R" 8); y7=$?
-fx "{files:{8:[\"docs/report.docx\"]},$PC,comments:{8:[c(53,\"alice\",img(U+\"after-1.png\")+img(U+\"after-2.png\"))]}}"; d3=$(ev "$R" 8); y3=$?
-fx "{files:{8:[\"docs/report.docx\"]},contents:[\"before-01\",\"after-02\"].map((n)=>process.env.SHA+\":.evidence/\"+n+\".png\"),comments:{8:[c(54,\"alice\",img(U+\"before-01.png\")+img(U+\"after-02.png\"))]}}"; d4=$(ev "$R" 8); y4=$?
+fx '{files:{8:["docs/report.docx","app.css"]},comments:{8:[c(56,"alice",GOOD)]}}'; d6=$(ev "$R" 8); y6=$?
+fx '{files:{8:["docs/report.docx","app.css"]},comments:{8:[c(57,"alice",GOOD+"\n"+PAGES)]}}'; d7=$(ev "$R" 8); y7=$?
+fx '{files:{8:["docs/report.docx"]},comments:{8:[c(53,"alice",MK+img("after-1.png")+"\n"+img("after-2.png"))]}}'; d3=$(ev "$R" 8); y3=$?
+fx '{files:{8:["docs/report.docx"]},comments:{8:[c(54,"alice",MK+img("before-01.png")+"\n"+img("after-02.png"))]}}'; d4=$(ev "$R" 8); y4=$?
 # web captures are not document pages, even when both names end in the same number
-fx "{files:{8:[\"docs/report.docx\"]},comments:{8:[c(55,\"alice\",$GOOD)]}}"; d5=$(ev "$R" 8); y5=$?
+fx '{files:{8:["docs/report.docx"]},comments:{8:[c(55,"alice",GOOD)]}}'; d5=$(ev "$R" 8); y5=$?
 # viewport-named files cannot double as document pages
-VP='["before-400","before-1280","after-400","after-1280"]'
-fx "{files:{8:[\"docs/report.docx\",\"app.css\"]},contents:$VP.map((n)=>process.env.SHA+\":.evidence/\"+n+\".png\"),comments:{8:[c(58,\"alice\",$VP.map((n)=>img(U+n+\".png\")).join(\"\"))]}}"; d8=$(ev "$R" 8); y8=$?
+fx '{files:{8:["docs/report.docx","app.css"]},comments:{8:[c(58,"alice",MK+["before-400.png","before-1280.png","after-400.png","after-1280.png"].map((n)=>img(n)).join("\n"))]}}'; d8=$(ev "$R" 8); y8=$?
 if [ $y1 -eq 0 ] && has "evidence: accepted" "$d1" && [ $y5 -eq 1 ] && has "missing before pages" "$d5" && [ $y6 -eq 1 ] && has "missing before pages" "$d6" && [ $y7 -eq 0 ] && has "evidence: accepted" "$d7" && [ $y8 -eq 1 ] && has "missing before pages" "$d8" && [ $y2 -eq 1 ] && has "missing before 400px" "$d2" && [ $y3 -eq 1 ] && has "missing before pages" "$d3" && [ $y4 -eq 1 ] && has "missing a page with both before and after" "$d4"; then ok evidence-document-pages
 else fail evidence-document-pages "docs=$y1 mixed=$y2 no-before=$y3 unpaired=$y4 web-on-docs=$y5 mixed-web-only=$y6 mixed-both=$y7 viewport-as-pages=$y8 ($d8): $d1 | $d2 | $d3 | $d4 | $d5 | $d6 | $d7"; fi
 

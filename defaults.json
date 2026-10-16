@@ -103,5 +103,12 @@
     "check_name": "Workers Builds",
     "check_app": "cloudflare-workers-and-pages",
     "comment_author": "cloudflare-workers-and-pages[bot]"
+  },
+  "profile_lines": {
+    "internal": [],
+    "client": [
+      "- Client-readable repo: no internal URLs, internal issue references or other clients\u2019 data.",
+      "- PR bodies: change and evidence; no agent narration, model names or costs."
+    ]
   }
 }

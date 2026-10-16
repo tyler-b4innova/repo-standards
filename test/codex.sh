@@ -19,10 +19,10 @@ iso() { node -e 'console.log(new Date(Date.now()-Number(process.argv[1])*60000).
 st() {
   node -e '
     const [draft, user, ref, sha, status, ago, threads, recent] = process.argv.slice(1), bot = { login: "chatgpt-codex-connector[bot]", type: "Bot" };
-    const sum = (s) => ({ user: bot, updated_at: process.env.SUMMARY_AT || new Date().toISOString(), body: "<!-- codex-pull-request-review-summary -->\n| Review | Status | Commit | Trigger |\n| --- | --- | --- | --- |\n| 📝 **Code Review** | " + status + " | `" + s.slice(0, 7) + "` | New commits |" });
+    const sum = (s) => ({ user: bot, updated_at: process.env.SUMMARY_AT || new Date().toISOString(), body: "<!-- codex-pull-request-review-summary -->\n| Review | Status | Commit | Trigger |\n| --- | --- | --- | --- |\n| 📝 **Code Review** | " + status + " | `" + s + "` | New commits |" });
     const when = new Date(Date.now() - Number(ago) * 60000).toISOString();
-    console.log(JSON.stringify({ pr: { number: 7, draft: draft === "true", user: { login: user }, head: { sha: process.argv[9], ref }, created_at: when },
-      comments: { 7: sha === "none" ? [] : [sum(sha)], 3: recent === "yes" ? [sum(process.argv[10])] : [] },
+    console.log(JSON.stringify({ pr: { number: 7, draft: draft === "true", user: { login: user }, head: { sha: process.argv[9], ref }, created_at: when, base: { ref: "main", sha: process.argv[10] } },
+      branchHeads: { main: process.argv[10] }, comments: { 7: sha === "none" ? [] : [sum(sha)], 3: recent === "yes" ? [sum(process.argv[10])] : [] },
       recent: [{ number: 7 }, { number: 3 }], threads: JSON.parse(threads || "[]"), reviews: JSON.parse(process.env.REVIEWS || "[]"),
       files: { "scripts/agent/pack.json": { content: require("fs").readFileSync(process.env.PACK).toString("base64") } } }));
   ' "$@" > "$T/state.json"; }
@@ -35,30 +35,182 @@ r=""
 chk() { local want=$1 needle=$2 out st; out=$(rv); st=$?; { [ $st -eq "$want" ] && has "$needle" "$out"; } || r="$r [$needle: exit $st: $out]"; }
 # codex-verdict-required: a completed review on the head with every thread resolved passes; an unresolved thread fails
 st false alice feat "$HEAD1" '✅ **Completed** now' 5 "$DONE" yes "$HEAD1" "$HEAD1"; chk 0 "Codex review complete, no open findings"
-st false alice feat "$HEAD1" '✅ **Completed** now' 5 "$OPEN" yes "$HEAD1" "$HEAD1"; chk 1 "1 unresolved Codex thread"
+st false alice feat "$HEAD1" '✅ **Completed** now' 5 "$OPEN" yes "$HEAD1" "$HEAD1"; chk 1 "1 unresolved review thread"
 # a review still running is not a review yet; once 20 minutes pass without one the rule fails
-st false alice feat "$OLD" '🔄 **Running** since' 5 "[]" yes "$HEAD1" "$OLD"; chk 1 "awaiting a Codex review"
-st false alice feat none x 30 "[]" yes "$HEAD1" "$OLD"; chk 1 "no Codex review after"
+st false alice feat "$OLD" '🔄 **Running** since' 5 "[]" yes "$HEAD1" "$OLD"; chk 1 "awaiting a completed review"
+st false alice feat none x 30 "[]" yes "$HEAD1" "$OLD"; chk 1 "no completed review of this head after"
+st false alice feat "$HEAD1" '✅ **Completed** now' 5 "$DONE" yes "$HEAD1" "$OLD"
+node -e 'const f=process.argv[1],s=require(f);s.compareStatus="diverged";require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json"
+chk 1 "does not contain the current base"
 st true alice feat none x 30 "[]" yes "$HEAD1" "$OLD"; chk 0 "not judged"
-st false alice feat none x 30 "[]" no "$HEAD1" "$OLD"; chk 0 "no Codex reviews on this repo"
+st false alice feat none x 30 "[]" no "$HEAD1" "$OLD"; chk 1 "no completed review of this head after"
 # a pack-sync fallback PR is reviewed like any other (anyone with write access can push to its branch)
-st false 'example-sync[bot]' standards/v1.2.3 none x 30 "[]" yes "$HEAD1" "$OLD"; chk 1 "no Codex review after"
+st false 'example-sync[bot]' standards/v1.2.3 none x 30 "[]" yes "$HEAD1" "$OLD"; chk 1 "no completed review of this head after"
 if [ -z "$r" ]; then ok codex-verdict-required; else fail codex-verdict-required "$r"; fi
-# codex-earlier-verdict-passes: the verdict is for an earlier commit and the head was pushed after it (a fix push): all threads resolved passes
+# codex-earlier-verdict-refused: the verdict is for an earlier commit and the head was pushed after it (a fix push): all threads resolved passes
 r=""
-SUMMARY_AT=$(iso 60) st false alice feat "$OLD" '✅ **Completed** now' 5 "$DONE" yes "$HEAD1" "$OLD"; chk 0 "Codex review complete, no open findings"
-REVIEWS='[{"user":{"login":"chatgpt-codex-connector[bot]","type":"Bot"},"commit_id":"'$OLD'","submitted_at":"'$(iso 60)'"}]' st false alice feat none x 5 "$DONE" no "$HEAD1" "$OLD"; chk 0 "Codex review complete, no open findings"
-if [ -z "$r" ]; then ok codex-earlier-verdict-passes; else fail codex-earlier-verdict-passes "$r"; fi
+SUMMARY_AT=$(iso 60) st false alice feat "$OLD" '✅ **Completed** now' 5 "$DONE" yes "$HEAD1" "$OLD"; chk 1 "awaiting a completed review"
+REVIEWS='[{"user":{"login":"chatgpt-codex-connector[bot]","type":"Bot"},"commit_id":"'$OLD'","submitted_at":"'$(iso 60)'"}]' st false alice feat none x 5 "$DONE" no "$HEAD1" "$OLD"; chk 1 "awaiting a completed review"
+if [ -z "$r" ]; then ok codex-earlier-verdict-refused; else fail codex-earlier-verdict-refused "$r"; fi
 # codex-unresolved-thread-fails: an open Codex thread fails even when the verdict is for an earlier commit
 r=""
-SUMMARY_AT=$(iso 60) st false alice feat "$OLD" '✅ **Completed** now' 5 "$OPEN" yes "$HEAD1" "$OLD"; chk 1 "1 unresolved Codex thread"
+SUMMARY_AT=$(iso 60) st false alice feat "$OLD" '✅ **Completed** now' 5 "$OPEN" yes "$HEAD1" "$OLD"; chk 1 "1 unresolved review thread"
 if [ -z "$r" ]; then ok codex-unresolved-thread-fails; else fail codex-unresolved-thread-fails "$r"; fi
 # codex-no-review-pending: no Codex review on a ready PR yet (repo sees Codex reviews elsewhere) stays pending inside 20 minutes
 r=""
-st false alice feat none x 5 "[]" yes "$HEAD1" "$OLD"; chk 1 "awaiting a Codex review"
+st false alice feat none x 5 "[]" yes "$HEAD1" "$OLD"; chk 1 "awaiting a completed review"
 if [ -z "$r" ]; then ok codex-no-review-pending; else fail codex-no-review-pending "$r"; fi
 r=""
-
+st false alice feat "$HEAD1" '✅ **Completed** now' 30 "[]" no "$HEAD1" "$OLD"
+node - "$T/state.json" <<'JS'
+const fs=require("fs"), file=process.argv[2], s=JSON.parse(fs.readFileSync(file));
+const original=s.pr.head.sha;
+s.pr.head.sha=original.slice(0,7)+"a".repeat(33);
+s.comments[7][0].body=s.comments[7][0].body.replace(original,original.slice(0,7));
+fs.writeFileSync(file,JSON.stringify(s));
+JS
+chk 1 "no completed review of this head"
+node - "$T/state.json" <<'JS'
+const fs=require("fs"), file=process.argv[2], s=JSON.parse(fs.readFileSync(file));
+s.reviews=[{user:{login:"chatgpt-codex-connector[bot]",type:"Bot"},commit_id:s.pr.head.sha,state:"COMMENTED",submitted_at:new Date().toISOString()}];
+fs.writeFileSync(file,JSON.stringify(s));
+JS
+chk 0 "Codex review complete, no open findings"
+if [ -z "$r" ]; then ok native-review-full-sha; else fail native-review-full-sha "$r"; fi
+# independent-review-coverage: the real exported rule reads App records and rejects
+# stale or forged completion and a fix whose earlier finding was never verified.
+r=""
+record_state() {
+  st false alice feat none x 30 "[]" no "$HEAD1" "$OLD"
+  node --input-type=module - "$T/state.json" "$HEAD1" "$OLD" "$1" <<'JS'
+import fs from "node:fs";
+import { renderReviewRecord, outstandingReviewFindings, splitComment } from "repo-standards/review-record";
+const [file, head, base, mode] = process.argv.slice(2), s = JSON.parse(fs.readFileSync(file));
+s.pr.base = { ref: "main", sha: base }; s.branchHeads = { main: base };
+const author = { login: "example-sync[bot]", type: "Bot" };
+const prior = { schema: 1, head: base, base, panel: "panel", phase: "full", verdict: "findings", findings: [{ id: "F1", text: "retry leaves no alarm" }], outcomes: [] };
+const current = { schema: 1, head, base, panel: "panel", phase: "full", verdict: "clean", findings: [], outcomes: [] };
+if (mode === "full" || mode === "thread" || mode === "wrapped") current.outcomes = [{ id: "F1", status: "fixed", reason: "the full review verified the retry", evidence: "campaign retry sequence" }];
+if (mode === "full-missing") current.outcomes = [];
+if (mode.startsWith("followup")) { current.phase = "followup"; current.from = base; current.outcomes = [{ id: "F1", status: "fixed", reason: "retry schedules an alarm", evidence: "retry sequence passes through the campaign entry point" }]; }
+if (mode === "followup-missing") current.outcomes = [];
+if (mode === "stale-head") current.head = base;
+if (mode === "stale-base") current.base = "e".repeat(40);
+if (mode === "findings") { current.verdict = "findings"; current.findings = prior.findings; }
+s.comments[7] = [ { user: author, body: renderReviewRecord(prior) }, { user: mode === "author" ? { login: "alice", type: "User" } : author, body: renderReviewRecord(current) } ];
+if (mode.startsWith("multipart-")) {
+  current.outcomes = [{ id: "F1", status: "fixed", reason: Array.from({length:16000}, (_,i) => `proof-${i} 🐱`).join(";"), evidence: "full independent retry sequence" }];
+  const parts = splitComment(renderReviewRecord(current), "std:review");
+  if (parts.length < 3 || parts.some((body) => body.length > 65536)) throw new Error("test must cross the real comment boundary");
+  s.comments[7] = [{user:author,body:renderReviewRecord(prior)}, ...parts.map((body) => ({user:author,body}))];
+  if (mode === "multipart-missing") s.comments[7].splice(1,1);
+  if (mode === "multipart-foreign") s.comments[7][1].user={login:"alice",type:"User"};
+  if (mode === "multipart-edited") s.comments[7][1].body += "edited";
+}
+const envelope = `<!-- independent-review sha=${head} reviewer=t3-codex model=m verdict=clean -->\n`;
+if (mode === "wrapped") s.comments[7][1].body = envelope + renderReviewRecord(current);
+if (mode.startsWith("relayed-")) s.comments[7] = [{ user: author, body: (mode === "relayed-diagnostics" ? "The author reported:\n\n" : "## Evidence\n\n![after](https://github.com/user-attachments/assets/proof)\n\n") + (mode === "relayed-wrapped" ? envelope : "") + renderReviewRecord(current) }];
+if (mode.startsWith("collision")) {
+  const first = { ...prior, panel: "panel-a" }, second = { ...prior, panel: "panel-b", findings: [{ id: "F1", text: "access check is missing" }] };
+  current.panel = "panel-b";
+  current.outcomes = mode === "collision" ? [{ id: "F1", status: "fixed", reason: "verified the access check", evidence: "access entry point" }]
+    : outstandingReviewFindings([first, second]).map((f) => ({ id: f.id, status: "fixed", reason: `independently verified ${f.text}`, evidence: "both real entry-point sequences" }));
+  if (mode === "collision-followup") { current.phase = "followup"; current.from = base; }
+  s.comments[7] = [first, second, current].map((record) => ({ user: author, body: renderReviewRecord(record) }));
+}
+if (mode.startsWith("later-")) {
+  current.outcomes = [{ id: "F1", status: "fixed", reason: "verified the retry", evidence: "retry entry point" }];
+  const later = { ...prior, base: "e".repeat(40), panel: "other-panel", findings: [{ id: "F2", text: "parallel review found a missing access check" }] };
+  if (mode === "later-clean") { later.verdict = "clean"; later.findings = []; }
+  s.comments[7] = [prior, current, later].map((record) => ({ user: author, body: renderReviewRecord(record) }));
+  if (mode === "later-verified") s.comments[7].push({ user: author, body: renderReviewRecord({ ...current, outcomes: [{ id: "F2", status: "fixed", reason: "verified the late access finding on the candidate", evidence: "current candidate access entry point" }] }) });
+}
+if (mode.startsWith("chain-")) {
+  const middle={schema:1,head:"e".repeat(40),base,panel:"panel",phase:"followup",from:base,verdict:"clean",findings:[],outcomes:[{id:"F1",status:"fixed",reason:"verified the retry",evidence:"retry entry point"}]};
+  if(mode==="chain-diverged-empty") { prior.verdict="clean"; prior.findings=[]; middle.outcomes=[]; }
+  current.phase="followup"; current.from=middle.head;
+  const chain=mode==="chain-orphan" ? [middle,current] : [prior,middle,current];
+  if (mode === "chain-shadowed") chain.splice(2, 0, { ...middle, from: "f".repeat(40) });
+  s.comments[7]=chain.map((record)=>({user:author,body:renderReviewRecord(record)}));
+  if(mode.startsWith("chain-diverged")) s.compareStatuses={ [`${base}...${middle.head}`]: "diverged" };
+}
+if (mode.startsWith("orphan-outcome")) {
+  const orphan={...current,head:"e".repeat(40),panel:"orphan-panel",phase:"followup",from:base,outcomes:[{id:"F1",status:"fixed",reason:"an orphan claims the retry is fixed",evidence:"unverified ancestry"}]};
+  current.outcomes=[];
+  if(mode!=="orphan-outcome") { orphan.verdict="findings"; orphan.findings=[{id:"F2",text:"the orphan also reports a missing access check"}]; current.outcomes=[{id:"F1",status:"fixed",reason:"new full review verified the retry",evidence:"current candidate retry entry point"}]; }
+  if(mode==="orphan-outcome-verified") current.outcomes.push({id:"F2",status:"rejected",reason:"new full review checked the access caller",evidence:"current candidate access entry point"});
+  s.comments[7]=[prior,orphan,current].map((record)=>({user:author,body:renderReviewRecord(record)}));
+}
+s.compareStatus = "ahead";
+if (mode === "followup-diverged") s.compareStatus = "diverged";
+if (mode === "thread") s.threads = [{ isResolved: false, comments: { nodes: [{ author: { login: "person" }, url: "thread" }] } }];
+fs.writeFileSync(file, JSON.stringify(s));
+JS
+}
+record_state full; chk 0 "independent review complete for this head and base"
+record_state wrapped; chk 0 "independent review complete for this head and base"
+record_state followup; chk 0 "independent review complete for this head and base"
+for mode in author stale-head stale-base; do record_state "$mode"; chk 1 "earlier independent findings still require explicit verification"; done
+record_state full-missing; chk 1 "has not verified every earlier finding"
+record_state followup-missing; chk 1 "has not verified every earlier finding"
+record_state followup-diverged; chk 1 "has not verified every earlier finding"
+record_state findings; chk 1 "independent review has unresolved findings"
+record_state thread; chk 1 "1 unresolved review thread"
+if [ -z "$r" ]; then ok independent-review-coverage; else fail independent-review-coverage "$r"; fi
+r=""
+for mode in relayed-evidence relayed-wrapped relayed-diagnostics; do record_state "$mode"; chk 1 "no completed review of this head after"; done
+if [ -z "$r" ]; then ok relayed-review-record-refused; else fail relayed-review-record-refused "$r"; fi
+r=""
+record_state collision; chk 1 "has not verified every earlier finding"
+record_state collision-verified; chk 0 "independent review complete for this head and base"
+record_state collision-followup; chk 0 "independent review complete for this head and base"
+if [ -z "$r" ]; then ok review-finding-id-collision; else fail review-finding-id-collision "$r"; fi
+r=""
+record_state later-findings; chk 1 "later review findings require verification"
+record_state later-verified; chk 0 "independent review complete for this head and base"
+record_state later-clean; chk 0 "independent review complete for this head and base"
+if [ -z "$r" ]; then ok later-review-findings-block; else fail later-review-findings-block "$r"; fi
+r=""
+record_state chain-orphan; chk 1 "not rooted in a full review"
+record_state chain-rooted; chk 0 "independent review complete for this head and base"
+record_state chain-shadowed; chk 0 "independent review complete for this head and base"
+record_state chain-diverged; chk 1 "has not verified every earlier finding"
+record_state chain-diverged-empty; chk 1 "does not continue its reviewed commit"
+if [ -z "$r" ]; then ok review-full-ancestry-required; else fail review-full-ancestry-required "$r"; fi
+r=""
+record_state orphan-outcome; chk 1 "has not verified every earlier finding"
+record_state orphan-outcome-findings; chk 1 "has not verified every earlier finding"
+record_state orphan-outcome-verified; chk 0 "independent review complete for this head and base"
+if [ -z "$r" ]; then ok orphan-review-outcomes-refused; else fail orphan-review-outcomes-refused "$r"; fi
+r=""
+record_state multipart-complete; chk 0 "independent review complete for this head and base"
+for mode in multipart-missing multipart-foreign multipart-edited; do record_state "$mode"; chk 1 "incomplete or changed multipart review comment"; done
+if [ -z "$r" ]; then ok review-comment-multipart; else fail review-comment-multipart "$r"; fi
+r=""
+# Retargeting can widen the diff while retaining the reviewed head and an ancestor base.
+native_retarget() {
+  st false alice feat "$HEAD1" '✅ **Completed** now' 30 "[]" no "$HEAD1" "$OLD"
+  node --input-type=module - "$T/state.json" "$1" <<'JS'
+import fs from "node:fs";
+const [file, mode] = process.argv.slice(2), s = JSON.parse(fs.readFileSync(file));
+const at = (minutes) => new Date(Date.now() - minutes * 60000).toISOString();
+s.timeline = [{ event: "base_ref_changed", created_at: at(25) }]; s.compareStatus = "ahead";
+const summary = s.comments[7][0]; summary.updated_at = at(1);
+summary.body = summary.body.replace("Completed** now", `Completed** <relative-time datetime="${at(mode === "fresh-summary" ? 5 : 30)}">`);
+if (mode === "missing-summary-time") summary.body = summary.body.replace(/ <relative-time datetime="[^"]*">/, " now");
+if (mode.includes("review")) { s.comments[7] = []; s.reviews = [{ user: { login: "chatgpt-codex-connector[bot]", type: "Bot" }, commit_id: s.pr.head.sha, state: "COMMENTED", submitted_at: at(mode === "fresh-review" ? 5 : 30) }]; }
+if (mode === "missing-time") { s.timeline[0].created_at = null; }
+fs.writeFileSync(file, JSON.stringify(s));
+JS
+}
+native_retarget stale-summary; chk 1 "no completed review of this head and base"
+native_retarget stale-review; chk 1 "no completed review of this head and base"
+native_retarget missing-summary-time; chk 1 "no completed review of this head and base"
+native_retarget fresh-summary; chk 0 "Codex review complete, no open findings"
+native_retarget fresh-review; chk 0 "Codex review complete, no open findings"
+native_retarget missing-time; chk 1 "coverage is uncheckable"
+if [ -z "$r" ]; then ok native-review-retarget-refused; else fail native-review-retarget-refused "$r"; fi
+r=""
 
 GWF="$R/.github/workflows/std-gate.yml"
 gtrig=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");console.log(y.slice(y.indexOf("\non:"),y.indexOf("permissions:")).replace(/\s+/g," "))' "$GWF")
@@ -116,10 +268,11 @@ for kind in code docs; do
 done
 put "{pr:{number:7,draft:false,head:{sha:\"$HEAD1\",ref:\"feat\"},base:{ref:\"main\"}}}"
 # skip-never-greens-gate: no job-level if; a dispatch re-gate plans the pull request it names, never "not a pull request"
-# the required gate job never skips (always() && !cancelled()); the other jobs' skips are judged by its verdict
-jobif=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8"),g=y.slice(y.indexOf("\n  gate:"));console.log(!/^ {4}if: \$\{\{ always\(\) && !cancelled\(\) && github\.event\.pull_request\.draft != true && needs\.checks\.outputs\.rollback_draft != .true. \}\}$/m.test(g)||/^ {4}if: (?!\$\{\{ always\(\) && !cancelled\(\) && github\.event\.pull_request\.draft != true && needs\.checks\.outputs\.rollback_draft != .true. \}\}$)/m.test(g))' "$GWF")
+# skip-never-greens-gate: the one job's only job-level if is the draft skip (a ready run is never skipped, so no skip can
+# green it); the verdict judges the step outcomes, and a dispatch re-gate plans the pull request it names
+jobif=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8"),g=y.slice(y.indexOf("\n  gate:"));console.log(/^ {4}if: github\.event\.pull_request\.draft != true$/m.test(g)&&!/^ {4}if: .*(always|needs)/m.test(g))' "$GWF")
 dg=$(pl workflow_dispatch '{"inputs":{"pr":"7"}}')
-if [ "$jobif" = false ] && [ "$dg" = full ]; then ok skip-never-greens-gate; else fail skip-never-greens-gate "jobif=$jobif dispatch-mode=$dg"; fi
+if [ "$jobif" = true ] && [ "$dg" = full ]; then ok skip-never-greens-gate; else fail skip-never-greens-gate "jobif=$jobif dispatch-mode=$dg"; fi
 # e2e-chromium-default: a pull request from the default branch into main is no promotion: gate plans Chromium only,
 # whatever browsers the repository names (those run on main, before release)
 cp "$R/standards.json" "$T/std.plan"; node -e 'const f=process.argv[1],o=JSON.parse(require("fs").readFileSync(f));o.e2e={browsers:["firefox"]};require("fs").writeFileSync(f,JSON.stringify(o))' "$R/standards.json"
@@ -189,7 +342,7 @@ else fail e2e-false-skips-preview "e2e-false=$w2 (want 0) still-gated=$w4 (want 
 # ---- review-rule-reads-base: the rule and its settings come from the current base branch (a PR cannot bring its own),
 # even when the head is this repository's default branch (there are no promotions); a stale pull.base.sha is resolved
 # through the branch. A null verdict here: no pack at the ref read.
-SUM="{user:b,updated_at:new Date().toISOString(),body:'<!-- codex-pull-request-review-summary -->\\n| 📝 **Code Review** | ✅ **Completed** now | \`${HEAD1:0:7}\` | x |'}"
+SUM="{user:b,updated_at:new Date().toISOString(),body:'<!-- codex-pull-request-review-summary -->\\n| 📝 **Code Review** | ✅ **Completed** now | \`$HEAD1\` | x |'}"
 base="pr:{number:7,draft:false,state:'open',html_url:'https://github.com/acme/demo/pull/7',user:{login:'alice'},head:{sha:'$HEAD1',ref:'feat'},base:{ref:'main'}},comments:{7:[$SUM]},recent:[],timeline:[],threads:[]"
 PACKFILE="{content:Buffer.from(require('fs').readFileSync('$PACK')).toString('base64')}"
 put "{$base,files:{'scripts/agent/pack.json@feat':$PACKFILE,'scripts/agent/pack.json@$HEAD1':$PACKFILE}}"; rb1=$(rv)

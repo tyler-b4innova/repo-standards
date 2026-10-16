@@ -25,7 +25,7 @@ why=""
 UI='["src/components/Hero.svelte","worker/src/index.ts"]'
 state "$UI" '[{"user":{"login":"alice","type":"User"},"state":"APPROVED","commit_id":"'"$HEAD2"'"}]'; a=$(gate); sa=$?
 [ $sa -eq 1 ] && has "evidence" "$a" && ! has "promotion" "$a" && ! has "approved by" "$a" || why="ui: $sa $a"
-state '["worker/src/index.ts","README.md"]' '[]'; b=$(gate); sb=$?
+state '["worker/src/index.ts","README.md"]' '[{"user":{"login":"chatgpt-codex-connector[bot]","type":"Bot"},"state":"COMMENTED","commit_id":"'"$HEAD2"'"}]'; b=$(gate); sb=$?
 [ $sb -eq 0 ] && ! has "promotion" "$b" || why="$why; no ui: $sb $b"
 if [ -z "$why" ]; then ok review-no-promotions; else fail review-no-promotions "$why"; fi
 done_cases

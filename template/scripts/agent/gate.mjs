@@ -7,6 +7,7 @@ import { execFileSync as ex, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync as has, mkdtempSync, readdirSync as ls, readFileSync as rd, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
+import { resolve as resolvePath } from "node:path";
 import { createConnection } from "node:net";
 import { localConfig, localWorkerConfig } from "./local.mjs";
 import { scan } from "./jsscan.mjs";
@@ -284,6 +285,15 @@ if (cmd === "local") {
   writeFileSync(eventFile, JSON.stringify({ pull_request: { number: 1, base: { sha: base }, head: { sha: head, ref: git("branch", "--show-current").trim() }, user: { login: "local" } } }));
   const localEnv = { ...env, CI: "true", GITHUB_EVENT_NAME: "pull_request", GITHUB_EVENT_PATH: eventFile, GITHUB_SHA: head,
     PATH: `${process.cwd()}/node_modules/.bin:${env.PATH}`, GATE_BROWSERS: "chromium", WRANGLER_SEND_METRICS: "false", WRANGLER_CHECK_FOR_UPDATES: "false", WRANGLER_HOME: `${dir}/wrangler`, HOME: dir, USERPROFILE: dir, XDG_CONFIG_HOME: `${dir}/xdg` };
+  // HOME is hidden above, and with it the user's git config, where git reads safe.directory. The trust for the repository
+  // being gated (its top level, common git dir and private worktree git dir) goes in a global config of the gate's own, which every child reads, the
+  // upload-pack a local clone forks on the source included (command-scope GIT_CONFIG_* entries do not reach that child).
+  // A global config the caller named is included, so its entries stay in force; the caller's GIT_CONFIG_* entries are untouched.
+  const trusted = [...new Set(["--show-toplevel", "--git-common-dir", "--git-dir"].map((flag) => resolvePath(git("rev-parse", flag).trim())))];
+  const quoted = (v) => `"${v.replace(/[\\"]/g, "\\$&")}"`;
+  const gitConfig = `${dir}/gitconfig`;
+  writeFileSync(gitConfig, [...(env.GIT_CONFIG_GLOBAL ? ["[include]", `\tpath = ${quoted(resolvePath(env.GIT_CONFIG_GLOBAL))}`] : []), "[safe]", ...trusted.map((p) => `\tdirectory = ${quoted(p)}`), ""].join("\n"));
+  localEnv.GIT_CONFIG_GLOBAL = gitConfig;
   for (const k of ["RELEASE_CHECK", "GH_TOKEN", "GITHUB_TOKEN", "GITHUB_OUTPUT", "GATE_PREVIEW_URL", "BASE_URL", "PLAYWRIGHT_BASE_URL", "CLOUDFLARE_ENV", "RANGE", "ROLLBACK_BASE", "ROLLBACK_DRAFT"])
     delete localEnv[k];
   for (const k of Object.keys(localEnv)) if (/^(CLOUDFLARE_|CF_)/.test(k)) delete localEnv[k];
@@ -467,21 +477,19 @@ if (cmd === "local") {
     "agents never change instruction files; only the org App's standards-sync (standards/v*) and approved retro (retro/*) pull requests may, and a person's PR that carries exactly the pack's AGENTS.md and CODEOWNERS block from the standards/v<standards.lock version> branch. Revert these files; a rule change goes through the weekly retro.");
   console.log("instructions: no instruction file or managed CODEOWNERS block changed");
 } else if (cmd === "verdict") {
-  // The required `gate` job: the checks job and the test job (NEEDS, the workflow's needs as JSON) each succeeded on a
-  // READY pull request. A draft head never passes: the plan was cheap, the live draft flag was set, or the checks were
-  // skipped for a push to a draft. A pull request flipped to ready by an Actions token fires no ready_for_review run,
-  // so it must not inherit a green gate from its draft heads. Anything else (a failure, a cancellation, a skip, a
-  // missing job) fails it.
-  let needs;
-  try { needs = JSON.parse(env.NEEDS ?? ""); } catch { fail("no job results (NEEDS)", "run the verdict from std-gate.yml's gate job"); }
-  const mode = needs.checks?.outputs?.mode, draft = mode === "cheap" || needs.checks?.outputs?.rollback_draft === "true" || needs.checks?.result === "skipped", bad = [];
-  if (draft) fail("gate: a draft head never passes the gate", "mark the pull request ready (pr.sh ready): the one full gate runs on ready_for_review; iterate with gate.mjs local");
-  for (const j of ["checks", "test"]) {
-    const r = needs[j]?.result ?? "missing";
-    if (r !== "success") bad.push(`${j}: ${r}`);
-  }
-  if (bad.length) fail(`gate: ${bad.join(", ")}`, "open the failed job's log; a skipped or cancelled job never passes gate");
-  console.log("gate: checks and the test job passed");
+  // The required `gate` job's last step, in the one job: MODE and LIVE_DRAFT are the plan's outputs, CHECKS the outcome
+  // of the checks part (its last step, syntax) and TEST the outcome of the test part (its last step, e2e; read only for a
+  // full plan). The gate passes only on a READY pull request whose checks part and, for a full plan, test part each
+  // succeeded. A draft head never passes: the plan was cheap or the live draft flag was set. A pull request flipped to
+  // ready by an Actions token fires no ready_for_review run, so it must not inherit a green gate from its draft heads.
+  // Anything else (a failure, a cancellation, a skip, a missing step) fails it.
+  const mode = env.MODE ?? "", live = env.LIVE_DRAFT === "true", checks = env.CHECKS ?? "", test = env.TEST ?? "", bad = [];
+  if (mode === "cheap" || live) fail("gate: a draft head never passes the gate", "mark the pull request ready (pr.sh ready): the one full gate runs on ready_for_review; iterate with gate.mjs local");
+  if (!mode) bad.push("plan: no result");
+  if (checks !== "success") bad.push(`checks: ${checks || "not run"}`);
+  if (mode === "full" && test !== "success") bad.push(`test: ${test || "not run"}`);
+  if (bad.length) fail(`gate: ${bad.join(", ")}`, "open the failed step's log; a skipped or cancelled step never passes gate");
+  console.log("gate: checks and tests passed");
 } else if (cmd === "plan") {
   // full: build and test this head. cheap: a consumer draft (checks, secrets and syntax);
   // consumer drafts run the full gate from ready_for_review.
@@ -509,7 +517,7 @@ if (cmd === "local") {
   output("rollback_base", rollbackBase || event.pull_request?.base?.sha || event.merge_group?.base_sha || pr?.base?.sha || "");
   output("browsers", "chromium");
 } else if (cmd === "syntax") {
-  // Managed scripts and workflows must at least parse: the checks job runs this on every gated run.
+  // Managed scripts and workflows must at least parse: the gate's checks steps run this on every gated run.
   const bad = [], yaml = spawnSync("python3", ["-c", "import yaml"]).status === 0;
   if (!yaml) console.log("notice: python3 with PyYAML is not on this runner; workflows are not parsed here");
   for (const f of git("ls-files", "scripts/agent", ".github/workflows").split("\n").filter(Boolean)) {

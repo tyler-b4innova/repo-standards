@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 has() { case "$2" in *"$1"*) return 0 ;; esac; return 1; }
-mkdir "$T/test" && cp test/run.sh "$T/test/run.sh"
+mkdir "$T/test" "$T/tools" && cp test/run.sh "$T/test/run.sh" && cp tools/parallel.sh "$T/tools/parallel.sh"
 scen() { printf -- '- **`%s`**: fixture.\n' "$@" > "$T/SCENARIOS.md"; }
 cov() { (export CI=true; bash "$T/test/run.sh" 2>&1); }
 printf 'echo "ok ran"\n' > "$T/test/ran.sh"

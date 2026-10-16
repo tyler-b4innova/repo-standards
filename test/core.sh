@@ -624,10 +624,10 @@ echo "// edit" >> "$R/scripts/agent/pr.sh"; commit "$R"
 b=$(cd "$R" && PATH="$T/offline:$PATH" CI=1 scripts/agent/setup.sh 2>&1); sb=$?
 if [ $sa -eq 0 ] && has "offline: skipping installs" "$a" && [ $sb -eq 1 ] && has "managed file changed: scripts/agent/pr.sh" "$b"; then ok setup-returns-check-status; else fail setup-returns-check-status "$sa $a | $sb $b"; fi
 
-# agents-review-guidelines: the managed block tells the reviewer to leave pack-managed paths to the engine repo
+# agents-workflow-pointer: the actual block delegates review mechanics to the PR workflows.
 blk=$(node bin/repo-standards.mjs block --overlay "$OV" --profile internal)
-if grep -qx "## Review guidelines" <<<"$blk" && grep -q 'Skip pack-managed paths (`scripts/agent/`, `.claude/`, `.codex/`, `std-\*`)' <<<"$blk" && [ "$(tail -1 <<<"$blk")" = "<!-- std:end -->" ]
-then ok agents-review-guidelines; else fail agents-review-guidelines "$blk"; fi
+if grep -q 'Use `std-file-pr` and `std-babysit`' <<<"$blk" && ! grep -qE 'One review per PR|fixes are not re-reviewed|## Review guidelines|Answer every bot finding' <<<"$blk" && [ "$(tail -1 <<<"$blk")" = "<!-- std:end -->" ]
+then ok agents-workflow-pointer; else fail agents-workflow-pointer "$blk"; fi
 
 # ---- agent config: the pack pins no model; never read secrets, never force-push
 # models-unpinned: repositories never pin a model or effort. A fresh repo gets none; re-applying removes every pin
@@ -703,6 +703,38 @@ if [ -z "$why" ]; then ok flow-staged-retired; else fail flow-staged-retired "$w
 # ---- pack hygiene
 out=$(python3 -c 'import sys,yaml; [yaml.safe_load(open(f)) for f in sys.argv[1:]]' template/.github/workflows/*.yml 2>&1)
 if [ $? -eq 0 ]; then ok workflows-parse; else fail workflows-parse "$out"; fi
+
+# ---- the suite's case files run in parallel (tools/parallel.sh): at most TEST_JOBS at once and more than one at a time,
+# output whole and in the order given, any non-zero exit fails the run, and a TEST_JOBS that is not a positive integer
+# falls back to the default instead of hanging
+why=""; PD=$(mktemp -d "$T/par.XXXXXX")
+for n in 1 2 3 4; do
+  printf 'touch "%s/run.$$"; sleep %s; ls "%s"/run.* 2>/dev/null | wc -l | tr -d " " >> "%s/peak"; rm -f "%s/run.$$"; echo "case %s"; %s\n' \
+    "$PD" "$([ $n -eq 1 ] && echo 2 || echo 1)" "$PD" "$PD" "$PD" "$n" "$([ $n -eq 3 ] && echo 'exit 1' || echo 'exit 0')" > "$PD/c$n.sh"
+done
+po=$(TEST_JOBS=2 bash tools/parallel.sh "$PD/c1.sh" "$PD/c2.sh" "$PD/c3.sh" "$PD/c4.sh"); ps=$?
+peak=$(sort -n "$PD/peak" | tail -1)
+[ "$ps" -eq 1 ] || why="$why; a failing case did not fail the run ($ps)"
+[ "$peak" = 2 ] || why="$why; peak concurrency $peak with TEST_JOBS=2"
+[ "$(printf '%s\n' "$po" | tr '\n' ' ')" = "case 1 case 2 case 3 case 4 " ] || why="$why; order: $po"
+printf 'echo fine\n' > "$PD/ok.sh"
+( TEST_JOBS=0 bash tools/parallel.sh "$PD/ok.sh" > "$PD/zero.out" 2>&1; echo $? > "$PD/zero.rc" ) & zp=$!
+for _ in $(seq 1 50); do kill -0 "$zp" 2>/dev/null || break; sleep 0.2; done
+if kill -0 "$zp" 2>/dev/null; then pkill -P "$zp"; kill "$zp"; why="$why; TEST_JOBS=0 hung"
+else [ "$(cat "$PD/zero.rc")" = 0 ] && [ "$(cat "$PD/zero.out")" = fine ] || why="$why; TEST_JOBS=0: $(cat "$PD/zero.out")"; fi
+if [ -z "$why" ]; then ok engine-suite-parallel; else fail engine-suite-parallel "$why"; fi
+
+# ---- the suite's PyYAML comes from the repository's own .test-venv when python3 lacks it, never from the user's Python;
+# a .test-venv the suite did not make is refused and left alone, and a current one is reused and put first on PATH
+why=""; ENG=$PWD; NY=$T/noyaml-py; mkdir -p "$NY"; printf '#!/bin/sh\nexit 1\n' > "$NY/python3"; chmod +x "$NY/python3"
+D1=$(mktemp -d "$T/py.XXXXXX"); printf 'pyyaml==6.0.3\n' > "$D1/requirements-dev.txt"; mkdir -p "$D1/.test-venv"; echo mine > "$D1/.test-venv/keep"
+o1=$(cd "$D1" && PATH="$NY:/usr/bin:/bin" bash -c '. "$1" && echo "PATH=$PATH"' _ "$ENG/tools/test-python.sh" 2>&1); s1=$?
+[ $s1 -ne 0 ] && has "was not made by this suite" "$o1" && [ "$(cat "$D1/.test-venv/keep")" = mine ] || why="$why; unowned: $s1 $o1"
+D2=$(mktemp -d "$T/py.XXXXXX"); printf 'pyyaml==6.0.3\n' > "$D2/requirements-dev.txt"; mkdir -p "$D2/.test-venv/bin"
+printf '#!/bin/sh\n' > "$D2/.test-venv/bin/python3"; chmod +x "$D2/.test-venv/bin/python3"; printf 'pyyaml==6.0.3' > "$D2/.test-venv/.owned-by-engine-tests"; echo kept > "$D2/.test-venv/sentinel"
+o2=$(cd "$D2" && PATH="$NY:/usr/bin:/bin" bash -c '. "$1" && echo "PATH=$PATH"' _ "$ENG/tools/test-python.sh" 2>&1); s2=$?
+[ $s2 -eq 0 ] && has "PATH=$D2/.test-venv/bin:" "$o2" && [ -f "$D2/.test-venv/sentinel" ] || why="$why; owned: $s2 $o2"
+if [ -z "$why" ]; then ok engine-test-python-repo-local; else fail engine-test-python-repo-local "$why"; fi
 
 # no byte-size limit on the managed block: an overlay whose block renders over 1800 bytes loads, applies and checks
 BIG=$T/big.json; node -e 'const o=require(process.argv[1]);o.profiles.client.block_lines=["- "+"x".repeat(2000)];require("fs").writeFileSync(process.argv[2],JSON.stringify(o))' "$OV" "$BIG"

@@ -1,3 +1,5 @@
+import { parseReviewComments, outstandingReviewFindings, reviewRecordChain, verifiedReviewChain, verifiedReviewRecords } from "./review-record.mjs";
+
 // The review rule for a pull request: everything that lives in its conversation, not its code. Gate checks the code;
 // this checks the Codex verdict and its threads and the evidence comment for UI changes. It only reads, through the caller's GitHub API function, so a launcher or merge helper can ask it before
 // merging (a pack-sync PR gets no exemption: a person fixes it on their own branch, or it is reviewed like any other):
@@ -10,6 +12,8 @@ const b64 = (f) => (f?.content ? JSON.parse(Buffer.from(f.content, "base64").toS
 const glob = (g) => new RegExp("^" + g.replace(/[.+^$()|[\]\\]/g, "\\$&").replace(/\{([^}]+)\}/g, (_, a) => `(${a.split(",").join("|")})`)
   .replace(/\*\*\//g, "\0").replace(/\*\*/g, "\x01").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]").replace(/\0/g, "(.*/)?").replace(/\x01/g, ".*") + "$");
 const short = (s) => s.slice(0, 7);
+// The last producer of pinned .evidence/ links stopped at 09:56Z on 2026-10-13: pinned comments created or edited from this instant on are refused.
+const PINNED_CUTOVER = Date.parse("2026-10-13T10:00:00Z");
 
 // pull: the PR as the caller already read it (so the verdict is for exactly that state); read here when omitted.
 export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.now(), serverUrl = "https://github.com" }) {
@@ -56,32 +60,30 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.n
     return evidence();
   }
 
-  // Accepted: a trusted comment whose images are all in this repo at a commit in the PR head's history, covering
-  // before and after at 400 and 1280px for web changes and paired before-N/after-N pages for documents, with no later
-  // commit touching a UI path (evidence goes stale when the UI changes).
+  // Accepted: a trusted comment whose images are GitHub attachments named by their alt text (pr.sh evidence), marked
+  // `<!-- std:evidence head=<sha> -->`, covering before and after at 400 and 1280px for web changes and paired
+  // before-N/after-N pages for documents. The marked head must be in this PR's history, with no later commit touching a
+  // UI path (evidence goes stale when the UI changes). Videos carry no name and need none.
+  // The pinned form (`.evidence/` blob links) is accepted only when last written (edited, else created) before PINNED_CUTOVER: such a comment keeps the
+  // pre-attachment checks, each link resolving at its commit, with the same naming rules.
   async function evidence() {
     const isDoc = (f) => /\.(docx|pptx|xlsx|odt|odp|ods|pdf)$/i.test(f), docs = changed.some(isDoc), web = changed.some((f) => !isDoc(f));
     const trusted = pack.evidence_trusted_authors ?? ["pr_author", "app"];
     const trust = (c) => (trusted.includes("pr_author") && c.user?.login === pr.user.login) || (trusted.includes("app") && c.performed_via_github_app) || trusted.includes(c.user?.login);
-    const esc = (s) => s.replace(/[.]/g, "\\.");
-    const pin = new RegExp(`^${esc(serverUrl)}/${esc(`${owner}/${repo}`)}/(?:blob|raw)/([0-9a-f]{40})/(\\.evidence/[^?#]+)(?:[?#].*)?$`, "i");
+    const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // attachments and pinned links live on the server the caller names (github.com by default); the host is escaped, never read as a pattern
+    const host = escape(serverUrl.replace(/\/+$/, "")), asset = `${host}/user-attachments/assets/[\\w-]+`;
+    const ASSET = new RegExp(asset, "g"), NAMED = new RegExp(`!\\[([^\\]]*)\\]\\((${asset})\\)`, "g");
+    const pin = new RegExp(`^${host}/${escape(`${owner}/${repo}`)}/(?:blob|raw)/([0-9a-f]{40})/(\\.evidence/[^?#]+)(?:[?#].*)?$`, "i");
+    const PINNED = /https?:\/\/[^\s)"'<>]*\/\.evidence\/[^\s)"'<>]*/g;
+    const decode = (x) => { try { return decodeURIComponent(x); } catch { return null; } };
     const bad = [];
-    for (const c of await all(`${R}/issues/${n}/comments`)) {
-      const urls = [...new Set(c.body?.match(/https?:\/\/[^\s)"'<>]*\/\.evidence\/[^\s)"'<>]*/g) ?? [])];
-      const who = `${c.html_url} by @${c.user?.login}`;
-      if (!urls.length) continue;
-      if (!trust(c)) { bad.push(`${who}: not a trusted author (${trusted.join(", ")}; PR author @${pr.user.login})`); continue; }
-      // Existence by directory listing (one read per commit and folder): the file endpoint returns the image
-      // itself and refuses files over 1 MB, which full-page captures often are.
-      const miss = [], listed = new Map(), decode = (x) => { try { return decodeURIComponent(x); } catch { return null; } };
-      for (const u of urls) {
-        const m = u.match(pin), path = m && decode(m[2]), dir = path?.split("/").slice(0, -1).join("/"), key = path && `${m[1]}:${dir}`;
-        if (path && !listed.has(key)) { const l = await api("GET", `${R}/contents/${dir}?ref=${m[1]}`); listed.set(key, new Set(Array.isArray(l) ? l.map((f) => f.path) : [])); } // a file, not a folder: nothing listed
-        if (!path || !listed.get(key).has(path)) miss.push(u); // an undecodable path is unresolved, never an error
-      }
-      if (miss.length) { bad.push(`${who}: unresolved (need this repo, a 40-hex SHA, the file): ${miss.join(" ")}`); continue; }
-      const shas = [...new Set(urls.map((u) => u.match(pin)[1]))], names = urls.map((u) => decode(u.match(pin)[2]));
-      // Distinct images: a file counts for one state only. A file named like a viewport capture is never a page.
+    // Both lists are paginated: a comparison's commits and a commit's files each come a page at a time.
+    const paged = async (path, key) => { const out = []; for (let p = 1; ; p++) { const b = (await api("GET", `${path}?per_page=100&page=${p}`))?.[key] ?? []; out.push(...b); if (b.length < 100) return out; } };
+    // The naming rule on file names or alt text: before and after at 400 and 1280px for web, page images for documents.
+    // Returns "" when met, else what is missing. Distinct images: a file counts for one state only, and a file named like
+    // a viewport capture is never a page.
+    const shape = (names) => {
       const img = (nm, st) => new RegExp(`(^|[/_-])${st}[_-]`, "i").test(nm) && !new RegExp(`(^|[/_-])${st === "before" ? "after" : "before"}[_-]`, "i").test(nm);
       const shot = (st, w) => names.some((nm) => img(nm, st) && new RegExp(`(^|[^0-9])${w}\\.(png|jpe?g|webp|gif)$`, "i").test(nm));
       const pages = (st) => new Set(names.map((nm) => nm.split("/").pop().match(new RegExp(`^${st}-0*(\\d+)\\.(png|jpe?g|webp|gif)$`, "i"))?.[1]).filter((x) => x && !["400", "1280"].includes(x)));
@@ -89,66 +91,124 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.n
       const gaps = [...(web ? ["before", "after"].flatMap((st) => [400, 1280].filter((w) => !shot(st, w)).map((w) => `${st} ${w}px`)) : []),
         ...(docs && !paired ? [!pb.size ? "before pages" : !pa.size ? "after pages" : "a page with both before and after"] : [])];
       const need = [web && "before and after captures at 400 and 1280px", docs && "before and after page images (before-N, after-N)"].filter(Boolean).join(" and ");
-      if (gaps.length) { bad.push(`${who}: needs ${need} (missing ${gaps.join(", ")})`); continue; }
-      // In the head's history, and no later commit (each against its first parent) touches a UI path.
-      let stale = "", outside = "";
-      // Both lists are paginated: a comparison's commits and a commit's files each come a page at a time.
-      const paged = async (path, key) => { const out = []; for (let p = 1; ; p++) { const b = (await api("GET", `${path}?per_page=100&page=${p}`))?.[key] ?? []; out.push(...b); if (b.length < 100) return out; } };
-      for (const s of shas) {
-        const cmp = await api("GET", `${R}/compare/${s}...${head}?per_page=100&page=1`);
-        if (!cmp || !["ahead", "identical"].includes(cmp.status)) { outside = s; break; }
-        const commits = (cmp.commits ?? []).length < 100 ? cmp.commits ?? [] : await paged(`${R}/compare/${s}...${head}`, "commits");
-        for (const k of commits) {
-          const all3k = await paged(`${R}/commits/${k.sha}`, "files"); // GitHub lists at most 3,000: treat a capped commit as a UI change
-          const files = paths(all3k).filter((f) => !f.startsWith(".evidence/"));
-          if (all3k.length >= 3000 || ui(files).length) { stale = k.sha; break; }
-        }
-        if (stale) break;
+      return gaps.length ? `needs ${need} (missing ${gaps.join(", ")})` : "";
+    };
+    // In the marked head's history, and no later commit (each against its first parent) touches a UI path. "" when so.
+    const since = async (sha) => {
+      const cmp = await api("GET", `${R}/compare/${sha}...${head}?per_page=100&page=1`);
+      if (!cmp || !["ahead", "identical"].includes(cmp.status)) return `evidence commit ${short(sha)} is not in this PR's history`;
+      const commits = (cmp.commits ?? []).length < 100 ? cmp.commits ?? [] : await paged(`${R}/compare/${sha}...${head}`, "commits");
+      for (const k of commits) {
+        const all3k = await paged(`${R}/commits/${k.sha}`, "files"); // GitHub lists at most 3,000: treat a capped commit as a UI change
+        const files = paths(all3k).filter((f) => !f.startsWith(".evidence/"));
+        if (all3k.length >= 3000 || ui(files).length) return `UI changed after the evidence (commit ${short(k.sha)}); capture again`;
       }
-      if (outside) { bad.push(`${who}: evidence commit ${short(outside)} is not in this PR's history`); continue; }
-      if (stale) { bad.push(`${who}: UI changed after the evidence (commit ${short(stale)}); capture again`); continue; }
+      return "";
+    };
+    for (const c of await all(`${R}/issues/${n}/comments`)) {
+      const body = c.body ?? "";
+      const pinned = [...new Set(body.match(PINNED) ?? [])], assets = body.match(ASSET) ?? [];
+      const who = `${c.html_url} by @${c.user?.login}`;
+      if (!pinned.length && !assets.length && !body.includes("<!-- std:evidence")) continue;
+      if (!trust(c)) { bad.push(`${who}: not a trusted author (${trusted.join(", ")}; PR author @${pr.user.login})`); continue; }
+      if (pinned.length) {
+        // An edit counts: an older pr.sh could rewrite a grandfathered comment in place, keeping its created_at.
+        if (!(Date.parse(c.updated_at ?? c.created_at) < PINNED_CUTOVER)) { bad.push(`${who}: pinned .evidence/ links are no longer accepted; re-post with pr.sh evidence`); continue; }
+        // Existence by directory listing (one read per commit and folder): the file endpoint returns the image
+        // itself and refuses files over 1 MB, which full-page captures often are.
+        const miss = [], listed = new Map();
+        for (const u of pinned) {
+          const m = u.match(pin), path = m && decode(m[2]), dir = path?.split("/").slice(0, -1).join("/"), key = path && `${m[1]}:${dir}`;
+          if (path && !listed.has(key)) { const l = await api("GET", `${R}/contents/${dir}?ref=${m[1]}`); listed.set(key, new Set(Array.isArray(l) ? l.map((f) => f.path) : [])); } // a file, not a folder: nothing listed
+          if (!path || !listed.get(key).has(path)) miss.push(u); // an undecodable path is unresolved, never an error
+        }
+        if (miss.length) { bad.push(`${who}: unresolved (need this repo, a 40-hex SHA, the file): ${miss.join(" ")}`); continue; }
+        const gap = shape(pinned.map((u) => decode(u.match(pin)[2])));
+        if (gap) { bad.push(`${who}: ${gap}`); continue; }
+        let why = "";
+        for (const s of new Set(pinned.map((u) => u.match(pin)[1]))) if ((why = await since(s))) break;
+        if (why) { bad.push(`${who}: ${why}`); continue; }
+        return { state: "success", description: "evidence accepted", details: [`evidence: accepted ${c.html_url}`] };
+      }
+      const mark = body.match(/<!-- std:evidence head=([0-9a-f]{40}) -->/);
+      if (!mark) { bad.push(`${who}: no <!-- std:evidence head=<40-hex sha> --> marker; re-post with pr.sh evidence`); continue; }
+      if (!assets.length) { bad.push(`${who}: no uploaded image or video`); continue; }
+      // One name per upload: a single asset cannot count as several captures.
+      const gap = shape([...new Map([...body.matchAll(NAMED)].map((m) => [m[2], m[1]])).values()]);
+      if (gap) { bad.push(`${who}: ${gap}`); continue; }
+      const why = await since(mark[1]);
+      if (why) { bad.push(`${who}: ${why}`); continue; }
       return { state: "success", description: "evidence accepted", details: [`evidence: accepted ${c.html_url}`] };
     }
     return { state: "failure", description: `UI paths changed (${changed.slice(0, 3).join(", ")}) but no accepted evidence comment`, details: [`UI paths changed: ${changed.join(", ")}`, ...bad.map((b) => `rejected: ${b}`)] };
   }
 
-  // Codex review: a completed Codex review exists for some commit of this PR (its summary comment shows Completed, or it
-  // submitted a review), and every Codex thread is resolved (resolved means answered). Fix pushes are not re-reviewed, so
-  // the head and push time do not matter. Repositories without Codex reviews, or with codex_review off, are exempt.
+  // Completion covers this candidate. The App attests a complete independent review
+  // (including verification of fixes), or GitHub's reviewer completed this exact head.
   async function codex() {
-    if (std.codex_review === false || pack.codex_review === false) return { state: "success", description: "Codex review off for this repo" };
-    const bot = (u) => /codex/i.test(u?.login ?? "") && u?.type === "Bot", MARK = "<!-- codex-pull-request-review-summary -->";
     const comments = await all(`${R}/issues/${n}/comments`);
+    const trusted = comments.filter((c) => pack.sync_app_login && c.user?.login === pack.sync_app_login && c.user?.type === "Bot");
+    const parsed = parseReviewComments(trusted);
+    const ledger = await verifiedReviewRecords(parsed.map((x) => x.record), async (before, after) =>
+      ["ahead", "identical"].includes((await api("GET", `${R}/compare/${before}...${after}`))?.status));
+    const records = parsed.map((x, i) => ({ ...x, record: ledger[i] }));
+    const current = records.filter((x) => x.record.head === head && x.record.base === baseHead).at(-1);
+    const earlier = outstandingReviewFindings((current ? records.slice(0, records.indexOf(current)) : records).map((x) => x.record));
+    let appComplete = false;
+    if (current) {
+      const r = current.record;
+      if (r.verdict !== "clean") return { state: "failure", description: "independent review has unresolved findings", details: r.findings.map((f) => `${f.id}: ${f.text}`) };
+      if (earlier.some((f) => !r.outcomes.some((o) => o.id === f.id && o.status !== "blocking")))
+        return { state: "failure", description: "review has not verified every earlier finding" };
+      const later = records.slice(records.indexOf(current) + 1).flatMap((x) => x.record.findings);
+      if (later.length) return { state: "failure", description: "later review findings require verification on this candidate", details: later.map((f) => `${f.id}: ${f.text}`) };
+      if (r.phase === "followup") {
+        const chain = reviewRecordChain(records.map((x) => x.record), records.indexOf(current));
+        if (!chain) return { state: "failure", description: "follow-up review is not rooted in a full review" };
+        if (!(await verifiedReviewChain(records.map((x) => x.record), records.indexOf(current), async (before, after) =>
+          ["ahead", "identical"].includes((await api("GET", `${R}/compare/${before}...${after}`))?.status))))
+          return { state: "failure", description: "follow-up review does not continue its reviewed commit; full review required" };
+      }
+      appComplete = true;
+    }
+    if (!appComplete && earlier.length) return { state: "failure", description: "earlier independent findings still require explicit verification", details: earlier.map((f) => `${f.id}: ${f.text}`) };
+    const bot = (u) => /codex/i.test(u?.login ?? "") && u?.type === "Bot", MARK = "<!-- codex-pull-request-review-summary -->";
     const summary = comments.filter((c) => bot(c.user) && c.body?.includes(MARK)).at(-1);
     const row = summary?.body.match(/\|[^|\n]*Code Review[^|\n]*\|([^|\n]*)\|\s*`([0-9a-f]{7,40})`\s*\|/i);
-    const reviews = await all(`${R}/pulls/${n}/reviews`);
-    const reviewed = (row && /Completed/i.test(row[1])) || reviews.some((r) => bot(r.user));
-    if (!summary && !reviewed) {
-      // Codex skips drafts and may skip bot PRs, so sample up to 20 recent ready PRs by people.
-      let seen = false;
-      for (const p of ((await api("GET", `${R}/pulls?state=all&per_page=40`)) ?? []).filter((p) => p.number !== n && !p.draft && p.user?.type !== "Bot").slice(0, 20))
-        if (((await api("GET", `${R}/issues/${p.number}/comments?per_page=100`)) ?? []).some((c) => bot(c.user) && c.body?.includes(MARK))) { seen = true; break; }
-      if (!seen) return { state: "success", description: "no Codex reviews on this repo's recent PRs" };
+    const reviews = appComplete ? [] : await all(`${R}/pulls/${n}/reviews`);
+    const timeline = appComplete ? [] : await all(`${R}/issues/${n}/timeline`);
+    const baseChanges = timeline.filter((e) => e.event === "base_ref_changed").map((e) => Date.parse(e.created_at));
+    if (!appComplete && baseChanges.some((at) => !Number.isFinite(at)))
+      return { state: "failure", description: "cannot establish when the PR base changed; native review coverage is uncheckable" };
+    const baseChangedAt = Math.max(0, ...baseChanges);
+    const afterRetarget = (at) => !baseChangedAt || Date.parse(at ?? "") > baseChangedAt;
+    // Security activity can edit the shared summary later; its code-review row owns this timestamp.
+    const summaryAt = /datetime="([^"]+)"/.exec(row?.[1] ?? "")?.[1];
+    // A displayed abbreviation cannot bind coverage to a head: colliding commits
+    // can share that prefix. The summary or submitted review must name the full SHA.
+    const reviewed = appComplete || (row && /Completed/i.test(row[1]) && row[2] === head && afterRetarget(summaryAt))
+      || reviews.some((r) => bot(r.user) && r.commit_id === head && r.state !== "DISMISSED" && r.state !== "PENDING" && afterRetarget(r.submitted_at));
+    if (reviewed && !appComplete && baseHead) {
+      const comparison = await api("GET", `${R}/compare/${baseHead}...${head}`);
+      if (!comparison || !["ahead", "identical"].includes(comparison.status))
+        return { state: "failure", description: "reviewed head does not contain the current base; update the branch and review its integration" };
     }
-    if (reviewed) {
-      const query = `query($o:String!,$r:String!,$n:Int!,$c:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$c){pageInfo{hasNextPage endCursor} nodes{isResolved comments(first:1){nodes{author{login} url}}}}}}}`;
-      const threads = [];
-      for (let c = null; ; ) {
-        const page = (await api("POST", "/graphql", { query, variables: { o: owner, r: repo, n, c } }))?.data?.repository?.pullRequest?.reviewThreads;
-        if (!page) throw new Error("could not read review threads");
-        threads.push(...page.nodes);
-        if (!page.pageInfo?.hasNextPage) break;
-        c = page.pageInfo.endCursor;
-      }
-      const open = threads.filter((t) => !t.isResolved && /codex/i.test(t.comments.nodes[0]?.author?.login ?? ""));
-      if (open.length) return { state: "failure", description: `${open.length} unresolved Codex thread(s): fix each or reply why, then resolve`, details: open.map((t) => `open: ${t.comments.nodes[0].url}`) };
-      return { state: "success", description: "Codex review complete, no open findings" };
+    const query = `query($o:String!,$r:String!,$n:Int!,$c:String){repository(owner:$o,name:$r){pullRequest(number:$n){reviewThreads(first:100,after:$c){pageInfo{hasNextPage endCursor} nodes{isResolved comments(first:1){nodes{author{login} url}}}}}}}`;
+    const threads = [];
+    for (let c = null; ; ) {
+      const page = (await api("POST", "/graphql", { query, variables: { o: owner, r: repo, n, c } }))?.data?.repository?.pullRequest?.reviewThreads;
+      if (!page) throw new Error("could not read review threads");
+      threads.push(...page.nodes);
+      if (!page.pageInfo?.hasNextPage) break;
+      c = page.pageInfo.endCursor;
     }
-    // Waiting counts from the PR's creation or its last ready_for_review.
-    const timeline = await all(`${R}/issues/${n}/timeline`);
+    const open = threads.filter((t) => !t.isResolved);
+    if (open.length) return { state: "failure", description: `${open.length} unresolved review thread(s): verify and answer each, then resolve`, details: open.map((t) => `open: ${t.comments.nodes[0]?.url ?? "unknown thread"}`) };
+    if (reviewed) return { state: "success", description: appComplete ? "independent review complete for this head and base" : "Codex review complete, no open findings" };
     const readyAt = timeline.filter((e) => e.event === "ready_for_review").map((e) => Date.parse(e.created_at));
-    const since = Math.max(Date.parse(pr.created_at ?? 0) || 0, ...readyAt), mins = Math.floor((now - since) / 60000);
-    if (mins < 20) return { state: "pending", description: `awaiting a Codex review (${mins} min)` };
-    return { state: "failure", description: `no Codex review after ${mins} min; request a review` };
+    const since = Math.max(Date.parse(pr.created_at ?? 0) || 0, baseChangedAt, ...readyAt), mins = Math.floor((now - since) / 60000);
+    const candidate = baseChangedAt ? "this head and base" : "this head";
+    if (mins < 20) return { state: "pending", description: `awaiting a completed review of ${candidate} (${mins} min)` };
+    return { state: "failure", description: `no completed review of ${candidate} after ${mins} min; request a review` };
   }
 }

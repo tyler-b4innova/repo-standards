@@ -17,6 +17,7 @@ const server = createServer((req, res) => {
     const per = Number(url.searchParams.get("per_page") || 30), n = Number(url.searchParams.get("page") || 1);
     return send(200, list.slice((n - 1) * per, n * per));
   };
+  if (p === "/graphql") return send(200, { data: { repository: { pullRequest: { reviewThreads: { nodes: fx.threads ?? [] } } } } });
   const base = `/repos/${fx.repo}/`;
   const git = (...a) => { try { return execFileSync("git", ["-C", fx.gitDir, ...a], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { return null; } };
   if (p === `/repos/${fx.repo}`) return send(200, { default_branch: "main" });
@@ -24,6 +25,7 @@ const server = createServer((req, res) => {
   const rest = p.slice(base.length);
   let m;
   if ((m = rest.match(/^branches\/(.+)$/))) return send(200, { commit: { sha: git("rev-parse", m[1]) ?? fx.head } });
+  if (/^pulls\/\d+\/reviews$/.test(rest)) return page(fx.reviews ?? [{ user: { login: "chatgpt-codex-connector[bot]", type: "Bot" }, commit_id: fx.head, state: "COMMENTED" }]);
   if ((m = rest.match(/^pulls\/(\d+)$/))) return send(200, { number: Number(m[1]), state: "open", draft: false, html_url: `https://github.com/${fx.repo}/pull/${m[1]}`, user: { login: fx.pull?.user ?? "alice" }, head: { sha: fx.head, ref: fx.pull?.ref ?? "feat" }, base: { ref: "main" } });
   if ((m = rest.match(/^compare\/([0-9a-f]+)\.\.\.([0-9a-f]+)$/))) {
     if (git("cat-file", "-e", `${m[1]}^{commit}`) === null) return send(404, { message: "Not Found" });

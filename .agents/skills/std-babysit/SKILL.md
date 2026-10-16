@@ -7,15 +7,15 @@ description: Babysit an open PR until it is green - watch checks, fix failures, 
 
 Loop until `scripts/agent/pr.sh status <pr>` prints `DONE`.
 
-The GitHub Codex review is the one review of a PR. Fixes are not re-reviewed.
+Review the complete change, then independently verify batched fixes against the earlier findings and the fix diff. Reviewer selection and operational limits belong to the org's Launcher configuration.
 
 1. Failing check: read its log once, reproduce with the smallest command, fix. Collect every fix and push once.
-2. Once the Codex review lands, `scripts/agent/pr.sh feedback <pr>` lists its comments with ids. For each finding, open the code it points at and ask: "Can I name a concrete input or sequence this repo runs, or will run once merged, where this code gives a wrong result?"
+2. Once a review lands, `scripts/agent/pr.sh feedback <pr>` lists GitHub review comments with ids. Include the Launcher's review record when it owns the review. For each finding, open the code it points at and ask: "Can I name a concrete input or sequence this repo runs, or will run once merged, where this code gives a wrong result?"
    - Yes, within the PR: fix it.
    - Yes, outside the PR: file an issue and link it in the reply.
    - No: a one-line reply.
-   Reply with `scripts/agent/pr.sh reply <pr> <id> "<text>"` (the commit SHA for a fix), then `scripts/agent/pr.sh resolve <pr> <id>` (merging needs every thread resolved). P1/P2 labels are Codex's guess, not the rule. Never resolve a human's thread.
-3. Push all fixes in one push on the ready PR. Do not convert it to draft or mark it ready again. A fix that changes what the PR is about becomes a new PR.
+   Reply with the fix and its real-entry-point proof, or the concrete reason for rejecting the finding. An independent reviewer verifies each disposition before `scripts/agent/pr.sh resolve <pr> <id>`. A changed file or the author's assertion alone proves nothing. Priority labels are the reviewer's assessment, not the rule. Never resolve a human's thread.
+3. Batch fixes in one push. Follow-up review receives the earlier findings, responses, fix diff and acceptance criteria; it checks the changed behavior and callers and may investigate a newly discovered concrete blocker. Keep Launcher-owned iteration in draft until review and local proof complete. A fix that changes what the PR is about becomes a new PR. The final candidate needs completed review coverage, a green gate, required approvals, current evidence and resolved threads.
 4. Nothing new and checks pending: wait 60s, then 120s, then 300s. Stay quiet meanwhile.
 
 Stop when `gate` and the bots are green with every finding answered, or when a human decision is needed; say what is left. Do not merge unless the task says you may.

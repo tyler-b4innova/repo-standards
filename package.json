@@ -1,6 +1,6 @@
 {
   "name": "repo-standards",
-  "version": "0.8.13",
+  "version": "0.8.18",
   "description": "Org-neutral engine for repo-scoped agent standards",
   "private": true,
   "type": "module",
@@ -29,6 +29,10 @@
   "breaking": true,
   "exports": {
     "./review": "./template/scripts/agent/review.mjs",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./review-record": {
+      "types": "./template/scripts/agent/review-record.d.ts",
+      "default": "./template/scripts/agent/review-record.mjs"
+    }
   }
 }
