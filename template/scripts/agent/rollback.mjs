@@ -38,15 +38,16 @@ const repoPath = (p) => {
 };
 // Wrangler configs a standards.json declares, whatever they are named: each workers entry (a config file, a directory whose one config
 // `tree` holds, or {config, release_workers}) and every release_workers path. `tree` is the same side's repository files; `isLink` says whether
-// a path is a symlink on that side. A symlinked workers entry is not followed (as before this rule): it is noted, not compared.
+// a path is a symlink on that side. An entry whose path goes through a symlink is not followed: it is noted, not compared.
 function declaredConfigs(text, tree, isLink, notes) {
   const std = JSON.parse(text ?? "{}") ?? {}, found = [];
   const file = (p) => { const n = repoPath(p); if (n && configExt.test(n)) found.push(n); };
   const entry = (p) => {
     const n = repoPath(p);
     if (!n) return;
-    if (isLink(n)) {
-      const note = `rollback: workers entry ${n} is a symlink; it is not compared (its target is not followed)`;
+    // Reading through a symlinked ancestor follows the link on disk but not in the base tree, so any link in the path skips the entry.
+    if (n.split("/").some((_, i, parts) => isLink(parts.slice(0, i + 1).join("/")))) {
+      const note = `rollback: workers entry ${n} has a symlink in its path; it is not compared (its target is not followed)`;
       if (!notes.includes(note)) notes.push(note);
       return;
     }
@@ -344,7 +345,7 @@ export function rollbackFindings({ built = false } = {}) {
     }
     const oldFiles = git("ls-tree", "-r", "--name-only", "-z", base).split("\0").filter(Boolean);
     // Configs are paired by file name and by the declarations of both sides' standards.json, so a Worker declared on one side is still compared.
-    const baseLink = (f) => { try { return git("ls-tree", base, "--", f).startsWith("120000 "); } catch { return false; } };
+    const baseLink = (f) => { try { return git("ls-tree", base, "--", f).split("\n").some((l) => l.startsWith("120000 ") && l.endsWith(`\t${f}`)); } catch { return false; } };
     const headLink = (f) => { try { return lstatSync(f).isSymbolicLink(); } catch { return false; } };
     const configs = [...new Set([...oldFiles, ...files].filter((f) => configFile.test(f))
       .concat(declaredConfigs(before(base, "standards.json"), new Set(oldFiles), baseLink, notes), declaredConfigs(read("standards.json"), new Set(files), headLink, notes)))];

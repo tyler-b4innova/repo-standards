@@ -525,7 +525,12 @@ expect 1 'api.json/wrangler.jsonc: removed production binding kv_namespaces CACH
 repo declared-link; mkdir -p "$R/api"; echo 'export default {};' > "$R/api/index.js"
 echo '{"name":"apid","main":"index.js","kv_namespaces":[{"binding":"CACHE","id":"apid-kv"}],"env":{"staging":{"routes":[],"workers_dev":true,"kv_namespaces":[{"binding":"CACHE","id":"apid-kv-stage"}]}},"previews":{"kv_namespaces":[{"binding":"CACHE","id":"apid-kv-stage"}]}}' > "$R/api/wrangler.jsonc"
 ln -s api "$R/api.json"; declare_workers 'o.workers=["wrangler.jsonc","api.json"]'
-expect 0 'NOTE: rollback: workers entry api.json is a symlink' "unchanged symlinked directory entry"
+expect 0 'NOTE: rollback: workers entry api.json has a symlink in its path' "unchanged symlinked directory entry"
+# A symlinked ancestor is followed by the filesystem but not by the base tree: the entry is noted, not compared.
+repo declared-link-ancestor; mkdir -p "$R/real/api.json"; echo 'export default {};' > "$R/real/api.json/index.js"
+echo '{"name":"apid","main":"index.js","kv_namespaces":[{"binding":"CACHE","id":"apid-kv"}],"env":{"staging":{"routes":[],"workers_dev":true,"kv_namespaces":[{"binding":"CACHE","id":"apid-kv-stage"}]}},"previews":{"kv_namespaces":[{"binding":"CACHE","id":"apid-kv-stage"}]}}' > "$R/real/api.json/wrangler.jsonc"
+ln -s real "$R/link"; declare_workers 'o.workers=["wrangler.jsonc","link/api.json"]'
+expect 0 'NOTE: rollback: workers entry link/api.json has a symlink in its path' "unchanged directory entry under a symlinked ancestor"
 if [ -z "$why" ]; then ok rollback-declared-workers; else fail rollback-declared-workers "$why"; fi
 done_cases
 done_cases
