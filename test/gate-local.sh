@@ -273,4 +273,11 @@ if node -e 'process.exit(["linux", "darwin"].includes(process.platform) && ["x64
   if [ "$x1" -eq 0 ] && has 'no leaks found' tmp-ok && [ "$l1" -eq 0 ] && [ "$x2" -eq 1 ] && has 'checksum mismatch' tmp-bad && [ "$l2" -eq 0 ] && [ "$started" -eq 1 ] && [ "$x3" -eq 143 ] && [ "$l3" -eq 0 ]; then ok gitleaks-temp-dir-removed
   else fail gitleaks-temp-dir-removed "success=$x1 left=$l1 mismatch=$x2 left=$l2 started=$started signal=$x3 left=$l3"; fi
 else echo "skip gitleaks-temp-dir-removed (no pinned gitleaks build for this platform)"; fi
+# gitleaks-cache-hit: the verified archive in GATE_GITLEAKS_CACHE (the workflow restores it) is used with no download; the
+# base is a port nothing listens on, so a download would fail. The pinned checksum still applies (the real archive passes).
+gc=$T/gl-cache; mkdir -p "$gc" && cp "$GATE_GITLEAKS_ARCHIVE" "$gc/gitleaks_8.30.1_${platform}.tar.gz"
+dead=$(node -e 'const s=require("net").createServer();s.listen(0,"127.0.0.1",()=>{console.log(s.address().port);s.close()})')
+(cd "$R" && env -u GATE_GITLEAKS_ARCHIVE -u GITHUB_EVENT_PATH -u GITHUB_EVENT_NAME GATE_GITLEAKS_CACHE="$gc" GATE_GITLEAKS_BASE="http://127.0.0.1:$dead" node scripts/agent/gate.mjs secrets) > "$T/gl-cache.log" 2>&1; gx=$?
+if [ "$gx" -eq 0 ] && has 'from the cache' gl-cache && has 'no leaks found' gl-cache && ! has 'download 1 of' gl-cache; then ok gitleaks-cache-hit
+else fail gitleaks-cache-hit "exit=$gx: $(tail -5 "$T/gl-cache.log")"; fi
 done_cases

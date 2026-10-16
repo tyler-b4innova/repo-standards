@@ -1,10 +1,10 @@
 # Managed by the standards pack. Pull requests can read the default branch's dependency cache but not each other's,
-# so a lockfile change on the default branch refreshes it here. Not a required check; it also warms the gate's Playwright browser cache. The only workflow that writes dependency and browser caches: it runs main's code only, never a pull request's (the gate saves only its per-pull-request pass markers).
+# so a lockfile change on the default branch refreshes it here. Not a required check; it also warms the gate's Playwright browser cache. The only workflow that writes dependency, browser and gitleaks archive caches: it runs main's code only, never a pull request's (the gate saves only its per-pull-request pass markers).
 name: std-cache-warm
 on:
   push:
     branches: [main]
-    paths: [package-lock.json, pnpm-lock.yaml, yarn.lock]
+    paths: [package-lock.json, pnpm-lock.yaml, yarn.lock, scripts/agent/gate.mjs]
 permissions:
   contents: read
 jobs:
@@ -46,3 +46,13 @@ jobs:
       - name: browsers
         if: steps.pw.outputs.key != ''
         run: node scripts/agent/gate.mjs install --browsers-only
+      # the gitleaks archive the gate's secrets step restores (same key: this script's hash); a gate.mjs change refreshes it
+      - name: gitleaks cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/std-gitleaks
+          key: std-gitleaks-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/agent/gate.mjs') }}
+      - name: gitleaks archive
+        env:
+          GATE_GITLEAKS_CACHE: ${{ runner.temp }}/std-gitleaks
+        run: node scripts/agent/gate.mjs gitleaks-fetch

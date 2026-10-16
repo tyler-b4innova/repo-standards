@@ -7,7 +7,7 @@
 # ready_for_review runs the one full gate.
 # The whole gate is one job, because the runner bills every job rounded up to a whole minute: the checks steps, then
 # the test steps (a full plan on a ready head only), then the verdict step, which reads the outcomes of those steps.
-# This workflow restores the dependency and browser caches and never saves them: a re-gate on the default branch runs a
+# This workflow restores the dependency, browser and gitleaks archive caches and never saves them: a re-gate on the default branch runs a
 # pull request's tree, so a cache written here could be seeded by that tree; std-cache-warm (main only) writes those.
 # The one cache it saves is the pass-marker directory, under this pull request's own key, on a pull_request run only
 # (never a re-gate dispatch, which runs on the default branch's cache scope, a release check or a merge queue run).
@@ -74,7 +74,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/agent/gate.mjs instructions
+      # the gitleaks archive, saved by std-cache-warm under the same key (this script's hash); a miss downloads it, retried
+      - name: gitleaks cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/std-gitleaks
+          key: std-gitleaks-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/agent/gate.mjs') }}
       - name: secrets
+        env:
+          GATE_GITLEAKS_CACHE: ${{ runner.temp }}/std-gitleaks
         run: node scripts/agent/gate.mjs secrets
       # the last checks step: the verdict reads its outcome (a step after a failed one never runs)
       - name: syntax

@@ -249,7 +249,7 @@ if [ -z "$why" ]; then ok gate-concurrency-groups; else fail gate-concurrency-gr
 # run the same step, and the warm-up fires on any of the three lockfiles
 why=""; CW=$ENGINE/template/.github/workflows
 for wf in std-gate.yml std-cache-warm.yml; do [ "$(step_run "$CW/$wf" "package manager")" = "$(step_run "$CW/std-gate.yml" "package manager")" ] || why="$why; $wf step differs"; done
-grep -q 'uses: actions/cache@' "$CW/std-cache-warm.yml" && grep -q 'path: ${{ steps.pm.outputs.path }}' "$CW/std-cache-warm.yml" && grep -q 'paths: \[package-lock.json, pnpm-lock.yaml, yarn.lock\]' "$CW/std-cache-warm.yml" || why="$why; warm-up trigger or cache"
+grep -q 'uses: actions/cache@' "$CW/std-cache-warm.yml" && grep -q 'path: ${{ steps.pm.outputs.path }}' "$CW/std-cache-warm.yml" && grep -q 'paths: \[package-lock.json, pnpm-lock.yaml, yarn.lock, scripts/agent/gate.mjs\]' "$CW/std-cache-warm.yml" || why="$why; warm-up trigger or cache"
 pmrun() { # pmrun <lockfile> <corepack exit>: the step in a scratch dir with stub corepack/pnpm/yarn; prints its output
   local d; d=$(mktemp -d "$T/pm.XXXXXX"); mkdir "$d/bin"; : > "$d/$1"
   shim "$d/bin" corepack "exit $2"; shim "$d/bin" pnpm "echo 10.0.0"; shim "$d/bin" yarn "echo 1.22.0"
@@ -401,4 +401,16 @@ if node -e 'process.exit(["linux", "darwin"].includes(process.platform) && ["x64
   if [ $x1 -eq 0 ] && has "HEAD^1..HEAD^2" "$o1" && [ $x2 -eq 1 ]; then ok secrets-scan-changes-only
   else fail secrets-scan-changes-only "clean=$x1 leak=$x2: $o1 | $o2"; fi
 else echo "skip secrets-scan-changes-only (no pinned gitleaks build for this platform)"; fi
+
+# gitleaks-download-retry: a download that answers 504 is retried, each attempt's URL and status logged; the stand-in then
+# serves bytes that are not the pinned archive, so the run stops at the checksum after two attempts, with no temp dir left
+if node -e 'process.exit(["linux", "darwin"].includes(process.platform) && ["x64", "arm64"].includes(process.arch) ? 0 : 1)'; then
+  GT=$(mktemp -d "$T/gl.XXXXXX"); mkdir "$GT/tmp"
+  node -e 'const n=[];require("http").createServer((q,r)=>{n.push(q.url);if(n.length===1){r.writeHead(504);r.end();return}r.writeHead(200);r.end("not the archive")}).listen(0,"127.0.0.1",function(){require("fs").writeFileSync(process.argv[1],String(this.address().port))})' "$GT/port" & PIDS="$PIDS $!"
+  gp=$(wait_port "$GT/port")
+  W=$(mkrepo)
+  o=$(cd "$W" && GATE_GITLEAKS_BASE="http://127.0.0.1:$gp" GATE_GITLEAKS_BACKOFF_MS=0 TMPDIR="$GT/tmp" node scripts/agent/gate.mjs secrets 2>&1); x=$?
+  if [ $x -eq 1 ] && has "download 1 of 3: http://127.0.0.1:$gp/v8.30.1/gitleaks_8.30.1_" "$o" && has "-> 504" "$o" && has "download 2 of 3" "$o" && has "-> 200" "$o" && has "checksum mismatch" "$o" && [ -z "$(ls -A "$GT/tmp")" ]; then ok gitleaks-download-retry
+  else fail gitleaks-download-retry "exit=$x: $o"; fi
+else echo "skip gitleaks-download-retry (no pinned gitleaks build for this platform)"; fi
 done_cases
