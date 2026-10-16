@@ -521,6 +521,11 @@ declare_workers 'o.workers=["wrangler.jsonc","api.json"]'
 expect 0 'rollback-safe ok' "unchanged directory entry named like a config"
 node -e 'const fs=require("fs"),f=process.argv[1],o=JSON.parse(fs.readFileSync(f));delete o.kv_namespaces;fs.writeFileSync(f,JSON.stringify(o))' "$R/api.json/wrangler.jsonc"
 expect 1 'api.json/wrangler.jsonc: removed production binding kv_namespaces CACHE' "binding removed from a directory entry named like a config"
+# A workers entry that is a symlink is not followed by the check (as before this rule): an unchanged link passes with a note, never an invalid-config error.
+repo declared-link; mkdir -p "$R/api"; echo 'export default {};' > "$R/api/index.js"
+echo '{"name":"apid","main":"index.js","kv_namespaces":[{"binding":"CACHE","id":"apid-kv"}],"env":{"staging":{"routes":[],"workers_dev":true,"kv_namespaces":[{"binding":"CACHE","id":"apid-kv-stage"}]}},"previews":{"kv_namespaces":[{"binding":"CACHE","id":"apid-kv-stage"}]}}' > "$R/api/wrangler.jsonc"
+ln -s api "$R/api.json"; declare_workers 'o.workers=["wrangler.jsonc","api.json"]'
+expect 0 'NOTE: rollback: workers entry api.json is a symlink' "unchanged symlinked directory entry"
 if [ -z "$why" ]; then ok rollback-declared-workers; else fail rollback-declared-workers "$why"; fi
 done_cases
 done_cases

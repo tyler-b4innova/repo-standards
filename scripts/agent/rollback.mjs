@@ -1,6 +1,6 @@
 // Compare production source, build output and migrations with the PR base; never access Cloudflare.
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, realpathSync, readFileSync, mkdtempSync, rmSync, symlinkSync, readdirSync } from "node:fs";
+import { existsSync, realpathSync, readFileSync, mkdtempSync, rmSync, symlinkSync, readdirSync, lstatSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, posix, join, relative } from "node:path";
 import { parse } from "./staging.mjs";
@@ -37,13 +37,19 @@ const repoPath = (p) => {
   return !n || n === ".." || n.startsWith("../") || posix.isAbsolute(n) ? null : n;
 };
 // Wrangler configs a standards.json declares, whatever they are named: each workers entry (a config file, a directory whose one config
-// `tree` holds, or {config, release_workers}) and every release_workers path. `tree` is the same side's repository files.
-function declaredConfigs(text, tree) {
+// `tree` holds, or {config, release_workers}) and every release_workers path. `tree` is the same side's repository files; `isLink` says whether
+// a path is a symlink on that side. A symlinked workers entry is not followed (as before this rule): it is noted, not compared.
+function declaredConfigs(text, tree, isLink, notes) {
   const std = JSON.parse(text ?? "{}") ?? {}, found = [];
   const file = (p) => { const n = repoPath(p); if (n && configExt.test(n)) found.push(n); };
   const entry = (p) => {
     const n = repoPath(p);
     if (!n) return;
+    if (isLink(n)) {
+      const note = `rollback: workers entry ${n} is a symlink; it is not compared (its target is not followed)`;
+      if (!notes.includes(note)) notes.push(note);
+      return;
+    }
     // A path holding one of wranglerNames is a directory whatever its name (declaredWorkers finds it the same way on disk); otherwise it is a config file.
     const inside = wranglerNames.map((name) => posix.join(n, name)).filter((f) => tree.has(f));
     if (inside.length) found.push(...inside);
@@ -338,8 +344,10 @@ export function rollbackFindings({ built = false } = {}) {
     }
     const oldFiles = git("ls-tree", "-r", "--name-only", "-z", base).split("\0").filter(Boolean);
     // Configs are paired by file name and by the declarations of both sides' standards.json, so a Worker declared on one side is still compared.
+    const baseLink = (f) => { try { return git("ls-tree", base, "--", f).startsWith("120000 "); } catch { return false; } };
+    const headLink = (f) => { try { return lstatSync(f).isSymbolicLink(); } catch { return false; } };
     const configs = [...new Set([...oldFiles, ...files].filter((f) => configFile.test(f))
-      .concat(declaredConfigs(before(base, "standards.json"), new Set(oldFiles)), declaredConfigs(read("standards.json"), new Set(files))))];
+      .concat(declaredConfigs(before(base, "standards.json"), new Set(oldFiles), baseLink, notes), declaredConfigs(read("standards.json"), new Set(files), headLink, notes)))];
     baseDirectory = mkdtempSync(join(tmpdir(), "rollback-base-"));
     const newProduction = productionInventory({ built, buildContext }), oldProduction = baseInventory(base, baseDirectory, buildContext);
     const pairs = configs.map((file) => ({ label: file, afile: file, bfile: file, a: config(before(base, file), file), b: config(read(file), file) }));
