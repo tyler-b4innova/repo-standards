@@ -774,6 +774,11 @@ if (cmd === "local") {
   const got = createHash("sha256").update(rd(tgz)).digest("hex");
   if (got !== SUM) fail(`gitleaks archive checksum mismatch: got ${got}, want ${SUM}`, "do not run it; re-run, or pin a new version and checksum in the engine");
   must("tar", ["-xzf", tgz, "-C", dir, "gitleaks"]);
+  // gitleaks' default rules plus the org's own key formats: a CLIProxyAPI client key (cpk-) in a YAML list or in prose
+  // matches no default rule. A repository's own .gitleaks.toml stays in force: it is extended, not replaced.
+  const own = has(".gitleaks.toml") ? `path = ${JSON.stringify(resolvePath(".gitleaks.toml"))}` : "useDefault = true";
+  writeFileSync(`${dir}/rules.toml`, ["[extend]", own, "", "[[rules]]", 'id = "cliproxy-client-key"', 'description = "CLIProxyAPI client key"',
+    "regex = '''\\bcpk-[A-Za-z0-9_-]{32,}'''", 'keywords = ["cpk-"]', ""].join("\n"));
   // Always scan commits: PR base..head, merge group base..head, a dispatch re-gate's merge ref (base tip..PR head),
   // push before..sha (a new branch scans what the default branch lacks); RANGE overrides.
   const ev = env.GITHUB_EVENT_PATH ? json(env.GITHUB_EVENT_PATH) ?? {} : {}, reach = (x) => { try { git("cat-file", "-e", `${x}^{commit}`); return true; } catch { return false; } };
@@ -784,6 +789,6 @@ if (cmd === "local") {
     : ev.after ? [fresh(ev.before) && def && ev.ref !== `refs/heads/${def}` && reach(`origin/${def}`) ? `origin/${def}` : ev.before, ev.after] : [null, env.GITHUB_SHA || "HEAD"];
   const r = env.RANGE || (pair[0] && !/^0+$/.test(pair[0]) && reach(pair[0]) ? `${pair[0]}..${pair[1]}` : pair[1]);
   console.log(`secrets: gitleaks git --log-opts=${r}`);
-  if (sh(`${dir}/gitleaks`, ["git", `--log-opts=${r}`, "--redact", "--no-banner", "-v", "."]))
+  if (sh(`${dir}/gitleaks`, ["git", `--log-opts=${r}`, "--config", `${dir}/rules.toml`, "--redact", "--no-banner", "-v", "."]))
     fail("gitleaks found a secret (redacted above)", "rotate it and remove it from the branch history; false positive: its fingerprint in .gitleaksignore");
 }
