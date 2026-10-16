@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Steps of the `gate` job (std-gate.yml), also runnable locally:
-//   local [--base <ref>] | plan | release-start | release-verify | release-report | classify [base] | install [--no-browsers|--browsers-only] | playwright | run <script>... | preview | release | e2e | secrets | syntax | instructions | verdict
+//   local [--base <ref>] | plan | release-start | release-verify | release-report | classify [base] | install [--no-browsers|--browsers-only] | browser-deps [--install] | playwright | run <script>... | preview | release | e2e | secrets | syntax | instructions | verdict
 // UI paths: pack.json defaults; standards.json "ui_paths" as a list replaces the include globs,
 // as {include, ignore} replaces include and adds ignore. e2e: none fails unless "e2e": false.
 import { execFileSync as ex, spawn, spawnSync } from "node:child_process";
@@ -20,7 +20,7 @@ const [cmd, ...args] = process.argv.slice(2), env = process.env;
 const skipFile = env.GATE_SKIP_FILE; delete env.GATE_SKIP_FILE;
 // A step that ran nothing prints its notice as before and, under `local`, records why: the summary then says SKIP (reason), not PASS.
 const ranNothing = (reason, notice) => { console.log(notice); if (skipFile) writeFileSync(skipFile, `${reason}\n`); };
-const SUBS = ["local", "verdict", "plan", "classify", "install", "playwright", "run", "preview", "release", "release-start", "release-verify", "release-report", "e2e", "secrets", "syntax", "instructions"], ok = SUBS.includes(cmd);
+const SUBS = ["local", "verdict", "plan", "classify", "install", "browser-deps", "playwright", "run", "preview", "release", "release-start", "release-verify", "release-report", "e2e", "secrets", "syntax", "instructions"], ok = SUBS.includes(cmd);
 if (!ok || args.includes("--help")) {
   console.log(rd(new URL(import.meta.url), "utf8").split("\n").slice(1, 6).map((l) => l.slice(3)).join("\n"));
   process.exit(ok || cmd === "--help" ? 0 : 2);
@@ -113,36 +113,51 @@ async function cancelRun(why) {
   fail(`the release check was not interrupted after cancel and force-cancel: ${why}`, "cancel the run; it must not pass");
 }
 const playwrightBin = () => has("node_modules/.bin/playwright") ? ["node_modules/.bin/playwright", []] : ["npx", ["--no-install", "playwright"]];
-// True when the system packages for this run's browsers must be installed (Linux only; elsewhere Playwright has none).
+// Whether this process can install system packages: root, or sudo that can run here. Under no_new_privs (agent sandboxes) sudo
+// cannot, so it is not tried; the probe is read from the kernel, not a sudo call.
+function canEscalate() {
+  if (process.getuid?.() === 0) return true;
+  try { if (/^NoNewPrivs:\s*1$/m.test(rd("/proc/self/status", "utf8"))) return false; } catch {}
+  return spawnSync("sudo", ["-n", "true"], { stdio: "ignore" }).status === 0;
+}
+// The browsers' system packages this host lacks, as `<file>: <library>` lines (empty when present, or not applicable).
 // Playwright's own host validation is bundled and not callable, so Chromium gets an equivalent check: `ldd` over every
 // executable and shared library in each browser's build folder, with that folder on LD_LIBRARY_PATH, as Playwright does.
 // The build folder is any `chrome-linux*` or `chrome-headless-shell-linux*`: Playwright renames it between versions and
 // architectures (chrome-linux up to 1.56; chrome-linux64 and chrome-headless-shell-linux64 on x64 from 1.57;
-// chrome-linux-arm64 on arm64 from 1.63), so no one name decides; a browser without one has nothing to scan and installs.
+// chrome-linux-arm64 on arm64 from 1.63), so no one name decides; a browser without one has nothing to scan and is missing.
 // Firefox and WebKit load libraries it also checks through a library path and dlopen (libxul.so, libGLESv2.so.2,
-// libx264.so) that this scan cannot reproduce, so they always install their packages.
-function browserDepsMissing() {
-  if ((env.GATE_PLATFORM || process.platform) !== "linux") return false;
+// libx264.so) that this scan cannot reproduce, so they are always reported missing. Linux only: elsewhere there are none.
+function browserDepsProblems() {
+  if ((env.GATE_PLATFORM || process.platform) !== "linux") return [];
   const other = browsers().filter((b) => b !== "chromium");
-  if (other.length) { console.log(`install: ${other.join(", ")} always installs system packages`); return true; }
-  const root = env.PLAYWRIGHT_BROWSERS_PATH && env.PLAYWRIGHT_BROWSERS_PATH !== "0" ? env.PLAYWRIGHT_BROWSERS_PATH : `${homedir()}/.cache/ms-playwright`;
+  if (other.length) return [`${other.join(", ")}: its system packages cannot be checked here`];
+  const root = browsersRoot();
   const dirs = (has(root) ? ls(root) : []).filter((x) => /^chromium(_headless_shell)?-/.test(x));
-  if (!dirs.some((x) => /^chromium-/.test(x))) { console.log(`install: chromium not found under ${root}; installing system packages`); return true; }
+  if (!dirs.some((x) => /^chromium-/.test(x))) return [`chromium: not found under ${root}`];
   const isDir = (p) => { try { return statSync(p).isDirectory(); } catch { return false; } };
+  const problems = [];
   for (const x of dirs) {
     const builds = isDir(`${root}/${x}`) ? ls(`${root}/${x}`).filter((b) => /^chrome-(headless-shell-)?linux/.test(b) && isDir(`${root}/${x}/${b}`)) : [];
-    if (!builds.length) { console.log(`install: no chrome-linux* build folder in ${root}/${x}; installing system packages`); return true; }
+    if (!builds.length) { problems.push(`${root}/${x}: no chrome-linux* build folder`); continue; }
     for (const dir of builds.map((b) => `${root}/${x}/${b}`)) {
       for (const e of ls(dir, { withFileTypes: true })) {
         const f = `${dir}/${e.name}`;
         if (!e.isFile() || !(/\.so(\.|$)/i.test(e.name) || (statSync(f).mode & 0o111))) continue;
         const r = spawnSync("ldd", [f], { encoding: "utf8", cwd: dir, env: { ...env, LD_LIBRARY_PATH: [env.LD_LIBRARY_PATH, dir].filter(Boolean).join(":") } });
-        if (r.error || /=>.*not found/.test(`${r.stdout}`)) { console.log(`install: ${f} misses shared libraries; installing system packages`); return true; }
+        if (r.error) problems.push(`${f}: ldd cannot run`);
+        for (const m of `${r.stdout ?? ""}`.matchAll(/(\S+) => not found/g)) problems.push(`${f}: ${m[1]}`);
       }
     }
   }
-  console.log("install: browser system packages present");
-  return false;
+  return problems;
+}
+// Where this run's browsers are: PLAYWRIGHT_BROWSERS_PATH, or with `0` (Playwright's hermetic install) the project's own
+// node_modules/playwright-core/.local-browsers, or with it unset the user's cache. Relative paths are the project's.
+function browsersRoot() {
+  const p = env.PLAYWRIGHT_BROWSERS_PATH;
+  if (p === "0") return resolvePath("node_modules/playwright-core/.local-browsers");
+  return p ? resolvePath(p) : `${homedir()}/.cache/ms-playwright`;
 }
 function ui(files) {
   const p = json("scripts/agent/pack.json") ?? {}, o = std.ui_paths;
@@ -283,7 +298,7 @@ if (cmd === "local") {
   };
   const dir = mkdtempSync(`${tmpdir()}/gate-local-`), eventFile = `${dir}/event.json`, skipPath = `${dir}/skipped`;
   writeFileSync(eventFile, JSON.stringify({ pull_request: { number: 1, base: { sha: base }, head: { sha: head, ref: git("branch", "--show-current").trim() }, user: { login: "local" } } }));
-  const localEnv = { ...env, CI: "true", GITHUB_EVENT_NAME: "pull_request", GITHUB_EVENT_PATH: eventFile, GITHUB_SHA: head,
+  const localEnv = { ...env, CI: "true", STD_GATE: "1", GITHUB_EVENT_NAME: "pull_request", GITHUB_EVENT_PATH: eventFile, GITHUB_SHA: head,
     PATH: `${process.cwd()}/node_modules/.bin:${env.PATH}`, GATE_BROWSERS: "chromium", WRANGLER_SEND_METRICS: "false", WRANGLER_CHECK_FOR_UPDATES: "false", WRANGLER_HOME: `${dir}/wrangler`, HOME: dir, USERPROFILE: dir, XDG_CONFIG_HOME: `${dir}/xdg` };
   // HOME is hidden above, and with it the user's git config, where git reads safe.directory. The trust for the repository
   // being gated (its top level, common git dir and private worktree git dir) goes in a global config of the gate's own, which every child reads, the
@@ -662,9 +677,25 @@ if (cmd === "local") {
     if ((d.playwright || d["@playwright/test"]) && !args.includes("--no-browsers")) {
       const bin = playwrightBin();
       must(bin[0], [...bin[1], "install", ...browsers()]);
-      if (browserDepsMissing()) must(bin[0], [...bin[1], "install-deps", ...browsers()]);
+      const missing = browserDepsProblems();
+      if (missing.length && !canEscalate()) fail(`install: system packages missing (${missing.join("; ")}) and this host cannot install them (no root, no sudo)`, "the host provisions them: node scripts/agent/gate.mjs browser-deps --install, with the privileges to install packages; a gate never needs root");
+      if (missing.length) { console.log(`install: system packages missing (${missing.join("; ")}); installing them`); must(bin[0], [...bin[1], "install-deps", ...browsers()]); }
+      else console.log("install: browser system packages present");
     }
   }
+} else if (cmd === "browser-deps") {
+  // The check install makes, for repository scripts and people: exit 0 when the browsers' system packages are present
+  // (or none apply: no Playwright, or not Linux); exit 1 naming each missing library. --install runs install-deps for this
+  // run's browsers only when one is missing, and needs the privileges to install packages on this host.
+  const d = { ...pkg?.dependencies, ...pkg?.devDependencies };
+  if (!(d.playwright || d["@playwright/test"])) { console.log("browser-deps: no Playwright in package.json; nothing to check"); process.exit(0); }
+  const missing = browserDepsProblems();
+  if (!missing.length) { console.log("browser-deps: system packages present"); process.exit(0); }
+  console.log(`browser-deps: missing ${missing.join("; ")}`);
+  if (!args.includes("--install")) fail("browser system packages are missing on this host", "the host provisions them: run node scripts/agent/gate.mjs browser-deps --install with the privileges to install packages");
+  if (!canEscalate()) fail("browser-deps --install: this host cannot install system packages (no root, no sudo)", "run it on a host with the privileges to install packages");
+  const bin = playwrightBin();
+  must(bin[0], [...bin[1], "install-deps", ...browsers()]);
 } else if (cmd === "run") {
   const s = args.find((x) => pkg?.scripts?.[x]);
   if (!args.length) fail("no script named", "gate.mjs run <script>...");

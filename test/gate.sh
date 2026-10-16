@@ -75,7 +75,7 @@ e5=$(cd "$R" && node scripts/agent/gate.mjs e2e 2>&1); x5=$?
 echo 'export default { projects: [{ name: "chromium" }, { name: "firefox" }] };' > "$R/playwright.config.js"
 jset "$R/package.json" 'o.scripts={"test:e2e":"playwright test"}'; e6=$(pwrun GATE_X=1); jset "$R/package.json" 'delete o.scripts'
 echo 'export default { use: {} };' > "$R/playwright.config.js"; e4=$(pwrun GATE_X=1)
-IB=$T/install-bin; mkpath "$IB"; shim "$IB" npm 'exit 0'
+IB=$T/install-bin; mkpath "$IB"; shim "$IB" npm 'exit 0'; shim "$IB" sudo 'exit 0' # root or sudo can run: install-deps is allowed
 : > "$T/pw.log"; (cd "$R" && PATH="$IB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH="$T/no-browsers" GATE_BROWSERS=chromium node scripts/agent/gate.mjs install) >/dev/null 2>&1; i1=$(cat "$T/pw.log")
 if has "playwright test --project=chromium base=none" "$e1" && has "test --project=chromium --project=firefox" "$e2" && has "base=https://feat.preview.example.test" "$e3" \
   && has "playwright test base=none" "$e4" && ! has "project" "$e4" && [ $x5 -eq 1 ] && has "defines projects but none named chromium" "$e5" && has "playwright test --project=chromium" "$e6" && ! has firefox "$e6" && has "install chromium" "$i1" && has "install-deps chromium" "$i1" && ! has "firefox" "$i1"
@@ -101,6 +101,7 @@ mkdir -p "$T/pw-unknown/chromium-1/chrome-win64" # no Linux build folder: nothin
 # PATH, as on a host without passwordless sudo, so calling it fails the run
 printf '#!/bin/sh\necho "playwright $*" >> "%s/pw.log"\n[ "$1" = install-deps ] && exec sudo sh -c "apt-get update"\nexit 0\n' "$T" > "$R/node_modules/.bin/playwright"
 LB=$T/ldd-bin; mkpath "$LB"; shim "$LB" npm 'exit 0'
+shim "$LB" sudo "echo \"sudo \$*\" >> \"$T/sudo.log\"; exit 0" # sudo runs here (-n true); every call is logged
 shim "$LB" ldd 'case "$1" in *"${LDD_BAD:-NONE}"*) echo "libgbm.so.1 => not found" ;; *) echo "libc.so.6 => /lib/libc.so.6" ;; esac'
 binst() { : > "$T/pw.log"; (cd "$R" && PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH="$1" LDD_BAD="$2" GATE_BROWSERS="${3:-chromium}" node scripts/agent/gate.mjs install --browsers-only) > "$T/binst.out" 2>&1
   echo "exit=$? $(cat "$T/pw.log") $(grep '^install:' "$T/binst.out")"; }
@@ -125,6 +126,40 @@ console.log(out.join("; ")||"ok")' "$R/$WF")
 if [ -z "$bwhy" ] && has "install-deps chromium" "$bunk" && has "install-deps chromium" "$bnone" && has "install-deps chromium firefox" "$bff" \
   && has "key=playwright-" "$bkey" && has "-1.63.0-chromium+firefox" "$bkey" && has "-1.63.0-chromium" "$bkey1" && ! has "firefox" "$bkey1" && [ "$bnokey" = "key=" ] && [ "$bwf" = ok ]
 then ok gate-browser-cache; else fail gate-browser-cache "layouts=${bwhy#; } | unknown=$bunk | firefox=$bff | none=$bnone | key=$bkey | $bkey1 | nokey=$bnokey | workflow=$bwf"; fi
+
+# ---- browser-deps: the check install makes, for repository scripts and people. It only reports; --install runs install-deps.
+# browser-deps-hermetic-root: PLAYWRIGHT_BROWSERS_PATH=0 is Playwright's hermetic install, under the project's own
+# node_modules/playwright-core/.local-browsers, so the scan finds the browsers there (with HOME empty, the user's cache has none)
+H=$(mkrepo); mkdir -p "$H/node_modules/.bin"; EH=$(mktemp -d "$T/home.XXXXXX")
+printf '#!/bin/sh\necho "playwright $*" >> "%s/bd.log"\nexit 0\n' "$T" > "$H/node_modules/.bin/playwright"; chmod +x "$H/node_modules/.bin/playwright"
+echo '{"name":"app","private":true,"devDependencies":{"@playwright/test":"1.63.0"}}' > "$H/package.json"
+HB="$H/node_modules/playwright-core/.local-browsers"; pwlayout "$HB" chrome-linux64 chrome-headless-shell-linux64 chrome-headless-shell
+bdrun() { : > "$T/bd.log"; (cd "$H" && env HOME="$EH" PATH="$LB" GATE_PLATFORM="${PLATFORM:-linux}" PLAYWRIGHT_BROWSERS_PATH="${BPATH-0}" LDD_BAD="${BAD:-NONE}" node scripts/agent/gate.mjs browser-deps "$@") 2>&1; echo "exit=$?"; }
+: > "$T/sudo.log"; hp=$(bdrun); hpl=$(cat "$T/bd.log")
+if has "exit=0" "$hp" && has "browser-deps: system packages present" "$hp" && ! has "install-deps" "$hpl"; then ok browser-deps-hermetic-root
+else fail browser-deps-hermetic-root "present=$hp log=$hpl"; fi
+# browser-deps-command: exit 0 when present (above); exit 1 naming the file and library when missing, with no install
+# unless --install; --install then runs install-deps for the run's browsers; non-Linux and a repo without Playwright have nothing to check
+mb=$(BAD=libfoo bdrun); mbl=$(cat "$T/bd.log")
+mi=$(BAD=libfoo bdrun --install); mil=$(cat "$T/bd.log"); msudo=$(cat "$T/sudo.log")
+dw=$(PLATFORM=darwin BPATH= bdrun); dwl=$(cat "$T/bd.log")
+echo '{"name":"app","private":true}' > "$H/package.json"; np=$(bdrun); npl=$(cat "$T/bd.log")
+echo '{"name":"app","private":true,"devDependencies":{"@playwright/test":"1.63.0"}}' > "$H/package.json"
+if has "exit=1" "$mb" && has "libfoo.so.1: libgbm.so.1" "$mb" && ! has "install-deps" "$mbl" \
+  && has "exit=0" "$mi" && has "install-deps chromium" "$mil" && has "sudo -n true" "$msudo" \
+  && has "exit=0" "$dw" && ! has "install-deps" "$dwl" && has "exit=0" "$np" && ! has "install-deps" "$npl"; then ok browser-deps-command
+else fail browser-deps-command "missing=$mb | $mbl || install=$mi | $mil sudo=$msudo || darwin=$dw || nopw=$np"; fi
+# browser-deps-no-new-privs: under no_new_privs (agent sandboxes) a missing library is reported with the host requirement, and
+# no sudo is called at all, `--install` included; the install step fails the same way. Linux only (setpriv sets the flag).
+if command -v setpriv >/dev/null 2>&1; then
+  NP=$(command -v node)
+  npr() { : > "$T/sudo.log"; : > "$T/bd.log"; (cd "$H" && setpriv --no-new-privs env PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH=0 LDD_BAD=libfoo "$NP" scripts/agent/gate.mjs "$@") 2>&1; echo "exit=$?"; }
+  npb=$(npr browser-deps --install); npbs=$(cat "$T/sudo.log"); npbl=$(cat "$T/bd.log")
+  npi=$(cd "$H" && : > "$T/sudo.log" && setpriv --no-new-privs env PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH=0 LDD_BAD=libfoo "$NP" scripts/agent/gate.mjs install --browsers-only 2>&1; echo "exit=$?"); npis=$(cat "$T/sudo.log")
+  if has "exit=1" "$npb" && has "libfoo.so.1: libgbm.so.1" "$npb" && has "cannot install system packages" "$npb" && [ -z "$npbs" ] && ! has "install-deps" "$npbl" \
+    && has "exit=1" "$npi" && has "cannot install them" "$npi" && [ -z "$npis" ]; then ok browser-deps-no-new-privs
+  else fail browser-deps-no-new-privs "browser-deps=$npb sudo=[$npbs] | install=$npi sudo=[$npis]"; fi
+else echo "skip browser-deps-no-new-privs (needs setpriv, Linux)"; fi
 
 # e2e-budget-removed: a slow suite passes, a leftover e2e.budget warns in --check and changes nothing, and an overlay still setting gate.budget loads with one notice
 R=$(mkrepo)
