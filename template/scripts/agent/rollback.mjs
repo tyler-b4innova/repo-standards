@@ -29,6 +29,32 @@ function entries(c, key) {
 }
 const kinds = ["d1_databases", "kv_namespaces", "r2_buckets", "queues.producers", "services", "durable_objects.bindings"];
 const bindingName = (b) => b.binding ?? b.name;
+const wranglerNames = ["wrangler.json", "wrangler.jsonc", "wrangler.toml"], configExt = /\.(jsonc?|toml)$/;
+// Repo-relative path, or null for anything that would leave the repository (release-config's declaredWorkers and workerFiles report those).
+const repoPath = (p) => {
+  if (typeof p !== "string" || !p) return null;
+  const n = posix.normalize(p.split("\\").join("/")).replace(/\/+$/, "");
+  return !n || n === ".." || n.startsWith("../") || posix.isAbsolute(n) ? null : n;
+};
+// Wrangler configs a standards.json declares, whatever they are named: each workers entry (a config file, a directory whose one config
+// `tree` holds, or {config, release_workers}) and every release_workers path. `tree` is the same side's repository files.
+function declaredConfigs(text, tree) {
+  const std = JSON.parse(text ?? "{}") ?? {}, found = [];
+  const file = (p) => { const n = repoPath(p); if (n && configExt.test(n)) found.push(n); };
+  const entry = (p) => {
+    const n = repoPath(p);
+    if (!n) return;
+    if (configExt.test(n)) found.push(n);
+    else for (const name of wranglerNames) if (tree.has(posix.join(n, name))) found.push(posix.join(n, name));
+  };
+  for (const p of Array.isArray(std.release_workers) ? std.release_workers : []) file(p);
+  for (const w of Array.isArray(std.workers) ? std.workers : []) {
+    const object = w && typeof w === "object" && !Array.isArray(w);
+    entry(object ? w.config : w);
+    for (const p of object && Array.isArray(w.release_workers) ? w.release_workers : []) file(p);
+  }
+  return found;
+}
 
 // SQL tokenization: comments and quoted strings cannot become commands or statement boundaries.
 // Quoted identifiers are kept (including SQLite's backticks/brackets); single quotes are literals.
@@ -309,8 +335,9 @@ export function rollbackFindings({ built = false } = {}) {
       }
     }
     const oldFiles = git("ls-tree", "-r", "--name-only", "-z", base).split("\0").filter(Boolean);
-    const declared = (text) => JSON.parse(text ?? "{}").release_workers ?? [];
-    const configs = [...new Set([...oldFiles, ...files].filter((f) => configFile.test(f)).concat(declared(before(base, "standards.json")), declared(read("standards.json"))))];
+    // Configs are paired by file name and by the declarations of both sides' standards.json, so a Worker declared on one side is still compared.
+    const configs = [...new Set([...oldFiles, ...files].filter((f) => configFile.test(f))
+      .concat(declaredConfigs(before(base, "standards.json"), new Set(oldFiles)), declaredConfigs(read("standards.json"), new Set(files))))];
     baseDirectory = mkdtempSync(join(tmpdir(), "rollback-base-"));
     const newProduction = productionInventory({ built, buildContext }), oldProduction = baseInventory(base, baseDirectory, buildContext);
     const pairs = configs.map((file) => ({ label: file, afile: file, bfile: file, a: config(before(base, file), file), b: config(read(file), file) }));

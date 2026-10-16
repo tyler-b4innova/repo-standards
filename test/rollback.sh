@@ -473,4 +473,45 @@ git -C "$R" mv proto proto-new
 expect 1 'historical D1 migration removed' "Worker moved to another folder"
 [[ "$out" != *'deleted whole'* ]] || why="$why; a moved Worker was called deleted: $out"
 if [ -z "$why" ]; then ok rollback-deleted-worker; else fail rollback-deleted-worker "$why"; fi
+
+# rollback-declared-workers: a Worker declared in standards.json workers by a config whose name is not wrangler.json, wrangler.jsonc or
+# wrangler.toml, and a supporting config nested in its release_workers, are compared like the root Worker: D1 migrations, bindings and
+# the declaration itself. The declaration may sit in the base's or the head's standards.json. The root Worker still fails as before.
+why=""
+std() { node -e 'const fs=require("fs"),f=process.argv[1],o=JSON.parse(fs.readFileSync(f));(new Function("o",process.argv[2]))(o);fs.writeFileSync(f,JSON.stringify(o,null,2))' "$R/standards.json" "$1"; }
+api_files() { # wrangler.api.jsonc (D1 APIDB with migrations in api-db, KV CACHE) and jobs/worker.jobs.jsonc (KV JOBS), nested under it
+  mkdir -p "$R/api-db" "$R/api" "$R/jobs"
+  echo 'export default {};' > "$R/api/index.js"; echo 'export default {};' > "$R/jobs/index.js"
+  echo 'CREATE TABLE notes (id INTEGER);' > "$R/api-db/0001.sql"
+  echo '{"name":"api","main":"api/index.js","d1_databases":[{"binding":"APIDB","database_id":"api-db-id","migrations_dir":"api-db"}],"kv_namespaces":[{"binding":"CACHE","id":"api-kv"}],"env":{"staging":{"routes":[],"workers_dev":true,"d1_databases":[{"binding":"APIDB","database_id":"api-db-stage","migrations_dir":"api-db"}],"kv_namespaces":[{"binding":"CACHE","id":"api-kv-stage"}]}},"previews":{"d1_databases":[{"binding":"APIDB","database_id":"api-db-stage"}],"kv_namespaces":[{"binding":"CACHE","id":"api-kv-stage"}]}}' > "$R/wrangler.api.jsonc"
+  echo '{"name":"jobs","main":"index.js","kv_namespaces":[{"binding":"JOBS","id":"jobs-kv"}],"env":{"staging":{"routes":[],"workers_dev":true,"kv_namespaces":[{"binding":"JOBS","id":"jobs-kv-stage"}]}},"previews":{"kv_namespaces":[{"binding":"JOBS","id":"jobs-kv-stage"}]}}' > "$R/jobs/worker.jobs.jsonc"
+}
+declare_api() { api_files; declare_workers 'o.workers=["wrangler.jsonc",{"config":"wrangler.api.jsonc","release_workers":["jobs/worker.jobs.jsonc"]}]'; }
+repo declared-migration; api_files; declare_workers 'o.workers=["wrangler.jsonc","wrangler.api.jsonc"]'
+echo 'DROP TABLE notes;' > "$R/api-db/0002.sql"
+expect 1 'api-db/0002.sql: DROP TABLE notes; contract requires' "destructive migration in a declared Worker"
+repo declared-binding; declare_api
+node -e 'const fs=require("fs"),f=process.argv[1],o=JSON.parse(fs.readFileSync(f));delete o.kv_namespaces;fs.writeFileSync(f,JSON.stringify(o))' "$R/wrangler.api.jsonc"
+expect 1 'wrangler.api.jsonc: removed production binding kv_namespaces CACHE' "binding removed from a declared Worker"
+repo declared-history; declare_api
+rm "$R/api-db/0001.sql"
+expect 1 'api-db/0001.sql: historical D1 migration removed' "migration removed from a declared Worker"
+repo declared-nested; declare_api
+node -e 'const fs=require("fs"),f=process.argv[1],o=JSON.parse(fs.readFileSync(f));delete o.kv_namespaces;fs.writeFileSync(f,JSON.stringify(o))' "$R/jobs/worker.jobs.jsonc"
+expect 1 'jobs/worker.jobs.jsonc: removed production binding kv_namespaces JOBS' "binding removed from a nested release_workers Worker"
+repo declared-head-only; api_files; git -C "$R" add -A; git -C "$R" commit -qm undeclared; BASE=$(git -C "$R" rev-parse HEAD)
+std 'o.workers=["wrangler.jsonc",{"config":"wrangler.api.jsonc","release_workers":["jobs/worker.jobs.jsonc"]}]'
+node -e 'const fs=require("fs"),f=process.argv[1],o=JSON.parse(fs.readFileSync(f));delete o.kv_namespaces;fs.writeFileSync(f,JSON.stringify(o))' "$R/wrangler.api.jsonc"
+expect 1 'wrangler.api.jsonc: removed production binding kv_namespaces CACHE' "Worker declared only in the head's standards.json"
+repo declared-base-only; declare_api
+std 'delete o.workers'
+node -e 'const fs=require("fs"),f=process.argv[1],o=JSON.parse(fs.readFileSync(f));delete o.kv_namespaces;fs.writeFileSync(f,JSON.stringify(o))' "$R/wrangler.api.jsonc"
+expect 1 'wrangler.api.jsonc: removed production binding kv_namespaces CACHE' "declaration dropped in the head"
+repo declared-deleted; declare_api
+rm -r "$R/wrangler.api.jsonc" "$R/api-db"; std 'o.workers=o.workers.filter((w)=>(w.config ?? w)!=="wrangler.api.jsonc")'
+expect 1 'Worker api is deleted whole, but it is declared (standards.json workers)' "declared Worker deleted whole, with its declaration"
+repo declared-root; declare_api
+echo 'DROP TABLE users;' > "$R/db/0002.sql"
+expect 1 'db/0002.sql: DROP TABLE users; contract requires' "root Worker still compared beside declared ones"
+if [ -z "$why" ]; then ok rollback-declared-workers; else fail rollback-declared-workers "$why"; fi
 done_cases
