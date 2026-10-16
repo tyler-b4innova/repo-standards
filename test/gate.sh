@@ -60,7 +60,7 @@ su() { : > "$T/setup.log"; (cd "$R" && SETUP_LOG="$T/setup.log" PATH="$P" bash s
 o1=$(su); l1=$(cat "$T/setup.log")
 mkdir -p "$R/node_modules/.bin" && printf '#!/bin/sh\necho "playwright $*" >> "$SETUP_LOG"\n' > "$R/node_modules/.bin/playwright" && chmod +x "$R/node_modules/.bin/playwright"
 o2=$(su); l2=$(cat "$T/setup.log")
-if has "playwright is in package.json but not installed" "$o1" && ! has playwright "$l1" && has "npm ci" "$l2" && has "playwright install --with-deps chromium" "$l2" && ! has npx "$l2"
+if has "playwright is in package.json but not installed" "$o1" && ! has playwright "$l1" && has "npm ci" "$l2" && has "playwright install chromium" "$l2" && ! has with-deps "$l2" && ! has npx "$l2"
 then ok setup-installs-repo-playwright; else fail setup-installs-repo-playwright "missing: $o1 | $l1 || present: $o2 | $l2"; fi
 
 # ---- e2e runs Chromium only (unless this run's browsers say more), against the preview when given
@@ -160,6 +160,42 @@ if command -v setpriv >/dev/null 2>&1; then
     && has "exit=1" "$npi" && has "cannot install them" "$npi" && [ -z "$npis" ]; then ok browser-deps-no-new-privs
   else fail browser-deps-no-new-privs "browser-deps=$npb sudo=[$npbs] | install=$npi sudo=[$npis]"; fi
 else echo "skip browser-deps-no-new-privs (needs setpriv, Linux)"; fi
+
+# ---- setup and system packages: sudo is tried only when something is missing and sudo can run here
+S=$T/setup-sys; mkdir -p "$S"; SL=$S/setup.log; SUL=$S/sudo.log
+pwlayout "$S/browsers" chrome-linux64 chrome-headless-shell-linux64 chrome-headless-shell
+mksetup() { # mksetup <repo> <bin dir> <with apt-get and sudo: yes|no> <gh present: yes|no>
+  mkpath "$2"
+  shim "$2" curl 'exit 0'; shim "$2" npm 'echo "npm $*" >> "$SETUP_LOG"'; shim "$2" npx 'exit 0'
+  shim "$2" ffmpeg 'exit 0'; shim "$2" pdftoppm 'exit 0'
+  [ "$4" = yes ] && shim "$2" gh 'exit 0'
+  if [ "$3" = yes ]; then shim "$2" apt-get 'echo "apt-get $*" >> "$SUDO_LOG"; exit 0'; shim "$2" sudo 'echo "sudo $*" >> "$SUDO_LOG"; exit 0'; fi
+  printf '#!/bin/sh\necho "playwright $*" >> "$SETUP_LOG"\nexit 0\n' > "$1/node_modules/.bin/playwright"; chmod +x "$1/node_modules/.bin/playwright"
+  printf '#!/bin/sh\nif [ -n "$LDD_MISSING" ]; then echo "libgbm.so.1 => not found"; else echo "libc.so.6 => /lib/libc.so.6"; fi\n' > "$2/ldd"; chmod +x "$2/ldd"
+}
+SR=$(mkrepo); mkdir -p "$SR/node_modules/.bin"; echo '{"name":"app","private":true,"devDependencies":{"@playwright/test":"1.63.0"}}' > "$SR/package.json"; echo '{}' > "$SR/package-lock.json"
+sy() { : > "$SL"; : > "$SUL"; (cd "$SR" && env SETUP_LOG="$SL" SUDO_LOG="$SUL" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH="$S/browsers" "$@" bash scripts/agent/setup.sh) 2>&1; }
+# setup-no-sudo-without-need: gh, the tools and every browser library are present, so setup runs no sudo and no install-deps
+P1=$S/bin-present; mksetup "$SR" "$P1" yes yes
+o1=$(sy PATH="$P1" LDD_MISSING=); l1=$(cat "$SL"); s1=$(cat "$SUL")
+if [ -z "$s1" ] && has "playwright install chromium" "$l1" && ! has "install-deps" "$l1" && ! has "with-deps" "$l1" && ! has "sudo cannot run here" "$o1"; then ok setup-no-sudo-without-need
+else fail setup-no-sudo-without-need "sudo=[$s1] playwright=[$l1] out=$o1"; fi
+# setup-installs-when-sudo-works: a library is missing and sudo can run: setup installs the apt packages and the browser's libraries
+P2=$S/bin-sudo; mksetup "$SR" "$P2" yes no
+o2=$(sy PATH="$P2" LDD_MISSING=1); l2=$(cat "$SL"); s2=$(cat "$SUL")
+if has "sudo -n true" "$s2" && has "sudo -n apt-get install" "$s2" && has "install-deps chromium" "$l2" && ! has "sudo cannot run here" "$o2"; then ok setup-installs-when-sudo-works
+else fail setup-installs-when-sudo-works "sudo=[$s2] playwright=[$l2] out=$o2"; fi
+# setup-no-sudo-under-no-new-privs: agent sandboxes. A library and gh are missing: no sudo call (not even sudo -n true), no install,
+# and one line names the packages and the host requirement. Linux with setpriv, not root.
+if command -v setpriv >/dev/null 2>&1 && [ "$(id -u)" != 0 ]; then
+  P3=$S/bin-nnp; mksetup "$SR" "$P3" yes no
+  SP=$(command -v setpriv); : > "$SL"; : > "$SUL"
+  o3=$(cd "$SR" && env SETUP_LOG="$SL" SUDO_LOG="$SUL" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH="$S/browsers" LDD_MISSING=1 PATH="$P3" "$SP" --no-new-privs bash scripts/agent/setup.sh 2>&1)
+  l3=$(cat "$SL"); s3=$(cat "$SUL")
+  if [ -z "$s3" ] && ! has "install-deps" "$l3" && ! has "apt-get" "$s3" && [ "$(grep -c 'sudo cannot run here' <<<"$o3")" = 1 ] && has "system packages" "$o3" && has "libgbm.so.1" "$o3" \
+    && has "playwright install chromium" "$l3"; then ok setup-no-sudo-under-no-new-privs
+  else fail setup-no-sudo-under-no-new-privs "sudo=[$s3] playwright=[$l3] out=$o3"; fi
+else echo "skip setup-no-sudo-under-no-new-privs (needs setpriv, Linux, not root)"; fi
 
 # e2e-budget-removed: a slow suite passes, a leftover e2e.budget warns in --check and changes nothing, and an overlay still setting gate.budget loads with one notice
 R=$(mkrepo)
