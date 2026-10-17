@@ -31,7 +31,7 @@ try { process.chdir(git("rev-parse", "--show-toplevel").trim()); } catch {}
 const json = (f) => { try { return JSON.parse(rd(f, "utf8")); } catch { return null; } };
 const pkg = json("package.json"), std = json("standards.json") ?? {};
 const fail0 = (msg, fix) => { console.log(`::error::${msg}\nfix: ${fix}`); process.exit(1); };
-if (has("package.json") && !pkg && ["local", "install", "run", "e2e"].includes(cmd)) fail0("package.json is not valid JSON", "fix package.json");
+if (has("package.json") && !pkg && ["local", "install", "browser-deps", "run", "e2e"].includes(cmd)) fail0("package.json is not valid JSON", "fix package.json");
 const pm = has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : "npm";
 const fail = (msg, fix) => { console.log(`::error::${msg}\nfix: ${fix}`); process.exit(1); };
 const sh = (c, a) => spawnSync(c, a, { stdio: "inherit" }).status ?? 1;

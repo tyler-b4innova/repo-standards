@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Local clean-up of merged work, run by `setup.sh --check` at session start (never in CI). Conservative: a local
+// Local clean-up of merged work, run by `setup.sh --check` at session start (not on a GitHub runner or in a local gate run). Conservative: a local
 // branch, and the worktree holding it, go only when ALL hold, and anything unsure stays:
 //   - GitHub says the branch's pull request merged (asked of GitHub: squash merges look unmerged to git);
 //   - the local tip is the PR's merged head or an ancestor of it (no local work the PR lacks);
