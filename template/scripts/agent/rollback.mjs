@@ -66,8 +66,13 @@ function declaredConfigs(text, tree, isLink, notes) {
   return found;
 }
 
+// SQLite folds ASCII letters only (its default case folding); every other character is itself, so 'Ä' and 'ä' are two names.
+const asciiLower = (s) => s.replace(/[A-Z]+/g, (m) => m.toLowerCase());
 // SQL tokenization: comments and quoted strings cannot become commands or statement boundaries.
-// Quoted identifiers are kept (including SQLite's backticks/brackets); single quotes are literals.
+// Names are normalised here, once, for every statement kind: one layer of "…", `…`, […] or '…' is stripped, doubled quotes are
+// unescaped and ASCII letters are folded to lower case. A quoted name keeps a marker: \0 for "…", `…` and […], \x01 for '…', which
+// SQLite also accepts as a name. A marked token never equals a bare keyword, so a string in a value position cannot match one;
+// name() strips either marker wherever a name is read.
 function statements(text) {
   const result = []; let tokens = [], i = 0;
   while (i < text.length) {
@@ -85,11 +90,11 @@ function statements(text) {
         value += text[i++];
       }
       if (!closed) throw new Error("unterminated SQL quote");
-      tokens.push(c === "'" ? "<literal>" : "\0" + value.toLowerCase()); continue;
+      tokens.push((c === "'" ? "\x01" : "\0") + asciiLower(value)); continue;
     }
     if (c === ";") { if (tokens.length) result.push(tokens); tokens = []; i++; continue; }
     const word = text.slice(i).match(/^[\w$]+/);
-    if (word) { tokens.push(word[0].toLowerCase()); i += word[0].length; }
+    if (word) { tokens.push(asciiLower(word[0])); i += word[0].length; }
     else { tokens.push(c); i++; }
   }
   if (tokens.length) result.push(tokens);
@@ -104,7 +109,9 @@ const raisesOnly = (t) => {
   return i < t.length && (i + 1 === t.length || t[i + 1] === "where");
 };
 const productionEnv = (cfg) => cfg.env?.production ? { ...cfg, ...cfg.env.production, name: cfg.env.production.name ?? `${cfg.name}-production` } : cfg;
-const name = (token) => token?.replace(/^\0/, "");
+const name = (token) => token?.replace(/^[\0\x01]/, "");
+// The object an unclassified statement names is its second token; a string literal there is not an object name.
+const objectOf = (t) => t[1] === undefined ? "<statement>" : t[1].startsWith("\x01") ? "<literal>" : name(t[1]);
 const phrase = (t, a, b) => t.some((v, i) => v === a && t[i + 1] === b);
 function tableAt(t, i) {
   if (t.slice(i, i + 3).join(" ") === "if not exists") i += 3;
@@ -200,7 +207,7 @@ function sqlHazards(sql, freshTables, freshColumns, existingTables = new Set(), 
           if (depth === 0 && v === ",") { assigning = true; target = []; continue; }
           if (depth === 0 && v === "=" && assigning) {
             // Tuple assignment and unknown target syntax need a contract too.
-            if (target.length === 1 && /^[\w$\0]+$/.test(target[0])) cols.push(name(target[0]));
+            if (target.length === 1 && /^[\w$\0\x01]+$/.test(target[0])) cols.push(name(target[0]));
             else understood = false;
             assigning = false;
           } else if (assigning) target.push(v);
@@ -214,8 +221,8 @@ function sqlHazards(sql, freshTables, freshColumns, existingTables = new Set(), 
       hazards.push([tableAt(t, 2)[0], `DROP ${t[1].toUpperCase()}`]);
     } else if (isTrigger(t)) {
       const table = tableAt(t, t.indexOf("on") + 1)[0];
-      // Only a table this folder creates is new to the previous release; a quoted string is a literal, never a table name.
-      const created = table !== "<literal>" && folderTables.has(table);
+      // Only a table this folder creates is new to the previous release; the name is normalised like every other.
+      const created = folderTables.has(table);
       if (!created) hazards.push([table, "CREATE TRIGGER changes persistent behavior"]);
       // Split every SQL separator, including those inside triggers, so later commands cannot be swallowed by identifiers named BEGIN/END.
       // The body is every command up to its END statement; each is classified here, and a RAISE-only command only on a created table.
@@ -242,7 +249,7 @@ function sqlHazards(sql, freshTables, freshColumns, existingTables = new Set(), 
     } else if (["begin", "commit", "end", "rollback", "savepoint", "release"].includes(t[0])) {
       continue;
     } else {
-      hazards.push([name(t[1]) ?? "<statement>", "SQL is not positively classified as expand-only"]);
+      hazards.push([objectOf(t), "SQL is not positively classified as expand-only"]);
     }
   }
   return hazards;

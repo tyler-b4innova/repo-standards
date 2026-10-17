@@ -342,6 +342,55 @@ echo '{"db/0002.sql":["users","raise"]}' > "$R/rollback-contracts.json"
 verdict 0 existing-table-contract 'NOTE: contract'
 rm "$R/rollback-contracts.json"
 if [ -z "$why" ]; then ok rollback-trigger-existing-table; else fail rollback-trigger-existing-table "$why"; fi
+# Table names compare as SQLite identifiers: one layer of "…", `…`, […] or '…' is stripped, doubled quotes unescape, and case folds.
+# A DELETE or UPDATE target is fresh only when that name was created earlier, in the same file or an earlier new file.
+repo quoted-identifiers
+why=""
+printf '%s\n' "CREATE TABLE 'a' (x TEXT); DELETE FROM 'users';" > "$R/db/0002.sql"
+verdict 1 single-quoted-delete 'DELETE data rewrite users'
+for target in '"users"' '`users`' '[users]' '"USERS"' 'Users'; do
+  printf '%s\n' "CREATE TABLE 'a' (x TEXT);" "DELETE FROM $target;" > "$R/db/0002.sql"
+  verdict 1 "delete-$target" 'DELETE data rewrite users'
+done
+for target in "'users'" '"users"' '`users`' '[users]' '"USERS"'; do
+  printf '%s\n' "CREATE TABLE 'a' (x TEXT);" "UPDATE $target SET old = NULL;" > "$R/db/0002.sql"
+  verdict 1 "update-$target" 'UPDATE data rewrite of an existing column users'
+done
+# SQLite folds ASCII letters only: 'Ä' is another name from 'ä', so a DELETE on an existing 'ä' is not fresh whatever the PR creates beside it.
+repo quoted-non-ascii-existing
+printf '%s\n' 'CREATE TABLE "ä" (id INTEGER);' > "$R/db/0001.sql"
+git -C "$R" add -A; git -C "$R" commit -qm base-table; BASE=$(git -C "$R" rev-parse HEAD)
+printf '%s\n' "CREATE TABLE 'Ä' (id INTEGER); DELETE FROM 'ä';" > "$R/db/0002.sql"
+verdict 1 delete-existing-other-case 'DELETE data rewrite ä'
+if [ -z "$why" ]; then ok rollback-quoted-identifiers; else fail rollback-quoted-identifiers "$why"; fi
+repo quoted-fresh-table
+why=""
+# Every quoting style for the CREATE, against every style and case for the DELETE and UPDATE that follow it in the same file.
+for create in "'ledger'" '"ledger"' '`ledger`' '[ledger]' 'ledger'; do
+  { printf '%s\n' "CREATE TABLE $create (x TEXT);"
+    for target in "'LEDGER'" '"Ledger"' '`LEDGER`' '[Ledger]' 'ledger'; do printf '%s\n' "DELETE FROM $target;" "UPDATE $target SET x = 'y';"; done
+  } > "$R/db/0002.sql"
+  verdict 0 "fresh-created-as-$create" 'rollback-safe ok'
+done
+printf '%s\n' "CREATE TABLE 'ledger' (x TEXT); UPDATE \"LEDGER\" SET x = 'y';" > "$R/db/0002.sql"
+verdict 0 fresh-update 'rollback-safe ok'
+printf '%s\n' "CREATE TABLE 'ledger' (x TEXT);" > "$R/db/0002.sql"
+printf '%s\n' 'DELETE FROM "LEDGER";' > "$R/db/0003.sql"
+verdict 0 fresh-earlier-file 'rollback-safe ok'
+rm "$R/db/0003.sql"
+# Ordering only: SQLite refuses this DELETE at run time, and the classifier must still not treat its target as fresh.
+printf '%s\n' "DELETE FROM 'ledger'; CREATE TABLE \"ledger\" (x TEXT);" > "$R/db/0002.sql"
+verdict 1 delete-before-create 'DELETE data rewrite ledger'
+# A non-ASCII letter in another case is a new name beside an existing one, so the create and its UPDATE are fresh.
+repo quoted-non-ascii-new
+printf '%s\n' 'CREATE TABLE "ä" (id INTEGER);' > "$R/db/0001.sql"
+git -C "$R" add -A; git -C "$R" commit -qm base-table; BASE=$(git -C "$R" rev-parse HEAD)
+printf '%s\n' "CREATE TABLE 'Ä' (id INTEGER); UPDATE 'Ä' SET id = 1;" > "$R/db/0002.sql"
+verdict 0 non-ascii-new-table-beside-existing 'rollback-safe ok'
+# ASCII case still folds: a table this change creates may be named in any case.
+printf '%s\n' "CREATE TABLE Ledger (x TEXT); DELETE FROM ledger; UPDATE LEDGER SET x = 'y';" > "$R/db/0002.sql"
+verdict 0 ascii-mixed-case-fresh 'rollback-safe ok'
+if [ -z "$why" ]; then ok rollback-quoted-fresh-table; else fail rollback-quoted-fresh-table "$why"; fi
 repo generated
 cp "$ENGINE/test/fixtures/release-astro/"{build.mjs,package.json,wrangler.jsonc} "$R/"
 mv "$R/db" "$R/migrations"
