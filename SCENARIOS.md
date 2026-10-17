@@ -21,6 +21,9 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 - **`gate-lock-off-in-ci`**: under `GITHUB_ACTIONS=true` no lock is taken or waited for (runners are isolated).
 - **`gate-lock-opt-out`**: `GATE_LOCK=off` skips the lock and says so.
 - **`gate-lock-releases-only-its-own`**: a gate releases the lock only while it still names that gate; a lock taken over meanwhile is left alone.
+- **`gate-lock-shared-dir`**: a missing lock directory is created mode 0777 (writable by every user, not sticky, so any user can take over a stale lock) whatever the creator's umask, and appears only once opened up.
+- **`gate-lock-dir-symlink`**: a lock directory path that is a symlink is refused with a warning (the gate runs without the lock) and its target is never chmodded or written.
+- **`gate-lock-cross-user-takeover`**: a lock left by another user's gate that died holding it, in a directory that user created, is taken over by this user with a message naming the other user.
 - **`gate-local-remote-refused`**: only direct Wrangler dev invocations are accepted, --local is enforced, conflicting/remote flags and wrappers fail, and a selected JSONC config with remote: true bindings fails before startup. Review incident: custom dev commands could reach remote bindings.
 - **`gate-local-hup-cleanup`**: SIGHUP during the real Worker e2e stops the detached process group, exits 129 and frees the TCP port. Review incident: SIGHUP orphaned the Worker.
 - **`gate-local-no-worker`**: in a repository with no root Wrangler config and no `release_workers`, `gate.mjs local` needs no `local` setting: the `worker` step reports `SKIP (no Worker)`, the other steps run, and the pass record that `pr.sh ready` reads is written when they pass; a repository with a Wrangler config still starts its Worker, and `"local": false` still opts out. Stated rule: agents in Worker-less repositories can mark pull requests ready without hand-adding settings.

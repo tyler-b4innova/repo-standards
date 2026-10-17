@@ -95,4 +95,34 @@ console.log(existsSync(`${process.argv[3]}/gate.lock`) ? "kept" : "removed");
 JS
 out=$(node "$T/own.mjs" "$PWD/template/scripts/agent/gate-lock.mjs" "$T/own" 2>&1)
 if [ "$out" = kept ]; then ok gate-lock-releases-only-its-own; else fail gate-lock-releases-only-its-own "$out"; fi
+
+# The lock directory is shared by every user: made 0777 (not sticky) whatever the creator's umask, never through a symlink.
+MOD=$PWD/template/scripts/agent/gate-lock.mjs
+cat > "$T/take.mjs" <<'JS'
+const { machineLock } = await import(process.argv[2]);
+const logs = [];
+const release = await machineLock({ env: { GATE_LOCK_DIR: process.argv[3] }, repo: "take@main", log: (l) => logs.push(l) });
+console.log(logs.join("\n"));
+if (process.argv[4] === "die") process.kill(process.pid, "SIGKILL"); // dies holding the lock
+release();
+JS
+mode() { node -p '(require("fs").statSync(process.argv[1]).mode & 0o7777).toString(8)' "$1"; }
+mkdir "$T/shared"
+out=$( umask 077; node "$T/take.mjs" "$MOD" "$T/shared/lock" 2>&1 )
+if [ "$(mode "$T/shared/lock")" = 777 ] && printf '%s' "$out" | grep -q 'machine gate lock taken' && [ -z "$(ls "$T/shared" | grep -v '^lock$')" ]; then ok gate-lock-shared-dir
+else fail gate-lock-shared-dir "mode=$(mode "$T/shared/lock") left=$(ls "$T/shared") :: $out"; fi
+mkdir "$T/private" && chmod 700 "$T/private" && ln -s "$T/private" "$T/linked"
+out=$(node "$T/take.mjs" "$MOD" "$T/linked" 2>&1)
+if printf '%s' "$out" | grep -q 'machine gate lock unavailable.*not a real directory' && [ "$(mode "$T/private")" = 700 ] && [ ! -e "$T/private/gate.lock" ]; then ok gate-lock-dir-symlink
+else fail gate-lock-dir-symlink "target mode=$(mode "$T/private") files=$(ls "$T/private") :: $out"; fi
+# Another user makes the directory and dies holding the lock; this user takes it over. Needs a second user (CI has one).
+if [ "$(id -u)" != 0 ] && sudo -n true 2>/dev/null && id nobody >/dev/null 2>&1; then
+  X=$(mktemp -d /tmp/gate-lock-xu.XXXXXX); chmod 1777 "$X"; cp "$MOD" "$T/take.mjs" "$X/"; chmod 644 "$X"/*.mjs
+  sudo -n -u nobody env -i PATH="$PATH" "$(command -v node)" "$X/take.mjs" "$X/gate-lock.mjs" "$X/lock" die > "$T/xu-other.log" 2>&1
+  owner=$(node -p 'require("os").userInfo().uid === require("fs").statSync(process.argv[1]).uid ? "me" : "other"' "$X/lock/gate.lock" 2>&1)
+  out=$(node "$T/take.mjs" "$MOD" "$X/lock" 2>&1)
+  if [ "$owner" = other ] && printf '%s' "$out" | grep -q 'took over a stale machine gate lock from pid [0-9]* (nobody on .*is no longer running' && printf '%s' "$out" | grep -q 'machine gate lock taken'; then ok gate-lock-cross-user-takeover
+  else fail gate-lock-cross-user-takeover "owner=$owner other: $(cat "$T/xu-other.log") :: $out"; fi
+  sudo -n rm -rf "$X"
+else echo "skip gate-lock-cross-user-takeover (platform: needs a second user through passwordless sudo)"; fi
 done_cases

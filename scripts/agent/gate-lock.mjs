@@ -3,11 +3,12 @@
 // The lock is a file created atomically (`wx`) in a shared directory; it names its holder. A holder whose PID is gone
 // (checked on this host and PID namespace), or whose heartbeat stopped, is stale and is taken over with a message.
 // Off under GITHUB_ACTIONS (runners are isolated) and with GATE_LOCK=off.
-//   GATE_LOCK_DIR     shared directory (default /tmp/std-gate-lock; the system temp directory on Windows)
+//   GATE_LOCK_DIR     shared directory (default /tmp/std-gate-lock; the system temp directory on Windows): a real
+//                     directory (not a symlink) every user of the gate can write; created mode 0777 when missing
 //   GATE_LOCK_WAIT_S  give up after this many seconds with "lock busy" (default: wait until the lock is free)
-import { closeSync, mkdirSync, chmodSync, openSync, readFileSync, readlinkSync, renameSync, statSync, unlinkSync, utimesSync, writeSync } from "node:fs";
+import { accessSync, closeSync, constants, fchmodSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readlinkSync, renameSync, rmdirSync, statSync, unlinkSync, utimesSync, writeSync } from "node:fs";
 import { hostname, tmpdir, userInfo } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const BEAT_MS = 10_000; // the holder touches the lock this often
 const STALE_MS = 120_000; // a lock not touched for this long is stale, whatever its PID
@@ -19,6 +20,30 @@ const user = () => { try { return userInfo().username; } catch { return String(p
 const read = (file) => { try { return { text: readFileSync(file, "utf8"), mtime: statSync(file).mtimeMs }; } catch (e) { if (e.code === "ENOENT") return null; throw e; } };
 const parse = (text) => { try { const h = JSON.parse(text); return h && Number.isInteger(h.pid) ? h : null; } catch { return null; } };
 const describe = (h) => (h ? `pid ${h.pid} (${h.user} on ${h.host}, ${h.repo}, since ${h.started})` : "an unreadable holder");
+
+// The lock directory is shared by every user of this machine, so it is world-writable and not sticky (0777): any user
+// can create the lock and take over a stale one. A missing directory is made under a private name, opened up through
+// its own descriptor (never a path that could be swapped for a symlink), then renamed into place, so it never appears
+// with the creator's umask. An existing path is used only if it is a real directory this user can write; nothing
+// existing is ever chmodded.
+const lstat = (p) => { try { return lstatSync(p); } catch (e) { if (e.code === "ENOENT") return null; throw e; } };
+function sharedDir(dir) {
+  if (!lstat(dir)) {
+    mkdirSync(dirname(dir), { recursive: true });
+    const fresh = mkdtempSync(`${dir}.new-`);
+    try {
+      if (process.platform !== "win32") {
+        const fd = openSync(fresh, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+        try { fchmodSync(fd, 0o777); } finally { closeSync(fd); }
+      }
+      renameSync(fresh, dir); // fails if another gate made it first (or it is not empty): use theirs
+    } catch (e) { if (!["EEXIST", "ENOTEMPTY", "ENOTDIR", "EISDIR", "EPERM", "EACCES"].includes(e.code)) throw e; }
+    finally { try { rmdirSync(fresh); } catch {} }
+  }
+  const st = lstat(dir);
+  if (!st || st.isSymbolicLink() || !st.isDirectory()) throw new Error("not a real directory (a symlink, a file or missing)");
+  accessSync(dir, constants.W_OK | constants.X_OK);
+}
 
 // Why the holder is stale, or null while it may still be running. A running PID only proves nothing yet: after a
 // holder is killed outright (SIGKILL), its PID may be reused, so a lock untouched for STALE_MS is stale regardless.
@@ -40,14 +65,11 @@ export async function machineLock({ env = process.env, repo, log = console.log, 
   const file = join(dir, "gate.lock");
   const wait = env.GATE_LOCK_WAIT_S === undefined ? Infinity : Number(env.GATE_LOCK_WAIT_S);
   if (!(wait >= 0)) throw new Error("GATE_LOCK_WAIT_S must be a number of seconds, 0 or more");
-  try {
-    mkdirSync(dir, { recursive: true });
-    // Not sticky and writable by everyone, so another user can take over a stale lock. Only the creator can chmod.
-    try { chmodSync(dir, 0o777); } catch {}
-  } catch (e) {
-    log(`::warning::local: machine gate lock unavailable (${dir}: ${e.code ?? e.message}); this gate runs without it. Set GATE_LOCK_DIR to a shared, writable directory.`);
+  const unavailable = (where, e) => {
+    log(`::warning::local: machine gate lock unavailable (${where}: ${e.message}); this gate runs without it. Set GATE_LOCK_DIR to a real directory every user of the gate can write (mode 0777).`);
     return () => {};
-  }
+  };
+  try { sharedDir(dir); } catch (e) { return unavailable(dir, e); }
   const me = { pid: process.pid, user: user(), host: hostname(), ns: pidNamespace(), repo, started: new Date().toISOString() };
   const mine = (h) => h && h.pid === me.pid && h.started === me.started && h.host === me.host;
   const start = Date.now();
@@ -55,10 +77,7 @@ export async function machineLock({ env = process.env, repo, log = console.log, 
   for (;;) {
     let fd;
     try { fd = openSync(file, "wx", 0o666); } catch (e) {
-      if (e.code !== "EEXIST") {
-        log(`::warning::local: machine gate lock unavailable (${file}: ${e.code ?? e.message}); this gate runs without it. Set GATE_LOCK_DIR to a shared, writable directory.`);
-        return () => {};
-      }
+      if (e.code !== "EEXIST") return unavailable(file, e);
     }
     if (fd !== undefined) {
       try { writeSync(fd, `${JSON.stringify(me)}\n`); } finally { closeSync(fd); }
