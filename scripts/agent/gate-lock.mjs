@@ -1,8 +1,8 @@
 // One heavy local gate per machine. `gate.mjs local` takes this lock before its first step and holds it to the end,
 // so concurrent sessions (any repository, worktree or user) queue instead of overloading the machine together.
-// The lock is a file created atomically (`wx`) in a shared directory; it names its holder. A holder whose PID is gone,
-// or, when the PID cannot be checked from here (another host or PID namespace), whose heartbeat stopped, is stale and
-// is taken over with a message. Off under GITHUB_ACTIONS (runners are isolated) and with GATE_LOCK=off.
+// The lock is a file created atomically (`wx`) in a shared directory; it names its holder. A holder whose PID is gone
+// (checked on this host and PID namespace), or whose heartbeat stopped, is stale and is taken over with a message.
+// Off under GITHUB_ACTIONS (runners are isolated) and with GATE_LOCK=off.
 //   GATE_LOCK_DIR     shared directory (default /tmp/std-gate-lock; the system temp directory on Windows)
 //   GATE_LOCK_WAIT_S  give up after this many seconds with "lock busy" (default: wait until the lock is free)
 import { closeSync, mkdirSync, chmodSync, openSync, readFileSync, readlinkSync, renameSync, statSync, unlinkSync, utimesSync, writeSync } from "node:fs";
@@ -10,7 +10,7 @@ import { hostname, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 
 const BEAT_MS = 10_000; // the holder touches the lock this often
-const STALE_MS = 120_000; // a lock not touched for this long, whose PID cannot be checked here, is stale
+const STALE_MS = 120_000; // a lock not touched for this long is stale, whatever its PID
 const POLL_MS = 2_000;
 const REPORT_MS = 60_000;
 
@@ -20,13 +20,15 @@ const read = (file) => { try { return { text: readFileSync(file, "utf8"), mtime:
 const parse = (text) => { try { const h = JSON.parse(text); return h && Number.isInteger(h.pid) ? h : null; } catch { return null; } };
 const describe = (h) => (h ? `pid ${h.pid} (${h.user} on ${h.host}, ${h.repo}, since ${h.started})` : "an unreadable holder");
 
-// Why the holder is stale, or null while it may still be running.
+// Why the holder is stale, or null while it may still be running. A running PID only proves nothing yet: after a
+// holder is killed outright (SIGKILL), its PID may be reused, so a lock untouched for STALE_MS is stale regardless.
 function staleness(h, mtime, now) {
-  if (!h) return now - mtime > STALE_MS ? "its lock file is unreadable and untouched" : null;
+  const quiet = now - mtime > STALE_MS ? `its heartbeat stopped ${Math.round((now - mtime) / 1000)}s ago` : null;
+  if (!h) return quiet && "its lock file is unreadable and untouched";
   if (h.host === hostname() && h.ns === pidNamespace()) {
-    try { process.kill(h.pid, 0); return null; } catch (e) { return e.code === "EPERM" ? null : `pid ${h.pid} is no longer running`; }
+    try { process.kill(h.pid, 0); } catch (e) { if (e.code !== "EPERM") return `pid ${h.pid} is no longer running`; }
   }
-  return now - mtime > STALE_MS ? `its heartbeat stopped ${Math.round((now - mtime) / 1000)}s ago` : null;
+  return quiet;
 }
 
 // Resolves to a release function (a no-op when the lock is off). `interrupted()` is polled while waiting, so a signal

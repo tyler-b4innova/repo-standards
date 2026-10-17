@@ -55,6 +55,15 @@ start beat
 if waitfor 'took over a stale machine gate lock from pid 1 (someone on elsewhere' beat && seen 'heartbeat stopped' beat; then ok gate-lock-stale-takeover
 else fail gate-lock-stale-takeover "heartbeat: $(cat "$T/beat.log")"; fi
 stopgate
+# A running PID on this host whose lock stopped beating (a PID reused after its holder was killed outright): stale.
+sleep 300 & REUSED=$!; PIDS+=("$REUSED")
+plant "$REUSED"
+touch -t 202601010000 "$LOCK"
+start reused
+if waitfor "took over a stale machine gate lock from pid $REUSED" reused && seen 'heartbeat stopped' reused && waitfor 'setup --check starting' reused 50; then ok gate-lock-stale-reused-pid
+else fail gate-lock-stale-reused-pid "$(cat "$T/reused.log")"; fi
+stopgate
+kill "$REUSED" 2>/dev/null; wait "$REUSED" 2>/dev/null
 plant 1 elsewhere ""
 start fresh GATE_LOCK_WAIT_S=1
 wait "$GATE"; code=$?
