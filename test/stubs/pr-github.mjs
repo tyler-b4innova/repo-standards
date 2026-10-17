@@ -76,6 +76,8 @@ createServer((req, res) => {
       const date = git("show", "-s", "--format=%cI", m[1]);
       return date ? send(200, { sha: m[1], commit: { committer: { date: new Date(date).toISOString().replace(/\.000Z$/, "Z") } } }) : send(404, {});
     }
+    // an issue's labels: S.issues[n] (default none); an issue not listed exists with no labels
+    if ((m = p.match(/^\/repos\/acme\/demo\/issues\/(\d+)$/)) && req.method === "GET") return send(200, { number: +m[1], labels: S.issues?.[m[1]] ?? [] });
     if ((m = p.match(/^\/repos\/acme\/demo\/issues\/(\d+)\/comments$/))) {
       const list = (S.issueComments[m[1]] ??= []);
       if (req.method === "GET") return send(200, list);
