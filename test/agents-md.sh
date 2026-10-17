@@ -20,6 +20,7 @@ has "Visuals (screenshots, video) are for the people reviewing the PR, in GitHub
 has "a video when it moves, before/after for a static change (\`std-evidence\`)" "$a" || why="$why; visuals rule incomplete"
 ! has "Visual change (UI, .docx, .pptx)" "$a" || why="$why; the old visual line remains"
 has "Shared machines: stop only the processes and containers you started, by PID, process group or container ID." "$a" || why="$why; shared-machine process rule missing"
+has "Never \`pkill -f\`, \`killall\` or \`docker kill\` by name or image: other sessions run on the same host." "$a" || why="$why; shared-machine prohibition missing"
 has "No per-repo exceptions, and no new rules, gates or numbers to fix a symptom" "$a" && has "his decisions are his own words in the issue, commit or PR they concern." "$a" || why="$why; no-exceptions rule missing"
 has "Cloudflare deploys: Workers Builds in the account that owns the Worker runs \`scripts/agent/release.mjs\`. Nothing is deployed by hand, and no Cloudflare tokens in GitHub." "$a" || why="$why; deploys rule missing"
 if [ -z "$why" ]; then ok block-visuals-and-deploys; else fail block-visuals-and-deploys "$why"; fi
