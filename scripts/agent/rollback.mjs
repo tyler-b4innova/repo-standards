@@ -96,6 +96,13 @@ function statements(text) {
   return result;
 }
 const isTrigger = (t) => t[0] === "create" && (t[1] === "trigger" || (["temp", "temporary"].includes(t[1]) && t[2] === "trigger"));
+// A trigger body command that only RAISEs, optionally WHERE-conditioned: it reads and writes nothing but its own abort.
+const raisesOnly = (t) => {
+  if (t[0] !== "select" || t[1] !== "raise" || t[2] !== "(" || !["abort", "fail", "ignore", "rollback"].includes(t[3])) return false;
+  let depth = 0, i = 2;
+  for (; i < t.length; i++) { if (t[i] === "(") depth++; else if (t[i] === ")" && --depth === 0) break; }
+  return i < t.length && (i + 1 === t.length || t[i + 1] === "where");
+};
 const productionEnv = (cfg) => cfg.env?.production ? { ...cfg, ...cfg.env.production, name: cfg.env.production.name ?? `${cfg.name}-production` } : cfg;
 const name = (token) => token?.replace(/^\0/, "");
 const phrase = (t, a, b) => t.some((v, i) => v === a && t[i + 1] === b);
@@ -112,9 +119,11 @@ function recordReplacingTables(sql, replacingTables) {
       replacingTables.add(tableAt(t, tableAtIndex + 1)[0]);
   }
 }
-function sqlHazards(sql, freshTables, freshColumns, existingTables = new Set(), existingColumns = new Set(), replacingTables = new Set(), history = false) {
-  const hazards = [];
-  for (let t of typeof sql === "string" ? statements(sql) : sql) {
+// folderTables: the tables this migrations folder's new files create (earlier files, and earlier in this one). Only these may be a trigger's table.
+function sqlHazards(sql, freshTables, freshColumns, existingTables = new Set(), existingColumns = new Set(), replacingTables = new Set(), history = false, folderTables = new Set()) {
+  const hazards = [], commands = typeof sql === "string" ? statements(sql) : sql;
+  for (let k = 0; k < commands.length; k++) {
+    let t = commands[k];
     // WITH statements execute the command after their parenthesized CTE bodies.
     if (t[0] === "with") {
       let depth = 0;
@@ -126,8 +135,10 @@ function sqlHazards(sql, freshTables, freshColumns, existingTables = new Set(), 
     }
     if (t[0] === "create" && t[1] === "table") {
       const [table, start] = tableAt(t, t.indexOf("table") + 1);
+      if (existingTables.has(table)) continue;
+      folderTables.add(table);
       // A repeated CREATE (including IF NOT EXISTS) cannot establish column freshness.
-      if (existingTables.has(table) || freshTables.has(table)) continue;
+      if (freshTables.has(table)) continue;
       freshTables.add(table);
       // Column starts at the first parenthesis or a top-level comma; table constraints are excluded.
       let depth = 0, columnStart = false;
@@ -203,13 +214,19 @@ function sqlHazards(sql, freshTables, freshColumns, existingTables = new Set(), 
       hazards.push([tableAt(t, 2)[0], `DROP ${t[1].toUpperCase()}`]);
     } else if (isTrigger(t)) {
       const table = tableAt(t, t.indexOf("on") + 1)[0];
-      if (!freshTables.has(table)) hazards.push([table, "CREATE TRIGGER changes persistent behavior"]);
-      // Split every SQL separator, including those inside triggers, so later commands
-      // cannot be swallowed by identifiers named BEGIN/END. Inspect the first body command here;
-      // subsequent body commands are ordinary statements in the outer loop.
+      // Only a table this folder creates is new to the previous release; a quoted string is a literal, never a table name.
+      const created = table !== "<literal>" && folderTables.has(table);
+      if (!created) hazards.push([table, "CREATE TRIGGER changes persistent behavior"]);
+      // Split every SQL separator, including those inside triggers, so later commands cannot be swallowed by identifiers named BEGIN/END.
+      // The body is every command up to its END statement; each is classified here, and a RAISE-only command only on a created table.
       const bodyStart = t.findIndex((v, i) => i > t.indexOf("on") && v === "begin" && ["select", "insert", "update", "delete", "replace", "with"].includes(t[i + 1]));
-      if (bodyStart < 0) hazards.push([table, "cannot positively classify trigger body"]);
-      else hazards.push(...sqlHazards([t.slice(bodyStart + 1)], freshTables, freshColumns, existingTables, existingColumns, replacingTables, history));
+      const end = commands.findIndex((c, i) => i > k && c.length === 1 && c[0] === "end");
+      if (bodyStart < 0 || end < 0) hazards.push([table, "cannot positively classify trigger body"]);
+      else {
+        for (const command of [t.slice(bodyStart + 1), ...commands.slice(k + 1, end)])
+          if (!(created && raisesOnly(command))) hazards.push(...sqlHazards([command], freshTables, freshColumns, existingTables, existingColumns, replacingTables, history, folderTables));
+        k = end;
+      }
     } else if (t[0] === "create" && t[1] === "unique" && t[2] === "index") {
       const table = tableAt(t, t.indexOf("on") + 1)[0];
       if (!freshTables.has(table)) hazards.push([table, "CREATE UNIQUE INDEX narrows valid writes"]);
@@ -459,6 +476,8 @@ export function rollbackFindings({ built = false } = {}) {
     // New tables/columns are expand targets only when absent from all base migration history.
     const oldTables = new Set(), oldColumns = new Set(), replacingTables = new Set();
     const oldMigrations = migrations(baseDirectory, dirs), newMigrations = migrations(".", dirs);
+    // A new file's migrations folder is its own directory (a subfolder is another folder): its tables are the only trigger targets it may use.
+    const createdByFolder = new Map();
     // Policies belong to names across all history, regardless of recreation or statement order.
     for (const f of oldMigrations) recordReplacingTables(read(join(baseDirectory, f)), replacingTables);
     for (const f of newMigrations) recordReplacingTables(read(f), replacingTables);
@@ -471,7 +490,9 @@ export function rollbackFindings({ built = false } = {}) {
         if (read(f) !== read(join(baseDirectory, f))) errors.push(`${f}: historical D1 migration changed; add a new expand-only migration`);
         continue;
       }
-      const sql = read(f), hazards = sqlHazards(sql, freshTables, freshColumns, oldTables, oldColumns, replacingTables);
+      const folder = posix.dirname(f);
+      if (!createdByFolder.has(folder)) createdByFolder.set(folder, new Set());
+      const sql = read(f), hazards = sqlHazards(sql, freshTables, freshColumns, oldTables, oldColumns, replacingTables, false, createdByFolder.get(folder));
       for (const t of oldTables) freshTables.delete(t);
       for (const c of oldColumns) freshColumns.delete(c);
       const header = sql.match(/^(?:\s|--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*/)?.[0] ?? "";
