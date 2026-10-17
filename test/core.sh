@@ -689,6 +689,15 @@ blk=$(node bin/repo-standards.mjs block --overlay "$OV" --profile internal)
 if grep -q 'Use `std-file-pr` and `std-babysit`' <<<"$blk" && ! grep -qE 'One review per PR|fixes are not re-reviewed|## Review guidelines|Answer every bot finding' <<<"$blk" && [ "$(tail -1 <<<"$blk")" = "<!-- std:end -->" ]
 then ok agents-workflow-pointer; else fail agents-workflow-pointer "$blk"; fi
 
+# std-babysit-review-rounds: the applied babysit skill asks for every finding in one review, and a follow-up review raises
+# only what the new commits changed or the last fix missed; a fail-open, security or data-loss blocker an earlier round missed is still raised
+R=$(mkrepo); s=$(cat "$R/.agents/skills/std-babysit/SKILL.md"); why=""
+for t in "Report every finding you can see in that head in one review, not only the first." "raises only what the new commits changed or what the last fix missed, and says which. A fail-open, security or data-loss blocker that an earlier round missed is still raised, marked missed earlier."; do
+  grep -qF -- "$t" <<<"$s" || why="$why; missing: $t"
+done
+grep -qF -- "may investigate a newly discovered concrete blocker" <<<"$s" && why="$why; old follow-up clause kept"
+if [ -z "$why" ]; then ok std-babysit-review-rounds; else fail std-babysit-review-rounds "$why"; fi
+
 # ---- agent config: the pack pins no model; never read secrets, never force-push
 # models-unpinned: repositories never pin a model or effort. A fresh repo gets none; re-applying removes every pin
 # (any value, both files, profiles and a table left empty) and keeps other keys; --check fails on any pin left.
