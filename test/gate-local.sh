@@ -175,6 +175,19 @@ kill -HUP "$PID" 2>/dev/null || true
 wait "$PID"; interrupted=$?; PID=""
 if [ "$ready" -eq 1 ] && [ "$busy" -ne 0 ] && has 'address already in use' occupied && [ "$interrupted" -eq 129 ] && has 'worker stopped' interrupted && closed "$LOCAL_FIXTURE_PORT"; then ok gate-local-hup-cleanup
 else fail gate-local-hup-cleanup "ready=$ready occupied=$busy interrupt=$interrupted or Worker leaked"; cat "$T/interrupted.log"; fi
+# The overall deadline also stops a real Worker while the same e2e suite is alive. Apply a supported one-minute
+# CI timeout (90 seconds locally), rather than editing a managed workflow and failing setup's drift check.
+node -e 'const fs=require("fs"),o=JSON.parse(fs.readFileSync("examples/overlay.json"));o.gate={timeout_minutes:1};fs.writeFileSync(process.argv[1],JSON.stringify(o))' "$T/wall-overlay.json"
+jset 'o.e2e={command:"node e2e.mjs && node -e \"setInterval(()=>{},1000)\""};o.local.ready="/health"'
+node bin/repo-standards.mjs apply --target "$R" --overlay "$T/wall-overlay.json" --version 0.7.11 >/dev/null
+rm -f "$R/.gate-order"
+(cd "$R" && exec env HOME="$T/home" USERPROFILE="$T/home" GATE_LOCAL_WAIT_S=20 node scripts/agent/gate.mjs local) > "$T/wall-clock.log" 2>&1 & PID=$!
+for i in $(seq 1 1200); do kill -0 "$PID" 2>/dev/null || break; sleep 0.1; done
+kill -TERM "$PID" 2>/dev/null || true # watchdog on an implementation missing its own limit
+wait "$PID"; wall=$?; PID=""
+if [ "$wall" -eq 124 ] && has 'same e2e suite: HTTP entry point + local KV' wall-clock && has 'TIMEOUT (exceeded 1.5 min during e2e)' wall-clock && has 'worker stopped; port freed' wall-clock && closed "$LOCAL_FIXTURE_PORT" && [ ! -e "$gp" ]; then ok gate-local-wall-clock
+else fail gate-local-wall-clock "Worker timeout exit=$wall; $(tail -15 "$T/wall-clock.log")"; fi
+jset 'delete o.e2e'
 # local:false skips the server, never the suite. Apply keeps the repo-owned opt-out.
 jset 'o.local=false'
 node bin/repo-standards.mjs apply --target "$R" --overlay examples/overlay.json --version 0.7.11 >/dev/null

@@ -386,7 +386,27 @@ if (cmd === "local") {
   rmSync(passFile, { force: true });
   const dirty = () => git("status", "--porcelain", "--untracked-files=all").trim(); // tracked changes and non-ignored untracked files
   const dirtyBefore = dirty();
-  let base, baseRef, worker, active, address, interrupted = 0;
+  // apply renders the org's gate.timeout_minutes into jobs.gate.timeout-minutes. Like check.mjs's jobs-have-timeouts,
+  // read the generated block YAML by indentation: no overlay or YAML package is needed in a consumer checkout.
+  // The 1.5x margin allows a developer machine to run slower than CI; this bounds a hung lock holder, not test quality.
+  let ciMinutes = 30;
+  try {
+    const lines = rd(".github/workflows/std-gate.yml", "utf8").split("\n");
+    const jobs = lines.findIndex((l) => /^jobs:\s*(?:#.*)?$/.test(l));
+    let gate = false;
+    for (let i = jobs + 1; jobs >= 0 && i < lines.length; i++) {
+      const line = lines[i];
+      if (/^\S/.test(line)) break;
+      if (/^ {2}\S/.test(line) && !/^ {2}#/.test(line)) gate = /^ {2}gate:\s*(?:#.*)?$/.test(line);
+      const m = gate && line.match(/^ {4}timeout-minutes:\s*([0-9]+(?:\.[0-9]+)?)\s*(?:#.*)?$/);
+      if (m && Number(m[1]) > 0 && Number.isFinite(Number(m[1]))) { ciMinutes = Number(m[1]); break; }
+    }
+  } catch (e) { if (e.code !== "ENOENT") throw e; }
+  const minimumMinutes = ciMinutes * 1.5;
+  const limitMinutes = env.GATE_LOCAL_TIMEOUT_MIN === undefined ? minimumMinutes : Number(env.GATE_LOCAL_TIMEOUT_MIN);
+  if (!(Number.isFinite(limitMinutes) && limitMinutes > 0 && limitMinutes >= minimumMinutes))
+    fail(`GATE_LOCAL_TIMEOUT_MIN must be finite minutes at least ${minimumMinutes} (1.5x the applied gate timeout); it cannot shorten or disable the limit`, "unset GATE_LOCAL_TIMEOUT_MIN or extend the limit");
+  let base, baseRef, worker, active, address, timer, currentStep, timedOut = false, interrupted = 0;
   if (args.length && (args.length !== 2 || args[0] !== "--base" || !args[1] || args[1].startsWith("-")))
     fail("local: expected local [--base <ref>]", "supply a comparison branch or commit with --base");
   for (const ref of args.length ? [args[1]] : ["origin/HEAD", "origin/main", "origin/master", "main", "master"]) {
@@ -448,6 +468,7 @@ if (cmd === "local") {
   for (const [signal, handler] of Object.entries(handlers)) process.on(signal, handler);
   const run = async (name, command, argv) => {
     if (interrupted) throw new Error("interrupted");
+    currentStep = name;
     noDotenvCredentials();
     console.log(`local: ${name} starting`);
     results.set(name, "FAIL");
@@ -465,9 +486,21 @@ if (cmd === "local") {
   const execute = async () => {
     // One heavy local gate per machine (gate-lock.mjs): wait for any other to finish before the first step.
     const top = git("rev-parse", "--show-toplevel").trim();
-    try { releaseLock = await machineLock({ env, repo: `${top.split("/").pop()}@${git("branch", "--show-current").trim() || head.slice(0, 7)}`, interrupted: () => Boolean(interrupted) }); }
+    try { releaseLock = await machineLock({ env, repo: `${top.split("/").pop()}@${git("branch", "--show-current").trim() || head.slice(0, 7)}`, worktree: top, interrupted: () => Boolean(interrupted) }); }
     catch (e) { lockBusy = e.message.startsWith("lock busy:"); throw e; }
     if (interrupted) throw new Error("interrupted");
+    // Queue time belongs to GATE_LOCK_WAIT_S. Start the wall-clock bound only once this gate may run.
+    console.log(`local: wall-clock limit ${limitMinutes} min (1.5x applied gate timeout ${ciMinutes} min; GATE_LOCAL_TIMEOUT_MIN may extend it)`);
+    const started = performance.now();
+    const arm = () => {
+      const left = limitMinutes * 60_000 - (performance.now() - started);
+      // Node clamps an overflowing setTimeout to 1 ms: split long extensions instead. Neither timer keeps Node alive.
+      if (left > 0) { timer = setTimeout(arm, Math.min(left, 2 ** 31 - 1)); timer.unref(); return; }
+      timedOut = true; interrupted ||= 124;
+      signalGroup(active, "SIGTERM"); signalGroup(worker, "SIGTERM");
+      abort(new Error(`wall-clock limit exceeded during ${currentStep}`));
+    };
+    arm();
     await run("setup --check", "scripts/agent/setup.sh", ["--check"]);
     const config = localConfig(std.local);
     for (const step of ["instructions", "secrets", "syntax", "install"]) await run(step, process.execPath, ["scripts/agent/gate.mjs", step, ...(step === "instructions" ? ["--local"] : [])]);
@@ -480,6 +513,7 @@ if (cmd === "local") {
     if (config === false) { results.set("worker", "SKIP (local: false)"); console.log("local: worker SKIP (local: false)"); }
     else if (noWorker) { results.set("worker", "SKIP (no Worker)"); console.log("local: worker SKIP (no Worker)"); }
     else {
+      currentStep = "worker";
       results.set("worker", "FAIL");
       const wait = Number(env.GATE_LOCAL_WAIT_S ?? 60);
       if (!(wait > 0 && Number.isFinite(wait))) throw new Error("GATE_LOCAL_WAIT_S must be finite seconds above 0");
@@ -510,6 +544,7 @@ if (cmd === "local") {
   };
   try { await Promise.race([execute(), cancelled]); } catch (e) { console.error(`local: ${e.message}`); process.exitCode = interrupted || 1; }
   finally {
+    clearTimeout(timer);
     await stop(active); await stop(worker);
     if (worker) {
       const deadline = Date.now() + 2000;
@@ -520,11 +555,13 @@ if (cmd === "local") {
     rmSync(dir, { recursive: true, force: true });
     releaseLock();
     for (const [signal, handler] of Object.entries(handlers)) process.off(signal, handler);
-    if (interrupted) process.exitCode = interrupted;
+    if (timedOut) process.exitCode = 124;
+    else if (interrupted) process.exitCode = interrupted;
     // GATE_LOCK_WAIT_S ran out before any step: no result at all, so a distinct exit (75, EX_TEMPFAIL) and a summary
     // that says to run it again rather than one that reads as a failed gate.
     else if (lockBusy) process.exitCode = 75;
-    if (lockBusy && !interrupted) console.log(`local gate ${head}: not run (machine gate lock busy). This is not a gate result: wait, then run the local gate again.`);
+    if (timedOut) console.log(`local gate ${head}: TIMEOUT (exceeded ${limitMinutes} min during ${currentStep})`);
+    else if (lockBusy && !interrupted) console.log(`local gate ${head}: not run (machine gate lock busy). This is not a gate result: wait, then run the local gate again.`);
     else console.log(`local gate ${head}: ${steps.map((s) => `${s}=${results.get(s)}`).join("; ")}`);
     if (!process.exitCode && !dirtyBefore && !dirty() && git("rev-parse", "HEAD").trim() === head) writeFileSync(passFile, `${head}\n`);
   }
@@ -867,8 +904,8 @@ if (cmd === "local") {
   const run = e2eCmd ? ["bash", ["-c", e2eCmd]] : script ? [pm, ["run", script, ...(pwScript && projects.length ? [...(pm === "npm" ? ["--"] : []), ...projects] : [])]] : dir && pw ? [pwBin[0], [...pwBin[1], "test", ...(everything ? (rootPw ? [] : ["-c", cfgFile]) : [dir]), ...projects]]
     : rootPw ? [pwBin[0], [...pwBin[1], "test", ...projects]]
     : nodeTests ? ["node", ["--test", `${dir}/**/*.test.*js`]] : null;
-  // No time limit of any kind here: a slow suite is a test-quality problem, not a gate failure. Only the workflow's
-  // timeout-minutes stops a runaway job.
+  // No per-suite time budget: a slow suite is a test-quality problem. The workflow job timeout (or local's overall
+  // wall-clock limit) stops a runaway gate.
   const url = env.GATE_PREVIEW_URL ?? "";
   // The @a11y contract: tests tagged @a11y skip unless RELEASE_CHECK=1. Only the release check (e2e --release) passes it on; a
   // pull request's gate clears it, even when inherited.

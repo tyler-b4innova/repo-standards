@@ -33,6 +33,13 @@ plant "$HOLDER"
 start wait
 if waitfor "queued behind another local gate: pid $HOLDER (someone on $host, other@main" wait && sleep 2 && ! seen 'setup --check starting' wait && seen 'do not stop it or the holder' wait; then ok gate-lock-waits-names-holder
 else fail gate-lock-waits-names-holder "$(cat "$T/wait.log")"; fi
+# Age comes from the start timestamp, not the fresh heartbeat; keep the existing holder fields in both messages.
+node - "$LOCK" <<'JS'
+const fs=require('fs'),f=process.argv[2],h=JSON.parse(fs.readFileSync(f));
+h.started=new Date(Date.now()-120000).toISOString();h.worktree='/fixture/worktree';fs.writeFileSync(f,JSON.stringify(h));
+JS
+if waitfor 'worktree /fixture/worktree, age 2.0 min' wait 40; then ok gate-lock-holder-age
+else fail gate-lock-holder-age "$(cat "$T/wait.log")"; fi
 kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null; rm -f "$LOCK"
 if waitfor 'setup --check starting' wait 50 && seen 'machine gate lock taken' wait && grep -q "\"pid\":$GATE," "$LOCK"; then ok gate-lock-starts-after-holder
 else fail gate-lock-starts-after-holder "$(cat "$T/wait.log"; cat "$LOCK" 2>&1)"; fi
