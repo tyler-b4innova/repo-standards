@@ -34,7 +34,7 @@ has() { grep -qF -e "$1" "$T/$2.log"; }
 waitfor() { local i; for i in $(seq 1 "${3:-60}"); do has "$1" "$2" && return 0; sleep 0.1; done; return 1; }
 start() { local name=$1; shift; (cd "$R" && exec env "$@" node scripts/agent/gate.mjs local --base main) > "$T/$name.log" 2>&1 & GATE=$!; }
 # An outer watchdog is essential on the old implementation: report the missing timeout, never leave a hung test.
-finish() { local i; for i in $(seq 1 60); do kill -0 "$GATE" 2>/dev/null || break; sleep 0.1; done; kill -TERM "$GATE" 2>/dev/null; wait "$GATE" 2>/dev/null; }
+finish() { local i; for i in $(seq 1 60); do kill -0 "$GATE" 2>/dev/null || break; sleep 0.1; done; if kill -0 "$GATE" 2>/dev/null; then kill -TERM "$GATE" 2>/dev/null; sleep 0.5; kill -KILL "$GATE" 2>/dev/null; fi; wait "$GATE" 2>/dev/null; }
 # Applied timeout, absent workflow/setting, extension-only override validation, and a very large extension (no Node timer overflow).
 start applied FAST=1; wait "$GATE"
 cp "$workflow" "$T/workflow"
@@ -70,14 +70,22 @@ else fail gate-lock-holder-age "record=$record_ok busy=$bx; $(cat "$T/queued.log
 GATE=$FIRST; finish; hx=$?
 GATE=$SECOND; finish; qx=$?
 group=$(cat "$GROUP_FILE" 2>/dev/null || echo 0)
-# kill(0) checks the whole process group, including a descendant left after its leader exited.
+# Check every member of the group. An unreaped zombie in a container is already stopped and cannot be killed again.
 gone=0
 for i in $(seq 1 30); do
-  if ! node -e 'try{process.kill(-Number(process.argv[1]),0)}catch{process.exit(1)}' "$group"; then gone=1; break; fi
+  if ! node -e 'const rows=require("child_process").execFileSync("ps",["-axo","pgid=,stat="],{encoding:"utf8"}).trim().split("\n");process.exit(rows.some(l=>{const [g,s]=l.trim().split(/\s+/);return Number(g)===Number(process.argv[1])&&!s.startsWith("Z")})?0:1)' "$group"; then gone=1; break; fi
   sleep 0.1
 done
 if [ "$hx" -eq 124 ] && [ "$gone" -eq 1 ] && grep -qE '^local gate [0-9a-f]+: TIMEOUT \(exceeded 0.08 min during setup --check\)$' "$T/holder.log" && [ ! -e "$rec" ]; then ok gate-local-wall-clock
 else fail gate-local-wall-clock "exit=$hx group-gone=$gone pass-record=$([ -e "$rec" ] && echo yes || echo no); $(cat "$T/holder.log")"; fi
 if [ "$hx" -eq 124 ] && has 'queued behind another local gate' queued && has 'machine gate lock taken' queued && has 'setup --check starting' queued && [ ! -e "$T/lock/gate.lock" ]; then ok gate-lock-released-on-timeout
 else fail gate-lock-released-on-timeout "holder=$hx queued=$qx; $(cat "$T/queued.log")"; fi
+# The orchestrator's own event loop can block too: a FIFO credential source blocks readFileSync before a step starts.
+# Only an independent supervisor can enforce the deadline and release the lock in that case.
+mkfifo "$R/.env"
+echo stale > "$rec"
+start blocked FAST=1 GATE_LOCAL_TIMEOUT_MIN=0.04
+finish; blocked=$?
+if [ "$blocked" -eq 124 ] && has 'TIMEOUT (exceeded 0.04 min during setup --check)' blocked && [ ! -e "$rec" ] && [ ! -e "$T/lock/gate.lock" ]; then ok gate-local-wall-clock
+else fail gate-local-wall-clock "blocked event loop exit=$blocked; $(cat "$T/blocked.log")"; fi
 done_cases
