@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // Steps of the `gate` job (std-gate.yml), also runnable locally:
-//   local [--base <ref>] | plan | release-start | release-verify | release-report | classify [base] | install [--no-browsers|--browsers-only] | browser-deps [--install] | playwright | run <script>... | preview | release | e2e | secrets | syntax | instructions | verdict
+//   local [--base <ref>] | plan | release-start | release-verify | release-report | classify [base] | install [--no-browsers|--browsers-only] | browser-deps [--install] | playwright | run <script>... | preview | release | e2e | secrets | gitleaks-fetch | syntax | instructions | verdict
 // UI paths: pack.json defaults; standards.json "ui_paths" as a list replaces the include globs,
 // as {include, ignore} replaces include and adds ignore. e2e: none fails unless "e2e": false.
 import { execFileSync as ex, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync as has, mkdtempSync, readdirSync as ls, readFileSync as rd, rmSync, statSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { appendFileSync, existsSync as has, mkdirSync, mkdtempSync, readdirSync as ls, readFileSync as rd, rmSync, statSync, writeFileSync } from "node:fs";
+import { constants as osConstants, homedir, tmpdir } from "node:os";
 import { resolve as resolvePath } from "node:path";
 import { createConnection } from "node:net";
 import { localConfig, localWorkerConfig } from "./local.mjs";
@@ -20,7 +20,7 @@ const [cmd, ...args] = process.argv.slice(2), env = process.env;
 const skipFile = env.GATE_SKIP_FILE; delete env.GATE_SKIP_FILE;
 // A step that ran nothing prints its notice as before and, under `local`, records why: the summary then says SKIP (reason), not PASS.
 const ranNothing = (reason, notice) => { console.log(notice); if (skipFile) writeFileSync(skipFile, `${reason}\n`); };
-const SUBS = ["local", "verdict", "plan", "classify", "install", "browser-deps", "playwright", "run", "preview", "release", "release-start", "release-verify", "release-report", "e2e", "secrets", "syntax", "instructions"], ok = SUBS.includes(cmd);
+const SUBS = ["local", "verdict", "plan", "classify", "install", "browser-deps", "playwright", "run", "preview", "release", "release-start", "release-verify", "release-report", "e2e", "secrets", "gitleaks-fetch", "syntax", "instructions"], ok = SUBS.includes(cmd);
 if (!ok || args.includes("--help")) {
   console.log(rd(new URL(import.meta.url), "utf8").split("\n").slice(1, 6).map((l) => l.slice(3)).join("\n"));
   process.exit(ok || cmd === "--help" ? 0 : 2);
@@ -36,6 +36,56 @@ const pm = has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : "npm";
 const fail = (msg, fix) => { console.log(`::error::${msg}\nfix: ${fix}`); process.exit(1); };
 const sh = (c, a) => spawnSync(c, a, { stdio: "inherit" }).status ?? 1;
 const must = (c, a) => { const s = sh(c, a); if (s) process.exit(s); };
+// Removes a temp directory on every exit. A signal that stops the run ends Node without emitting `exit`, so the signals
+// that stop it go through process.exit instead (status 128 + the signal number, as the shell reports it).
+const removeOnExit = (dir) => {
+  process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
+  for (const s of ["SIGHUP", "SIGINT", "SIGTERM"]) process.on(s, () => process.exit(128 + osConstants.signals[s]));
+};
+// gitleaks, checksum-pinned per platform. The archive comes from GATE_GITLEAKS_ARCHIVE (a local file), else from the cache
+// directory GATE_GITLEAKS_CACHE (the workflow restores it; only std-cache-warm saves it), else from a download that is
+// retried (three attempts, each logging its URL and status). A verified download is written back to the cache directory.
+async function gitleaksArchive(dir) {
+  const V = "8.30.1", platform = `${process.platform}_${process.arch}`, local = env.GATE_GITLEAKS_ARCHIVE;
+  const sums = {
+    linux_x64: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb",
+    linux_arm64: "e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080",
+    darwin_x64: "dfe101a4db2255fc85120ac7f3d25e4342c3c20cf749f2c20a18081af1952709",
+    darwin_arm64: "b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5",
+  }, SUM = sums[platform];
+  if (!SUM) fail(`secret scan unsupported on ${platform}`, "run on macOS or Linux, x64 or arm64");
+  const sha = (f) => createHash("sha256").update(rd(f)).digest("hex");
+  const name = `gitleaks_${V}_${platform}.tar.gz`, cache = env.GATE_GITLEAKS_CACHE, cached = cache && `${cache}/${name}`;
+  let tgz = local || `${dir}/gl.tgz`;
+  if (!local && cached && has(cached) && sha(cached) === SUM) {
+    console.log(`secrets: gitleaks archive from the cache (${cached}), no download`);
+    return cached;
+  }
+  if (!local) {
+    const url = `${env.GATE_GITLEAKS_BASE || "https://github.com/gitleaks/gitleaks/releases/download"}/v${V}/${name}`;
+    const tries = 3, pause = Number(env.GATE_GITLEAKS_BACKOFF_MS ?? 2000);
+    for (let n = 1; ; n++) {
+      // a failed status, a body cut short and bytes that are not the pinned archive are all transient: each is an attempt
+      const res = await fetch(url).catch((e) => ({ ok: false, status: e.cause?.code || e.message }));
+      let state = `${res.status}`, verified = false;
+      if (res.ok) {
+        try {
+          writeFileSync(tgz, Buffer.from(await res.arrayBuffer()));
+          verified = sha(tgz) === SUM;
+          state = `200, ${verified ? "verified" : "not the pinned archive"}`;
+        } catch (e) { state = `200, body: ${e.message}`; }
+      }
+      console.log(`secrets: gitleaks download ${n} of ${tries}: ${url} -> ${state}`);
+      if (verified) break;
+      if (n === tries) fail(`gitleaks download failed after ${tries} attempts (last: ${state})`, "re-run the job");
+      await new Promise((r) => setTimeout(r, pause * n));
+    }
+  }
+  const got = sha(tgz);
+  if (got !== SUM) fail(`gitleaks archive checksum mismatch: got ${got}, want ${SUM}`, "do not run it; re-run, or pin a new version and checksum in the engine");
+  if (cached && !local) { mkdirSync(cache, { recursive: true }); writeFileSync(cached, rd(tgz)); tgz = cached; }
+  return tgz;
+}
 const glob = (g) => new RegExp("^" + g.replace(/[.+^$()|[\]\\]/g, "\\$&").replace(/\{([^}]+)\}/g, (_, a) => `(${a.split(",").join("|")})`)
   .replace(/\*\*\//g, "\0").replace(/\*\*/g, "\x01").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]").replace(/\0/g, "(.*/)?").replace(/\x01/g, ".*") + "$");
 // The pull request this run is for: the event's, or a workflow_dispatch re-gate's `pr` input (base retargets).
@@ -786,25 +836,16 @@ if (cmd === "local") {
   }
   else fail("no e2e suite (test:e2e or e2e script; tests/e2e/ or e2e/ with playwright.config.* or *.test.*js)",
     'add an end-to-end suite through the real entry point; docs/static repos (or Builds-only repos) only: "e2e": false in standards.json');
+} else if (cmd === "gitleaks-fetch") {
+  // std-cache-warm (main only) runs this with GATE_GITLEAKS_CACHE, so the gate restores the archive it saves.
+  const dir = mkdtempSync(`${tmpdir()}/gitleaks-`);
+  removeOnExit(dir);
+  console.log(`gitleaks archive: ${await gitleaksArchive(dir)}`);
 } else if (cmd === "secrets") {
-  const V = "8.30.1", local = env.GATE_GITLEAKS_ARCHIVE;
-  const platform = `${process.platform}_${process.arch}`;
-  const sums = {
-    linux_x64: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb",
-    linux_arm64: "e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080",
-    darwin_x64: "dfe101a4db2255fc85120ac7f3d25e4342c3c20cf749f2c20a18081af1952709",
-    darwin_arm64: "b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5",
-  }, SUM = sums[platform];
-  if (!SUM) fail(`secret scan unsupported on ${platform}`, "run on macOS or Linux, x64 or arm64");
-  const dir = mkdtempSync(`${tmpdir()}/gitleaks-`), tgz = local || `${dir}/gl.tgz`;
-  if (!local) {
-    const res = await fetch(`https://github.com/gitleaks/gitleaks/releases/download/v${V}/gitleaks_${V}_${platform}.tar.gz`);
-    if (!res.ok) fail(`gitleaks download: ${res.status}`, "re-run the job");
-    writeFileSync(tgz, Buffer.from(await res.arrayBuffer()));
-  }
-  const got = createHash("sha256").update(rd(tgz)).digest("hex");
-  if (got !== SUM) fail(`gitleaks archive checksum mismatch: got ${got}, want ${SUM}`, "do not run it; re-run, or pin a new version and checksum in the engine");
-  must("tar", ["-xzf", tgz, "-C", dir, "gitleaks"]);
+  const dir = mkdtempSync(`${tmpdir()}/gitleaks-`);
+  // The download and binary go with the directory on every exit, including fail(), must() and a signal.
+  removeOnExit(dir);
+  must("tar", ["-xzf", await gitleaksArchive(dir), "-C", dir, "gitleaks"]);
   // Always scan commits: PR base..head, merge group base..head, a dispatch re-gate's merge ref (base tip..PR head),
   // push before..sha (a new branch scans what the default branch lacks); RANGE overrides.
   const ev = env.GITHUB_EVENT_PATH ? json(env.GITHUB_EVENT_PATH) ?? {} : {}, reach = (x) => { try { git("cat-file", "-e", `${x}^{commit}`); return true; } catch { return false; } };

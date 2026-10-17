@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 # PR helper over the GitHub REST API (GraphQL only for review threads: status, resolve; and the draft toggle: ready). Auth: GH_TOKEN, GITHUB_TOKEN, else `gh auth token`.
 # Repo: GH_REPO, else the origin remote. API: GITHUB_API_URL (default https://api.github.com).
-#   pr.sh open [--base B] [--dry-run] [--] "<title>" <body-file>  draft PR (reused if open for this head and base); push first
-#   pr.sh status <pr>                     checks on the head SHA and open review threads, then DONE or NOT DONE: <reasons>
+#   pr.sh open [--base B] [--dry-run] [--claimed-ok] [--] "<title>" <body-file>  draft PR (reused if open for this head and base); push first
+#                                         --claimed-ok skips the check that refuses an issue the launcher claimed (label agent-claimed) unless the branch is its agent/N-* or retro/N-*
+#   pr.sh status <pr>                   checks on the head SHA and open review threads, then DONE or NOT DONE: <reasons>
 #   pr.sh evidence <pr> <file>...         upload captures as attachments (gh 2.99+) in one marked comment; no commit, no push
 #   pr.sh feedback <pr>                   comments and reviews newer than the last push, with ids
 #   pr.sh reply <pr> <comment-id> "<text>"  reply on the review thread, else as a PR comment
 #   pr.sh resolve <pr> <comment-id>       resolve the review thread holding that comment (after fixing or answering it)
 #   pr.sh ready <pr>                      mark the draft ready once: only when `gate.mjs local` passed on the pushed head, tree clean; GraphQL
 set -euo pipefail
-usage() { sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; }
 die() { echo "pr.sh: $*" >&2; exit 1; }
 API=${GITHUB_API_URL:-https://api.github.com}
 REPO=${GH_REPO:-$(git remote get-url origin 2>/dev/null | sed -E 's#/+$##; s#\.git$##; s#.*[:/]([^/:]+/[^/:]+)$#\1#' || true)}
@@ -36,19 +37,21 @@ CLOSES='(closes|fixes|resolves) #[0-9]+'
 
 enc() { node -e 'console.log(encodeURIComponent(process.argv[1]).replace(/%2F/g,"/"))' "$1"; }
 open_pr() {
-  local title="" body="" base="" dry=0 branch n payload q
+  local title="" body="" base="" dry=0 claimed_ok=0 branch n nums payload q
   while [ $# -gt 0 ]; do
     case "$1" in
       --base) [ $# -gt 1 ] || die "--base needs a branch"; base=$2; shift 2 ;;
       --dry-run) dry=1; shift ;;
+      --claimed-ok) claimed_ok=1; shift ;;
       --) shift; break ;;
       -?*) die "unknown option $1 (titles starting with - go after --)" ;;
       *) if [ -z "$title" ]; then title=$1; else body=$1; fi; shift ;;
     esac
   done
   for a in "$@"; do if [ -z "$title" ]; then title=$a; elif [ -z "$body" ]; then body=$a; else die "unexpected argument: $a"; fi; done
-  [ -n "$title" ] && [ -f "$body" ] || die 'usage: pr.sh open [--base B] [--dry-run] [--] "<title>" <body-file>'
+  [ -n "$title" ] && [ -f "$body" ] || die 'usage: pr.sh open [--base B] [--dry-run] [--claimed-ok] [--] "<title>" <body-file>'
   grep -qiE "$CLOSES" "$body" || die "body must link its issue: Closes #N (or Fixes/Resolves #N)"
+  nums=$(grep -oiE "$CLOSES" "$body" | grep -oE '[0-9]+$' | sort -un) # same-repo only: owner/name#N does not match CLOSES
   branch=$(git branch --show-current)
   [ -n "$branch" ] || die "detached HEAD; check out a branch first"
   [ -n "$base" ] || base=$(git symbolic-ref --short -q refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##') || true
@@ -57,6 +60,15 @@ open_pr() {
   if [ $dry = 1 ]; then echo "POST $API/repos/$REPO/pulls (or PATCH the open PR for $branch into ${base:-the default branch})"; echo "$payload"; return; fi
   if [ -z "$base" ]; then req GET ""; base=$(js 'd.default_branch' <<<"$R"); payload=$(js '({...d,base:a[0]})' "$base" <<<"$payload"); fi
   [ "$branch" != "$base" ] || die "on $base; create a branch first"
+  # an issue the launcher claimed is worked on its own branch; another PR closing it would collide with that attempt
+  if [ $claimed_ok = 0 ]; then
+    for n in $nums; do
+      api GET "issues/$n"
+      case $ST in 200) ;; 404) continue ;; *) die "issue #$n: could not read its labels (HTTP $ST)" ;; esac
+      [ "$(js 'String((d.labels||[]).some(l=>l.name==="agent-claimed"))' <<<"$R")" = true ] || continue
+      case "$branch" in "agent/$n"-?* | "retro/$n"-?*) ;; *) die "issue #$n is claimed by the launcher (label agent-claimed; its branch is agent/$n-<slug> or retro/$n-<slug>): let that attempt finish, or remove agent-claimed first" ;; esac
+    done
+  fi
   api GET "branches/$(enc "$branch")"
   [ "$ST" = 200 ] || die "branch $branch is not on GitHub (HTTP $ST); run: git push -u origin HEAD"
   [ "$(js 'd.commit.sha' <<<"$R")" = "$(git rev-parse HEAD)" ] || die "local HEAD differs from $branch on GitHub; push first: git push origin HEAD"
