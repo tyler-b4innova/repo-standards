@@ -25,6 +25,16 @@ has "No per-repo exceptions, and no new rules, gates or numbers to fix a symptom
 has "Cloudflare deploys: Workers Builds in the account that owns the Worker runs \`scripts/agent/release.mjs\`. Nothing is deployed by hand, and no Cloudflare tokens in GitHub." "$a" || why="$why; deploys rule missing"
 if [ -z "$why" ]; then ok block-visuals-and-deploys; else fail block-visuals-and-deploys "$why"; fi
 
+# block-code-review-rules: the managed block carries one Code Review Rules section, inside the markers and before the end
+# marker, with both rules; hosted Codex and AGENTS-following reviewers read it
+why=""
+blk=$(sed -n '/<!-- std:begin/,/<!-- std:end -->/p' "$R/AGENTS.md")
+[ "$(grep -c '^## Code Review Rules$' <<<"$blk")" = 1 ] || why="$why; section heading not once in the block"
+has "- Report every finding you can see in this head in one review, not only the first." "$blk" || why="$why; one-review rule missing"
+has "- In a re-review, raise only what the new commits changed or what the last fix missed, and say which. A fail-open, security or data-loss blocker that an earlier round missed is still raised, marked missed earlier." "$blk" || why="$why; re-review rule missing"
+[ "$(tail -1 <<<"$blk")" = "<!-- std:end -->" ] || why="$why; end marker is not last in the block"
+if [ -z "$why" ]; then ok block-code-review-rules; else fail block-code-review-rules "$why"; fi
+
 # default: repo content around the block survives a re-apply (unchanged behaviour)
 why=""
 printf '# Mine\n\nrepo rule\n\n%s\nafter\n' "$(sed -n '/<!-- std:begin/,/<!-- std:end -->/p' "$R/AGENTS.md")" >"$R/AGENTS.md"; commit "$R" repo >/dev/null; apply "$R" >/dev/null
