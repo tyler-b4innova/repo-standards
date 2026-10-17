@@ -398,7 +398,7 @@ if (cmd === "local") {
       const line = lines[i];
       if (/^\S/.test(line)) break;
       if (/^ {2}\S/.test(line) && !/^ {2}#/.test(line)) gate = /^ {2}gate:\s*(?:#.*)?$/.test(line);
-      const m = gate && line.match(/^ {4}timeout-minutes:\s*([0-9]+(?:\.[0-9]+)?)\s*(?:#.*)?$/);
+      const m = gate && line.match(/^ {4}timeout-minutes:\s*([0-9]+(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?)\s*(?:#.*)?$/i);
       if (m && Number(m[1]) > 0 && Number.isFinite(Number(m[1]))) { ciMinutes = Number(m[1]); break; }
     }
   } catch (e) { if (e.code !== "ENOENT") throw e; }
@@ -406,7 +406,7 @@ if (cmd === "local") {
   const limitMinutes = env.GATE_LOCAL_TIMEOUT_MIN === undefined ? minimumMinutes : Number(env.GATE_LOCAL_TIMEOUT_MIN);
   if (!(Number.isFinite(limitMinutes) && limitMinutes > 0 && limitMinutes >= minimumMinutes))
     fail(`GATE_LOCAL_TIMEOUT_MIN must be finite minutes at least ${minimumMinutes} (1.5x the applied gate timeout); it cannot shorten or disable the limit`, "unset GATE_LOCAL_TIMEOUT_MIN or extend the limit");
-  let base, baseRef, worker, active, address, timer, currentStep, timedOut = false, interrupted = 0;
+  let base, baseRef, worker, active, address, timer, currentStep = steps[0], timedOut = false, interrupted = 0;
   if (args.length && (args.length !== 2 || args[0] !== "--base" || !args[1] || args[1].startsWith("-")))
     fail("local: expected local [--base <ref>]", "supply a comparison branch or commit with --base");
   for (const ref of args.length ? [args[1]] : ["origin/HEAD", "origin/main", "origin/master", "main", "master"]) {

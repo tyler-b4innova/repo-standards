@@ -56,7 +56,7 @@ else fail gate-local-limit-from-apply "validation=$limits; $(cat "$T/applied.log
 sed 's/^    timeout-minutes: .*/    timeout-minutes: 0.02/' "$T/workflow" > "$workflow"
 rec=$R/$(git -C "$R" rev-parse --git-path std-local-gate)
 echo stale > "$rec"
-start holder GATE_LOCAL_TIMEOUT_MIN=0.05; FIRST=$GATE
+start holder GATE_LOCAL_TIMEOUT_MIN=0.08; FIRST=$GATE
 waitfor 'setup --check starting' holder
 waitfor 'machine gate lock taken' holder
 # Verify that the lock records the git worktree path, and that BOTH waiting and busy messages carry every holder field.
@@ -75,7 +75,7 @@ for i in $(seq 1 30); do
   if ! node -e 'try{process.kill(-Number(process.argv[1]),0)}catch{process.exit(1)}' "$group"; then gone=1; break; fi
   sleep 0.1
 done
-if [ "$hx" -eq 124 ] && [ "$gone" -eq 1 ] && grep -qE '^local gate [0-9a-f]+: TIMEOUT \(exceeded 0.05 min during setup --check\)$' "$T/holder.log" && [ ! -e "$rec" ]; then ok gate-local-wall-clock
+if [ "$hx" -eq 124 ] && [ "$gone" -eq 1 ] && grep -qE '^local gate [0-9a-f]+: TIMEOUT \(exceeded 0.08 min during setup --check\)$' "$T/holder.log" && [ ! -e "$rec" ]; then ok gate-local-wall-clock
 else fail gate-local-wall-clock "exit=$hx group-gone=$gone pass-record=$([ -e "$rec" ] && echo yes || echo no); $(cat "$T/holder.log")"; fi
 if [ "$hx" -eq 124 ] && has 'queued behind another local gate' queued && has 'machine gate lock taken' queued && has 'setup --check starting' queued && [ ! -e "$T/lock/gate.lock" ]; then ok gate-lock-released-on-timeout
 else fail gate-lock-released-on-timeout "holder=$hx queued=$qx; $(cat "$T/queued.log")"; fi

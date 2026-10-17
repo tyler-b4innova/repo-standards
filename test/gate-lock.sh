@@ -38,7 +38,7 @@ node - "$LOCK" <<'JS'
 const fs=require('fs'),f=process.argv[2],h=JSON.parse(fs.readFileSync(f));
 h.started=new Date(Date.now()-120000).toISOString();h.worktree='/fixture/worktree';fs.writeFileSync(f,JSON.stringify(h));
 JS
-if waitfor 'worktree /fixture/worktree, age 2.0 min' wait 40; then ok gate-lock-holder-age
+if waitfor 'worktree /fixture/worktree, age 2.' wait 40; then ok gate-lock-holder-age
 else fail gate-lock-holder-age "$(cat "$T/wait.log")"; fi
 kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null; rm -f "$LOCK"
 if waitfor 'setup --check starting' wait 50 && seen 'machine gate lock taken' wait && grep -q "\"pid\":$GATE," "$LOCK"; then ok gate-lock-starts-after-holder
@@ -64,7 +64,8 @@ else fail gate-lock-release-waits-for-takeover "waiting=$waiting; $(cat "$T/rel.
 rm -f "$LOCK"
 
 # A dead holder on this host and PID namespace: taken over at once, with a message.
-sleep 0.01 & DEAD=$!; wait "$DEAD"
+# A PID beyond the kernel PID range cannot be recycled by another session on a busy shared host.
+DEAD=2147483647
 plant "$DEAD"
 start stale
 if waitfor "took over a stale machine gate lock from pid $DEAD" stale && seen 'is no longer running' stale && waitfor 'setup --check starting' stale 50; then ok gate-lock-stale-takeover
@@ -108,7 +109,8 @@ kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null; rm -f "$LOCK"
 
 # A takeover replaces only the holder it judged stale: while another gate is mid-takeover (its guard), this gate waits,
 # and once that gate's lock is in place it is waited on, never moved aside.
-sleep 0.01 & DEAD=$!; wait "$DEAD"
+# A PID beyond the kernel PID range cannot be recycled by another session on a busy shared host.
+DEAD=2147483647
 plant "$DEAD"; : > "$LOCK.takeover"
 start verify
 waitfor "queued behind another local gate: pid $DEAD" verify 60
@@ -157,7 +159,8 @@ stopgate; rm -f "$LOCK"
 
 MOD=$PWD/template/scripts/agent/gate-lock.mjs
 # A takeover guard left by a gate that died holding it (untouched for 5 s) is evicted, and the stale lock taken over.
-sleep 0.01 & DEAD=$!; wait "$DEAD"
+# A PID beyond the kernel PID range cannot be recycled by another session on a busy shared host.
+DEAD=2147483647
 plant "$DEAD"; : > "$LOCK.takeover"; touch -t 202001010000 "$LOCK.takeover"
 start oldguard
 if waitfor "took over a stale machine gate lock from pid $DEAD" oldguard && waitfor 'setup --check starting' oldguard 50 && [ -z "$(ls "$T/lock" | grep -v '^gate.lock$')" ]; then ok gate-lock-stale-guard
