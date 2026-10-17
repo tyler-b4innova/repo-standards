@@ -169,7 +169,8 @@ const playwrightBin = () => has("node_modules/.bin/playwright") ? ["node_modules
 function canEscalate() {
   if (process.getuid?.() === 0) return true;
   try { if (/^NoNewPrivs:\s*1$/m.test(rd("/proc/self/status", "utf8"))) return false; } catch {}
-  return spawnSync("sudo", ["-n", "true"], { stdio: "ignore" }).status === 0;
+  // sudo -l asks whether the apt-get the install runs is permitted without a password (a least-privilege policy may allow only that)
+  return spawnSync("sudo", ["-n", "-l", "apt-get"], { stdio: "ignore" }).status === 0;
 }
 // The browsers' system packages this host lacks, as `<file>: <library>` lines (empty when present, or not applicable).
 // Playwright's own host validation is bundled and not callable, so Chromium gets an equivalent check: `ldd` over every
@@ -910,6 +911,15 @@ if (cmd === "local") {
   // The download and binary go with the directory on every exit, including fail(), must() and a signal.
   removeOnExit(dir);
   must("tar", ["-xzf", await gitleaksArchive(dir), "-C", dir, "gitleaks"]);
+  // gitleaks' default rules plus the org's own key formats: a CLIProxyAPI client key (cpk-) in a YAML list or in prose
+  // matches no default rule. A repository's own .gitleaks.toml is kept verbatim and the key rule is appended to it: no
+  // extension layer is added around it, so its extends, allowlists and rules load at the depth they have without the
+  // engine (gitleaks drops an extension at depth 2 and targeted allowlists below depth 0). Relative extend paths
+  // resolve against the working directory, as they do without --config.
+  const rule = ['[[rules]]', 'id = "cliproxy-client-key"', 'description = "CLIProxyAPI client key"',
+    "regex = '''\\bcpk-[A-Za-z0-9_-]{32,}'''", 'keywords = ["cpk-"]', ""].join("\n");
+  const own = has(".gitleaks.toml") ? rd(".gitleaks.toml", "utf8") : "[extend]\nuseDefault = true\n";
+  writeFileSync(`${dir}/rules.toml`, `${own.endsWith("\n") ? own : `${own}\n`}\n${rule}`);
   // Always scan commits: PR base..head, merge group base..head, a dispatch re-gate's merge ref (base tip..PR head),
   // push before..sha (a new branch scans what the default branch lacks); RANGE overrides.
   const ev = env.GITHUB_EVENT_PATH ? json(env.GITHUB_EVENT_PATH) ?? {} : {}, reach = (x) => { try { git("cat-file", "-e", `${x}^{commit}`); return true; } catch { return false; } };
@@ -920,6 +930,6 @@ if (cmd === "local") {
     : ev.after ? [fresh(ev.before) && def && ev.ref !== `refs/heads/${def}` && reach(`origin/${def}`) ? `origin/${def}` : ev.before, ev.after] : [null, env.GITHUB_SHA || "HEAD"];
   const r = env.RANGE || (pair[0] && !/^0+$/.test(pair[0]) && reach(pair[0]) ? `${pair[0]}..${pair[1]}` : pair[1]);
   console.log(`secrets: gitleaks git --log-opts=${r}`);
-  if (sh(`${dir}/gitleaks`, ["git", `--log-opts=${r}`, "--redact", "--no-banner", "-v", "."]))
+  if (sh(`${dir}/gitleaks`, ["git", `--log-opts=${r}`, "--config", `${dir}/rules.toml`, "--redact", "--no-banner", "-v", "."]))
     fail("gitleaks found a secret (redacted above)", "rotate it and remove it from the branch history; false positive: its fingerprint in .gitleaksignore");
 }

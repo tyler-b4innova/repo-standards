@@ -321,6 +321,19 @@ jobs:
 if [ $st -eq 1 ] && has "package.json scripts or gate.local.sh run playwright install without naming a browser" "$out" && has "name the browser: playwright install chromium" "$out" && ! has "with-deps" "$out" \
   && [ $sw -eq 1 ] && has "name the browser: playwright install --with-deps chromium" "$w"; then
   ok playwright-hints-no-root; else fail playwright-hints-no-root "st=$st: $out | workflow st=$sw: $w"; fi
+# install-deps-names-no-browser: install-deps installs the system packages of every browser and names none, so a package script or a workflow
+# step that runs `playwright install-deps` is not a browser download without a browser name: --check passes (a root advisory may warn)
+R=$(mkrepo); printf '%s\n' '{"name":"app","private":true,"scripts":{"deps":"playwright install-deps"}}' > "$R/package.json"; dd=$(cr "$R"); sdd=$?
+R=$(mkrepo); wf "$R" e2e.yml 'on:
+  workflow_dispatch:
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - run: npx playwright install-deps && npm test'; wd=$(cr "$R"); swd=$?
+if [ $sdd -eq 0 ] && ! has "without naming a browser" "$dd" && [ $swd -eq 0 ] && ! has "without naming a browser" "$wd"; then ok install-deps-names-no-browser
+else fail install-deps-names-no-browser "package st=$sdd: $dd | workflow st=$swd: $wd"; fi
 # with-deps-gate-script-warns: a Playwright invocation that asks for a root install (--with-deps or install-deps; quoted or not; continued
 # across a shell line; ahead of a # comment) in a package.json script or gate.local.sh prints a warning and --check still exits 0. Text that
 # is not such an invocation prints nothing: a comment, another tool's flag, a value ending in "playwright" beside one starting with

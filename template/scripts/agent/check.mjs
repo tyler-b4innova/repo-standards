@@ -258,7 +258,7 @@ else {
     for (const j of jobs) if (!j.body.some((l) => /^ {4}(timeout-minutes|uses):/.test(l)))
       fail(`${f} job ${j.name} has no timeout-minutes (GitHub's default is 360 minutes)`, `add timeout-minutes to ${j.name}: the org's one job timeout, the overlay's gate.timeout_minutes (the value every job in std-gate.yml carries)`);
     const runs = jobs.flatMap((j) => j.body).filter((l) => !/^\s*(-\s*)?(name|uses|id|if):/.test(l)).join("\n");
-    if (/playwright install\b(?![^\n;&|]*\b(chromium|chrome|firefox|webkit|msedge)\b)/.test(runs))
+    if (/playwright install\b(?!-deps)(?![^\n;&|]*\b(chromium|chrome|firefox|webkit|msedge)\b)/.test(runs))
       fail(`${f} runs playwright install without naming a browser (it downloads all of them)`, "name the browser: playwright install --with-deps chromium");
     // The trigger alone decides, never the words in its steps or the name of its branch. `managed` (std-*, hash-locked) keeps
     // its exemption: std-gate.yml is the one gate.
@@ -268,7 +268,7 @@ else {
         "move its checks into scripts/agent/gate.local.sh and delete it; a deploy runs in Workers Builds (scripts/agent/release.mjs), or on a tag push or a manual run");
   }
   const scripts = Object.values(json("package.json")?.scripts ?? {}).join("\n") + "\n" + (read("scripts/agent/gate.local.sh") ?? "");
-  if (/playwright install\b(?![^\n;&|]*\b(chromium|chrome|firefox|webkit|msedge)\b)/.test(scripts))
+  if (/playwright install\b(?!-deps)(?![^\n;&|]*\b(chromium|chrome|firefox|webkit|msedge)\b)/.test(scripts))
     fail("package.json scripts or gate.local.sh run playwright install without naming a browser", "name the browser: playwright install chromium");
   // A Playwright invocation of --with-deps or install-deps asks for a root install. The check is advisory: a false match would block
   // every gate, while the runtime refuses sudo and names what the host lacks. Each text is read on its own: a shell line continuation
