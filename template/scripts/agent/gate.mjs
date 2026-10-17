@@ -11,13 +11,16 @@ import { dirname, resolve as resolvePath } from "node:path";
 import { createRequire } from "node:module";
 import { createConnection } from "node:net";
 import { localConfig, localWorkerConfig } from "./local.mjs";
-import { machineLock } from "./gate-lock.mjs";
+import { localLimit, signalGroup, stop, superviseLocal } from "./local-timeout.mjs";
 import { scan } from "./jsscan.mjs";
 import { rollbackFindings } from "./rollback.mjs";
 import { rootFile, verifyGeneratedBuild } from "./release-config.mjs";
 import { describe as describeSelection, listFor, plan as planSelection, summarize } from "./select.mjs";
 
 const [cmd, ...args] = process.argv.slice(2), env = process.env;
+// The private orchestration child has IPC to its supervisor; a caller cannot turn off the deadline with an env var.
+const supervised = cmd === "local" && args[0] === "--supervised" && typeof process.send === "function";
+if (supervised) args.shift();
 // `gate.mjs local` hands each of its own steps a file to say why it ran nothing; the repo's commands never inherit it.
 const skipFile = env.GATE_SKIP_FILE; delete env.GATE_SKIP_FILE;
 // A step that ran nothing prints its notice as before and, under `local`, records why: the summary then says SKIP (reason), not PASS.
@@ -386,6 +389,8 @@ if (cmd === "local") {
   rmSync(passFile, { force: true });
   const dirty = () => git("status", "--porcelain", "--untracked-files=all").trim(); // tracked changes and non-ignored untracked files
   const dirtyBefore = dirty();
+  let limit;
+  try { limit = localLimit(env); } catch (e) { fail(e.message, "unset GATE_LOCAL_TIMEOUT_MIN or extend the limit"); }
   let base, baseRef, worker, active, address, interrupted = 0;
   if (args.length && (args.length !== 2 || args[0] !== "--base" || !args[1] || args[1].startsWith("-")))
     fail("local: expected local [--base <ref>]", "supply a comparison branch or commit with --base");
@@ -397,137 +402,127 @@ if (cmd === "local") {
       "fetch the default branch or run local --base <ref>; HEAD is never used as a fallback");
   }
   if (base === head) fail(`nothing to compare: HEAD has no commits beyond ${baseRef}; run from a feature branch or pass --base`, "choose a base with commits beyond it on HEAD");
-  // Wrangler 4.148's dotenv-expand overwrites empty env values; --env-file bypasses .dev.vars.
-  // Refuse credential sources before every child, including files produced by earlier build steps.
-  const noDotenvCredentials = (dir = ".") => {
-    for (const entry of ls(dir, { withFileTypes: true })) {
-      const path = `${dir}/${entry.name}`;
-      if (entry.isDirectory() && ![".git", "node_modules", ".wrangler"].includes(entry.name)) noDotenvCredentials(path);
-      else if (/^\.env(?:\.|$)/.test(entry.name) && /^\s*(?:export\s+)?(?:CLOUDFLARE_|CF_)(?:API_TOKEN|API_KEY|EMAIL|ACCOUNT_ID)\s*(?:=|:\s)/im.test(rd(path, "utf8")))
-        throw new Error(`local: credential-bearing ${path} refused; remove Cloudflare credentials before running the local gate`);
-    }
-  };
-  const dir = mkdtempSync(`${tmpdir()}/gate-local-`), eventFile = `${dir}/event.json`, skipPath = `${dir}/skipped`;
-  writeFileSync(eventFile, JSON.stringify({ pull_request: { number: 1, base: { sha: base }, head: { sha: head, ref: git("branch", "--show-current").trim() }, user: { login: "local" } } }));
-  const localEnv = { ...env, CI: "true", STD_GATE: "1", GITHUB_EVENT_NAME: "pull_request", GITHUB_EVENT_PATH: eventFile, GITHUB_SHA: head,
-    PATH: `${process.cwd()}/node_modules/.bin:${env.PATH}`, GATE_BROWSERS: "chromium", WRANGLER_SEND_METRICS: "false", WRANGLER_CHECK_FOR_UPDATES: "false", WRANGLER_HOME: `${dir}/wrangler`, HOME: dir, USERPROFILE: dir, XDG_CONFIG_HOME: `${dir}/xdg` };
-  // HOME is hidden above, and with it the user's git config, where git reads safe.directory. The trust for the repository
-  // being gated (its top level, common git dir and private worktree git dir) goes in a global config of the gate's own, which every child reads, the
-  // upload-pack a local clone forks on the source included (command-scope GIT_CONFIG_* entries do not reach that child).
-  // A global config the caller named is included, so its entries stay in force; the caller's GIT_CONFIG_* entries are untouched.
-  const trusted = [...new Set(["--show-toplevel", "--git-common-dir", "--git-dir"].map((flag) => resolvePath(git("rev-parse", flag).trim())))];
-  const quoted = (v) => `"${v.replace(/[\\"]/g, "\\$&")}"`;
-  const gitConfig = `${dir}/gitconfig`;
-  writeFileSync(gitConfig, [...(env.GIT_CONFIG_GLOBAL ? ["[include]", `\tpath = ${quoted(resolvePath(env.GIT_CONFIG_GLOBAL))}`] : []), "[safe]", ...trusted.map((p) => `\tdirectory = ${quoted(p)}`), ""].join("\n"));
-  localEnv.GIT_CONFIG_GLOBAL = gitConfig;
-  for (const k of ["RELEASE_CHECK", "GH_TOKEN", "GITHUB_TOKEN", "GITHUB_OUTPUT", "GATE_PREVIEW_URL", "BASE_URL", "PLAYWRIGHT_BASE_URL", "CLOUDFLARE_ENV", "RANGE", "ROLLBACK_BASE", "ROLLBACK_DRAFT"])
-    delete localEnv[k];
-  for (const k of Object.keys(localEnv)) if (/^(CLOUDFLARE_|CF_)/.test(k)) delete localEnv[k];
-  for (const k of ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_API_KEY", "CLOUDFLARE_EMAIL", "CLOUDFLARE_ACCOUNT_ID"]) localEnv[k] = "";
-  const signalGroup = (child, signal) => { if (child?.pid) try { process.kill(-child.pid, signal); } catch {} };
-  const stop = async (child) => {
-    if (!child) return;
-    signalGroup(child, "SIGTERM");
-    if (child.exitCode === null && child.signalCode === null) await new Promise((r) => setTimeout(r, 300));
-    signalGroup(child, "SIGKILL");
-  };
-  const occupied = async () => address && new Promise((resolve) => {
-    const socket = createConnection({ host: address.hostname.replace(/^\[|\]$/g, ""), port: Number(address.port || (address.protocol === "https:" ? 443 : 80)) });
-    const done = (used) => { socket.destroy(); resolve(used); };
-    socket.once("connect", () => done(true)); socket.once("error", () => done(false)); socket.setTimeout(500, () => done(true));
-  });
-  let abort;
-  const cancelled = new Promise((_, reject) => { abort = reject; });
-  const onSignal = (signal) => {
-    interrupted ||= { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }[signal];
-    signalGroup(active, "SIGTERM"); signalGroup(worker, "SIGTERM");
-    abort(new Error(`interrupted by ${signal}`));
-  };
-  const onException = (error) => { interrupted ||= 1; abort(error); };
-  const handlers = { SIGINT: () => onSignal("SIGINT"), SIGTERM: () => onSignal("SIGTERM"), SIGHUP: () => onSignal("SIGHUP"), uncaughtException: onException };
-  for (const [signal, handler] of Object.entries(handlers)) process.on(signal, handler);
-  const run = async (name, command, argv) => {
-    if (interrupted) throw new Error("interrupted");
-    noDotenvCredentials();
-    console.log(`local: ${name} starting`);
-    results.set(name, "FAIL");
-    rmSync(skipPath, { force: true });
-    // only the gate's own steps (node gate.mjs ...) can report that they ran nothing; gate.local.sh is the repo's
-    const child = active = spawn(command, argv, { stdio: "inherit", env: command === process.execPath ? { ...localEnv, GATE_SKIP_FILE: skipPath } : localEnv, detached: true });
-    const code = await new Promise((resolve) => { child.once("error", () => resolve(1)); child.once("exit", (c) => resolve(c ?? 1)); });
-    await stop(child); active = null;
-    if (code || interrupted) throw new Error(`${name} failed (exit ${code})`);
-    // the step that ran nothing supplied its reason; this runner knows no skip condition itself
-    const why = has(skipPath) ? rd(skipPath, "utf8").trim() : null, result = why === null ? "PASS" : why ? `SKIP (${why})` : "SKIP";
-    results.set(name, result); console.log(`local: ${name} ${result}`);
-  };
-  let releaseLock = () => {}, lockBusy = false;
-  const execute = async () => {
-    // One heavy local gate per machine (gate-lock.mjs): wait for any other to finish before the first step.
-    const top = git("rev-parse", "--show-toplevel").trim();
-    try { releaseLock = await machineLock({ env, repo: `${top.split("/").pop()}@${git("branch", "--show-current").trim() || head.slice(0, 7)}`, interrupted: () => Boolean(interrupted) }); }
-    catch (e) { lockBusy = e.message.startsWith("lock busy:"); throw e; }
-    if (interrupted) throw new Error("interrupted");
-    await run("setup --check", "scripts/agent/setup.sh", ["--check"]);
-    const config = localConfig(std.local);
-    for (const step of ["instructions", "secrets", "syntax", "install"]) await run(step, process.execPath, ["scripts/agent/gate.mjs", step, ...(step === "instructions" ? ["--local"] : [])]);
-    for (const step of ["typecheck", "build"]) await run(step, process.execPath, ["scripts/agent/gate.mjs", "run", step]);
-    if (has("scripts/agent/gate.local.sh")) await run("gate.local.sh", "bash", ["scripts/agent/gate.local.sh"]);
-    else { results.set("gate.local.sh", "SKIP (absent)"); console.log("local: gate.local.sh SKIP (absent)"); }
-    // No root Wrangler config and no release_workers: there is no Worker to start, whatever local defaults to. An explicit
-    // local setting is still honoured (and refused when there is no config to run it against).
-    const noWorker = std.local === undefined && !rootFile() && !(Array.isArray(std.release_workers) && std.release_workers.length);
-    if (config === false) { results.set("worker", "SKIP (local: false)"); console.log("local: worker SKIP (local: false)"); }
-    else if (noWorker) { results.set("worker", "SKIP (no Worker)"); console.log("local: worker SKIP (no Worker)"); }
-    else {
-      results.set("worker", "FAIL");
-      const wait = Number(env.GATE_LOCAL_WAIT_S ?? 60);
-      if (!(wait > 0 && Number.isFinite(wait))) throw new Error("GATE_LOCAL_WAIT_S must be finite seconds above 0");
-      const ready = new URL(config.ready, config.url).href;
-      const probe = async () => { try { const r = await fetch(ready, { redirect: "manual", signal: AbortSignal.timeout(500) }); await r.body?.cancel(); return r.status; } catch { return 0; } };
-      const argv = localWorkerConfig(config);
-      address = new URL(config.url);
-      if (await occupied()) throw new Error(`local Worker address already in use: ${config.url}; stop that server first`);
-      if (interrupted) throw new Error("interrupted");
-      noDotenvCredentials();
-      console.log(`local: worker starting: node_modules/.bin/wrangler ${argv.join(" ")}`);
-      worker = spawn("node_modules/.bin/wrangler", argv, { stdio: "inherit", env: localEnv, detached: true });
-      let error; worker.once("error", (e) => { error = e; });
-      const deadline = Date.now() + wait * 1000;
-      let status = 0;
-      while (Date.now() < deadline && !interrupted && !error && worker.exitCode === null && worker.signalCode === null) {
-        status = await probe();
-        if (status >= 200 && status < 300) break;
-        await new Promise((r) => setTimeout(r, 100));
+  if (!supervised) await superviseLocal({ env, args, head, passFile, dirty, dirtyBefore, git, steps, results, ...limit });
+  else {
+    // Wrangler 4.148's dotenv-expand overwrites empty env values; --env-file bypasses .dev.vars.
+    // Refuse credential sources before every child, including files produced by earlier build steps.
+    const noDotenvCredentials = (dir = ".") => {
+      for (const entry of ls(dir, { withFileTypes: true })) {
+        const path = `${dir}/${entry.name}`;
+        if (entry.isDirectory() && ![".git", "node_modules", ".wrangler"].includes(entry.name)) noDotenvCredentials(path);
+        else if (/^\.env(?:\.|$)/.test(entry.name) && /^\s*(?:export\s+)?(?:CLOUDFLARE_|CF_)(?:API_TOKEN|API_KEY|EMAIL|ACCOUNT_ID)\s*(?:=|:\s)/im.test(rd(path, "utf8")))
+          throw new Error(`local: credential-bearing ${path} refused; remove Cloudflare credentials before running the local gate`);
       }
-      if (interrupted || error || worker.exitCode !== null || worker.signalCode !== null || status < 200 || status >= 300)
-        throw new Error(`local Worker did not become ready at ${ready} within ${wait}s${error ? `: ${error.message}` : ""}`);
-      localEnv.PLAYWRIGHT_BASE_URL = localEnv.BASE_URL = config.url;
-      results.set("worker", "PASS"); console.log(`local: worker PASS (${config.url})`);
+    };
+    const dir = env.GATE_LOCAL_DIR, eventFile = `${dir}/event.json`, skipPath = `${dir}/skipped`;
+    delete env.GATE_LOCAL_DIR;
+    writeFileSync(eventFile, JSON.stringify({ pull_request: { number: 1, base: { sha: base }, head: { sha: head, ref: git("branch", "--show-current").trim() }, user: { login: "local" } } }));
+    const localEnv = { ...env, CI: "true", STD_GATE: "1", GITHUB_EVENT_NAME: "pull_request", GITHUB_EVENT_PATH: eventFile, GITHUB_SHA: head,
+      PATH: `${process.cwd()}/node_modules/.bin:${env.PATH}`, GATE_BROWSERS: "chromium", WRANGLER_SEND_METRICS: "false", WRANGLER_CHECK_FOR_UPDATES: "false", WRANGLER_HOME: `${dir}/wrangler`, HOME: dir, USERPROFILE: dir, XDG_CONFIG_HOME: `${dir}/xdg` };
+    // HOME is hidden above, and with it the user's git config, where git reads safe.directory. The trust for the repository
+    // being gated (its top level, common git dir and private worktree git dir) goes in a global config of the gate's own, which every child reads, the
+    // upload-pack a local clone forks on the source included (command-scope GIT_CONFIG_* entries do not reach that child).
+    // A global config the caller named is included, so its entries stay in force; the caller's GIT_CONFIG_* entries are untouched.
+    const trusted = [...new Set(["--show-toplevel", "--git-common-dir", "--git-dir"].map((flag) => resolvePath(git("rev-parse", flag).trim())))];
+    const quoted = (v) => `"${v.replace(/[\\"]/g, "\\$&")}"`;
+    const gitConfig = `${dir}/gitconfig`;
+    writeFileSync(gitConfig, [...(env.GIT_CONFIG_GLOBAL ? ["[include]", `\tpath = ${quoted(resolvePath(env.GIT_CONFIG_GLOBAL))}`] : []), "[safe]", ...trusted.map((p) => `\tdirectory = ${quoted(p)}`), ""].join("\n"));
+    localEnv.GIT_CONFIG_GLOBAL = gitConfig;
+    for (const k of ["RELEASE_CHECK", "GH_TOKEN", "GITHUB_TOKEN", "GITHUB_OUTPUT", "GATE_PREVIEW_URL", "BASE_URL", "PLAYWRIGHT_BASE_URL", "CLOUDFLARE_ENV", "RANGE", "ROLLBACK_BASE", "ROLLBACK_DRAFT"])
+      delete localEnv[k];
+    for (const k of Object.keys(localEnv)) if (/^(CLOUDFLARE_|CF_)/.test(k)) delete localEnv[k];
+    for (const k of ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_API_KEY", "CLOUDFLARE_EMAIL", "CLOUDFLARE_ACCOUNT_ID"]) localEnv[k] = "";
+    const occupied = async () => address && new Promise((resolve) => {
+      const socket = createConnection({ host: address.hostname.replace(/^\[|\]$/g, ""), port: Number(address.port || (address.protocol === "https:" ? 443 : 80)) });
+      const done = (used) => { socket.destroy(); resolve(used); };
+      socket.once("connect", () => done(true)); socket.once("error", () => done(false)); socket.setTimeout(500, () => done(true));
+    });
+    let abort;
+    const cancelled = new Promise((_, reject) => { abort = reject; });
+    const onSignal = (signal) => {
+      interrupted ||= { SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }[signal];
+      signalGroup(active, "SIGTERM"); signalGroup(worker, "SIGTERM");
+      abort(new Error(`interrupted by ${signal}`));
+    };
+    const onException = (error) => { interrupted ||= 1; abort(error); };
+    const handlers = { SIGINT: () => onSignal("SIGINT"), SIGTERM: () => onSignal("SIGTERM"), SIGHUP: () => onSignal("SIGHUP"), uncaughtException: onException };
+    for (const [signal, handler] of Object.entries(handlers)) process.on(signal, handler);
+    const run = async (name, command, argv) => {
+      if (interrupted) throw new Error("interrupted");
+      process.send({ step: name });
+      noDotenvCredentials();
+      console.log(`local: ${name} starting`);
+      results.set(name, "FAIL");
+      rmSync(skipPath, { force: true });
+      // only the gate's own steps (node gate.mjs ...) can report that they ran nothing; gate.local.sh is the repo's
+      const child = active = spawn(command, argv, { stdio: "inherit", env: command === process.execPath ? { ...localEnv, GATE_SKIP_FILE: skipPath } : localEnv, detached: true });
+      process.send({ active: child.pid });
+      const code = await new Promise((resolve) => { child.once("error", () => resolve(1)); child.once("exit", (c) => resolve(c ?? 1)); });
+      await stop(child); active = null; process.send({ active: null });
+      if (code || interrupted) throw new Error(`${name} failed (exit ${code})`);
+      // the step that ran nothing supplied its reason; this runner knows no skip condition itself
+      const why = has(skipPath) ? rd(skipPath, "utf8").trim() : null, result = why === null ? "PASS" : why ? `SKIP (${why})` : "SKIP";
+      results.set(name, result); console.log(`local: ${name} ${result}`);
+    };
+    const execute = async () => {
+      await run("setup --check", "scripts/agent/setup.sh", ["--check"]);
+      const config = localConfig(std.local);
+      for (const step of ["instructions", "secrets", "syntax", "install"]) await run(step, process.execPath, ["scripts/agent/gate.mjs", step, ...(step === "instructions" ? ["--local"] : [])]);
+      for (const step of ["typecheck", "build"]) await run(step, process.execPath, ["scripts/agent/gate.mjs", "run", step]);
+      if (has("scripts/agent/gate.local.sh")) await run("gate.local.sh", "bash", ["scripts/agent/gate.local.sh"]);
+      else { results.set("gate.local.sh", "SKIP (absent)"); console.log("local: gate.local.sh SKIP (absent)"); }
+      // No root Wrangler config and no release_workers: there is no Worker to start, whatever local defaults to. An explicit
+      // local setting is still honoured (and refused when there is no config to run it against).
+      const noWorker = std.local === undefined && !rootFile() && !(Array.isArray(std.release_workers) && std.release_workers.length);
+      if (config === false) { results.set("worker", "SKIP (local: false)"); console.log("local: worker SKIP (local: false)"); }
+      else if (noWorker) { results.set("worker", "SKIP (no Worker)"); console.log("local: worker SKIP (no Worker)"); }
+      else {
+        process.send({ step: "worker" });
+        results.set("worker", "FAIL");
+        const wait = Number(env.GATE_LOCAL_WAIT_S ?? 60);
+        if (!(wait > 0 && Number.isFinite(wait))) throw new Error("GATE_LOCAL_WAIT_S must be finite seconds above 0");
+        const ready = new URL(config.ready, config.url).href;
+        const probe = async () => { try { const r = await fetch(ready, { redirect: "manual", signal: AbortSignal.timeout(500) }); await r.body?.cancel(); return r.status; } catch { return 0; } };
+        const argv = localWorkerConfig(config);
+        address = new URL(config.url);
+        if (await occupied()) throw new Error(`local Worker address already in use: ${config.url}; stop that server first`);
+        if (interrupted) throw new Error("interrupted");
+        noDotenvCredentials();
+        console.log(`local: worker starting: node_modules/.bin/wrangler ${argv.join(" ")}`);
+        worker = spawn("node_modules/.bin/wrangler", argv, { stdio: "inherit", env: localEnv, detached: true });
+        process.send({ worker: worker.pid });
+        let error; worker.once("error", (e) => { error = e; });
+        const deadline = Date.now() + wait * 1000;
+        let status = 0;
+        while (Date.now() < deadline && !interrupted && !error && worker.exitCode === null && worker.signalCode === null) {
+          status = await probe();
+          if (status >= 200 && status < 300) break;
+          await new Promise((r) => setTimeout(r, 100));
+        }
+        if (interrupted || error || worker.exitCode !== null || worker.signalCode !== null || status < 200 || status >= 300)
+          throw new Error(`local Worker did not become ready at ${ready} within ${wait}s${error ? `: ${error.message}` : ""}`);
+        localEnv.PLAYWRIGHT_BASE_URL = localEnv.BASE_URL = config.url;
+        results.set("worker", "PASS"); console.log(`local: worker PASS (${config.url})`);
+      }
+      await run("e2e", process.execPath, ["scripts/agent/gate.mjs", "e2e", "--local"]);
+      if (worker && (worker.exitCode !== null || worker.signalCode !== null)) { results.set("worker", "FAIL"); throw new Error("local Worker exited during e2e"); }
+    };
+    try { await Promise.race([execute(), cancelled]); } catch (e) { console.error(`local: ${e.message}`); process.exitCode = interrupted || 1; }
+    finally {
+      await stop(active); await stop(worker);
+      if (worker) {
+        const deadline = Date.now() + 2000;
+        while (await occupied() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+        if (await occupied()) { console.error(`local: Worker port was not freed: ${address.href}`); process.exitCode = 1; }
+        else console.log("local: worker stopped; port freed");
+      }
+      rmSync(dir, { recursive: true, force: true });
+      for (const [signal, handler] of Object.entries(handlers)) process.off(signal, handler);
+      if (interrupted) process.exitCode = interrupted;
+      process.send({ active: null, worker: null, results: [...results], pass: !process.exitCode && !dirtyBefore && !dirty() && git("rev-parse", "HEAD").trim() === head });
     }
-    await run("e2e", process.execPath, ["scripts/agent/gate.mjs", "e2e", "--local"]);
-    if (worker && (worker.exitCode !== null || worker.signalCode !== null)) { results.set("worker", "FAIL"); throw new Error("local Worker exited during e2e"); }
-  };
-  try { await Promise.race([execute(), cancelled]); } catch (e) { console.error(`local: ${e.message}`); process.exitCode = interrupted || 1; }
-  finally {
-    await stop(active); await stop(worker);
-    if (worker) {
-      const deadline = Date.now() + 2000;
-      while (await occupied() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
-      if (await occupied()) { console.error(`local: Worker port was not freed: ${address.href}`); process.exitCode = 1; }
-      else console.log("local: worker stopped; port freed");
-    }
-    rmSync(dir, { recursive: true, force: true });
-    releaseLock();
-    for (const [signal, handler] of Object.entries(handlers)) process.off(signal, handler);
-    if (interrupted) process.exitCode = interrupted;
-    // GATE_LOCK_WAIT_S ran out before any step: no result at all, so a distinct exit (75, EX_TEMPFAIL) and a summary
-    // that says to run it again rather than one that reads as a failed gate.
-    else if (lockBusy) process.exitCode = 75;
-    if (lockBusy && !interrupted) console.log(`local gate ${head}: not run (machine gate lock busy). This is not a gate result: wait, then run the local gate again.`);
-    else console.log(`local gate ${head}: ${steps.map((s) => `${s}=${results.get(s)}`).join("; ")}`);
-    if (!process.exitCode && !dirtyBefore && !dirty() && git("rev-parse", "HEAD").trim() === head) writeFileSync(passFile, `${head}\n`);
   }
+
 } else if (cmd === "instructions") {
   // Agents never change instruction files. Only the org App's standards-sync (standards/v*) and approved retro
   // (retro/*) pull requests may; every other author is held to it, the repository owner's own login included.
@@ -867,8 +862,8 @@ if (cmd === "local") {
   const run = e2eCmd ? ["bash", ["-c", e2eCmd]] : script ? [pm, ["run", script, ...(pwScript && projects.length ? [...(pm === "npm" ? ["--"] : []), ...projects] : [])]] : dir && pw ? [pwBin[0], [...pwBin[1], "test", ...(everything ? (rootPw ? [] : ["-c", cfgFile]) : [dir]), ...projects]]
     : rootPw ? [pwBin[0], [...pwBin[1], "test", ...projects]]
     : nodeTests ? ["node", ["--test", `${dir}/**/*.test.*js`]] : null;
-  // No time limit of any kind here: a slow suite is a test-quality problem, not a gate failure. Only the workflow's
-  // timeout-minutes stops a runaway job.
+  // No per-suite time budget: a slow suite is a test-quality problem. The workflow job timeout (or local's overall
+  // wall-clock limit) stops a runaway gate.
   const url = env.GATE_PREVIEW_URL ?? "";
   // The @a11y contract: tests tagged @a11y skip unless RELEASE_CHECK=1. Only the release check (e2e --release) passes it on; a
   // pull request's gate clears it, even when inherited.
