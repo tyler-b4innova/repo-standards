@@ -912,10 +912,14 @@ if (cmd === "local") {
   removeOnExit(dir);
   must("tar", ["-xzf", await gitleaksArchive(dir), "-C", dir, "gitleaks"]);
   // gitleaks' default rules plus the org's own key formats: a CLIProxyAPI client key (cpk-) in a YAML list or in prose
-  // matches no default rule. A repository's own .gitleaks.toml stays in force: it is extended, not replaced.
-  const own = has(".gitleaks.toml") ? `path = ${JSON.stringify(resolvePath(".gitleaks.toml"))}` : "useDefault = true";
-  writeFileSync(`${dir}/rules.toml`, ["[extend]", own, "", "[[rules]]", 'id = "cliproxy-client-key"', 'description = "CLIProxyAPI client key"',
-    "regex = '''\\bcpk-[A-Za-z0-9_-]{32,}'''", 'keywords = ["cpk-"]', ""].join("\n"));
+  // matches no default rule. A repository's own .gitleaks.toml is kept verbatim and the key rule is appended to it: no
+  // extension layer is added around it, so its extends, allowlists and rules load at the depth they have without the
+  // engine (gitleaks drops an extension at depth 2 and targeted allowlists below depth 0). Relative extend paths
+  // resolve against the working directory, as they do without --config.
+  const rule = ['[[rules]]', 'id = "cliproxy-client-key"', 'description = "CLIProxyAPI client key"',
+    "regex = '''\\bcpk-[A-Za-z0-9_-]{32,}'''", 'keywords = ["cpk-"]', ""].join("\n");
+  const own = has(".gitleaks.toml") ? rd(".gitleaks.toml", "utf8") : "[extend]\nuseDefault = true\n";
+  writeFileSync(`${dir}/rules.toml`, `${own.endsWith("\n") ? own : `${own}\n`}\n${rule}`);
   // Always scan commits: PR base..head, merge group base..head, a dispatch re-gate's merge ref (base tip..PR head),
   // push before..sha (a new branch scans what the default branch lacks); RANGE overrides.
   const ev = env.GITHUB_EVENT_PATH ? json(env.GITHUB_EVENT_PATH) ?? {} : {}, reach = (x) => { try { git("cat-file", "-e", `${x}^{commit}`); return true; } catch { return false; } };
