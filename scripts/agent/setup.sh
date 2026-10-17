@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The one setup line every cloud environment calls: `scripts/agent/setup.sh`.
 #   (no args)  install tools and repo dependencies (a failed install never fails it), then run the check: its status
-#   --check    offline standards self-check (session start and `gate`); outside CI, fresh-base warnings and (after a clean pass) the clean-up of merged work
+#   --check    offline standards self-check (session start and `gate`); outside a GitHub runner and a local gate run, fresh-base warnings and (after a clean pass) the clean-up of merged work
 set -uo pipefail
 start=$PWD
 cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)" || exit 1
@@ -9,10 +9,14 @@ cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)" || exit 1
 case "${1:-}" in
   --check)
     node scripts/agent/check.mjs; st=$?
-    # Never in CI; fresh.mjs only warns (a stale default branch, work in the primary checkout) and never fails the session.
-    [ -n "${CI:-}" ] || node scripts/agent/fresh.mjs || true
-    # Only after a clean check, never in CI (gate runs --check too); cleanup.mjs is best-effort and never fails the session.
-    [ $st -ne 0 ] || [ -n "${CI:-}" ] || node scripts/agent/cleanup.mjs "$start" || true
+    # Not on a GitHub runner (GITHUB_ACTIONS) or in a local gate run (STD_GATE, set by gate.mjs local, whose --check is one of
+    # its steps): both act on a checkout nobody is working in. CI is no signal here: agent sandboxes export it too.
+    if [ -z "${GITHUB_ACTIONS:-}" ] && [ -z "${STD_GATE:-}" ]; then
+      # fresh.mjs only warns (a stale default branch, work in the primary checkout) and never fails the session.
+      node scripts/agent/fresh.mjs || true
+      # Only after a clean check; cleanup.mjs is best-effort and never fails the session.
+      [ $st -ne 0 ] || node scripts/agent/cleanup.mjs "$start" || true
+    fi
     exit $st ;;
   -h | --help) sed -n '2,4p' "$0"; exit 0 ;;
   "") ;;

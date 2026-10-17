@@ -12,7 +12,7 @@ has() { case "$2" in *"$1"*) return 0 ;; esac; return 1; }
 echo '{"merged":{}}' > "$T/state.json"; : > "$T/log"
 node test/stubs/cleanup-github.mjs "$T/port" "$T/state.json" "$T/log" & SP=$!
 for _ in $(seq 100); do [ -s "$T/port" ] && break; sleep 0.05; done
-export HOME="$T/home" GH_TOKEN=test-token GITHUB_API_URL="http://127.0.0.1:$(cat "$T/port")"; unset CI GITHUB_GRAPHQL_URL; mkdir -p "$HOME"
+export HOME="$T/home" GH_TOKEN=test-token GITHUB_API_URL="http://127.0.0.1:$(cat "$T/port")"; unset CI GITHUB_ACTIONS STD_GATE GITHUB_GRAPHQL_URL; mkdir -p "$HOME"
 R=$T/repo; git init -q -b main "$R"; git -C "$R" remote add origin https://github.com/acme/demo.git
 node bin/repo-standards.mjs apply --target "$R" --overlay examples/overlay.json --version 0.1.0 >/dev/null && printf '*.log\nnode_modules/\ndist/\n.dev.vars\n.wrangler/\n' >> "$R/.gitignore" && g add -A && g commit -qm init
 tip() { git -C "$R" rev-parse "$1"; }
@@ -86,10 +86,17 @@ node -e 'const f=process.argv[1],s=JSON.parse(require("fs").readFileSync(f,"utf8
 t0=$(date +%s); out2=$(run); s2=$?; dt=$(( $(date +%s) - t0 ))
 # a failing check: its failure is the result, and clean-up does not run at all (GitHub is never asked)
 : > "$T/log"; echo edit >> "$R/scripts/agent/pr.sh"; out3=$(run); s3=$?; g checkout -q -- scripts/agent/pr.sh; asked=$(grep -c POST "$T/log")
-# CI: gate runs --check; nothing is cleaned there
+# a GitHub runner: the gate runs --check there; nothing is cleaned there. CI alone (a sandbox) is a person's checkout: cleaned.
 node -e 'const f=process.argv[1],s=JSON.parse(require("fs").readFileSync(f,"utf8"));s.hang=false;require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json"
-out4=$(CI=true run); s4=$?
+out4=$(GITHUB_ACTIONS=true run); s4=$?; kept4=$(exists hang)
+# a local gate run (gate.mjs local sets STD_GATE and CI): the merged `hang` branch is still there, nothing cleaned
+out4b=$(CI=true STD_GATE=1 run); s4b=$?; kept4b=$(exists hang)
 if [ $s1 -eq 0 ] && [ "$(exists sess)" = yes ] && [ -d "$T/wt-sess" ] && [ $s2 -eq 0 ] && [ "$(exists hang)" = yes ] && [ $dt -le 4 ] \
-  && [ $s3 -eq 1 ] && ! has "cleanup:" "$out3" && [ "$asked" = 0 ] && [ $s4 -eq 0 ] && [ "$(exists hang)" = yes ] && ! has "cleanup:" "$out4"
-then ok cleanup-never-blocks; else fail cleanup-never-blocks "session=$s1/$(exists sess) hang=$s2 ${dt}s failing-check=$s3/asked=$asked ci=$s4/$(exists hang) :: $out | $out2 | $out3 | $out4"; fi
+  && [ $s3 -eq 1 ] && ! has "cleanup:" "$out3" && [ "$asked" = 0 ] && [ $s4 -eq 0 ] && [ "$kept4" = yes ] && ! has "cleanup:" "$out4" \
+  && [ $s4b -eq 0 ] && [ "$kept4b" = yes ] && ! has "cleanup:" "$out4b"
+then ok cleanup-never-blocks; else fail cleanup-never-blocks "session=$s1/$(exists sess) hang=$s2 ${dt}s failing-check=$s3/asked=$asked github-actions=$s4/$kept4 gate=$s4b/$kept4b :: $out | $out2 | $out3 | $out4 | $out4b"; fi
+# a sandbox exports CI but is a person's checkout: the same run cleans it (run from the session worktree, which keeps its own work)
+out5=$(CI=true run "$T/wt-sess"); s5=$?
+if [ $s5 -eq 0 ] && [ "$(exists hang)" = no ] && [ "$(exists sess)" = yes ] && has "cleanup:" "$out5"; then ok cleanup-ci-sandbox-cleans
+else fail cleanup-ci-sandbox-cleans "st=$s5 hang=$(exists hang) sess=$(exists sess) :: $out5"; fi
 done_cases

@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 has() { case "$2" in *"$1"*) return 0 ;; esac; return 1; }
-export HOME="$T/home" STD_FRESH_TIMEOUT_MS=1500; unset CI GH_TOKEN GITHUB_TOKEN; mkdir -p "$HOME"
+export HOME="$T/home" STD_FRESH_TIMEOUT_MS=1500; unset CI GITHUB_ACTIONS STD_GATE GH_TOKEN GITHUB_TOKEN; mkdir -p "$HOME"
 run() { (cd "$1" && bash scripts/agent/setup.sh --check 2>&1); }
 git init -q --bare -b main "$T/origin.git"
 git clone -q "$T/origin.git" "$T/seed" 2>/dev/null
@@ -31,18 +31,24 @@ out2=$(run "$T/wt"); st2=$?
 if [ $st -eq 0 ] && has "WARN: fresh-base: working on main in the primary checkout" "$out" && ! has "behind" "$out" && [ $st2 -eq 0 ] && ! has "fresh-base" "$out2"
 then ok fresh-base-warns-primary-checkout; else fail fresh-base-warns-primary-checkout "st=$st/$st2 :: $out | $out2"; fi
 
-# fresh-base-never-blocks: an origin that never answers -> one notice within the timeout, status kept; in CI nothing
-# runs (origin is never asked)
+# fresh-base-never-blocks: an origin that never answers -> one notice within the timeout, status kept; on a GitHub runner
+# (GITHUB_ACTIONS) or in a local gate run (STD_GATE) nothing runs and origin is never asked; CI alone (a sandbox exports it) still runs the check
 mkdir -p "$T/hang"; printf '#!/bin/sh\ntouch "%s/asked"\nsleep 30\n' "$T" > "$T/hang/ssh"; chmod +x "$T/hang/ssh"
 git -C "$T/work" remote set-url origin "ssh://nowhere.invalid/x.git"
 PATH0=$PATH; export PATH="$T/hang:$PATH"   # the default "ssh -o BatchMode=yes" resolves to the stalled ssh
 t0=$(date +%s); out=$(run "$T/work"); st=$?; dt=$(( $(date +%s) - t0 ))
 notes=$(grep -c "^NOTE: fresh-base: could not fetch origin/main" <<<"$out")
 asked=$([ -f "$T/asked" ] && echo yes || echo no); rm -f "$T/asked"
-out2=$(CI=true run "$T/work"); st2=$?
+out2=$(GITHUB_ACTIONS=true run "$T/work"); st2=$?
 asked2=$([ -f "$T/asked" ] && echo yes || echo no)
-if [ $st -eq 0 ] && [ "$notes" = 1 ] && [ "$asked" = yes ] && [ $dt -le 5 ] && [ $st2 -eq 0 ] && [ "$asked2" = no ] && ! has "fresh-base" "$out2"
-then ok fresh-base-never-blocks; else fail fresh-base-never-blocks "st=$st notes=$notes asked=$asked ${dt}s ci=$st2/$asked2 :: $out | $out2"; fi
+out3=$(CI=true run "$T/work"); st3=$?
+asked3=$([ -f "$T/asked" ] && echo yes || echo no); rm -f "$T/asked"
+# a local gate run (gate.mjs local sets STD_GATE and CI) is no session start: origin is never asked
+out4=$(CI=true STD_GATE=1 run "$T/work"); st4=$?
+asked4=$([ -f "$T/asked" ] && echo yes || echo no); rm -f "$T/asked"
+if [ $st -eq 0 ] && [ "$notes" = 1 ] && [ "$asked" = yes ] && [ $dt -le 5 ] && [ $st2 -eq 0 ] && [ "$asked2" = no ] && ! has "fresh-base" "$out2" && [ $st3 -eq 0 ] && [ "$asked3" = yes ] \
+  && [ $st4 -eq 0 ] && [ "$asked4" = no ] && ! has "fresh-base" "$out4"
+then ok fresh-base-never-blocks; else fail fresh-base-never-blocks "st=$st notes=$notes asked=$asked ${dt}s ci=$st2/$asked2 gate=$st4/$asked4 :: $out | $out2 | $out4"; fi
 export PATH=$PATH0
 # fresh-base-never-prompts: the fetch never runs an askpass program or credential helper, even when the environment
 # or git config names one (an HTTP origin that answers 401); the default ssh gets BatchMode=yes; a custom
