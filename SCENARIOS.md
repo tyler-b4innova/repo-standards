@@ -17,7 +17,7 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 - **`gate-lock-released-on-signal`**: a gate holding the lock removes it when stopped by SIGTERM (as on normal exit).
 - **`gate-lock-stale-takeover`**: a lock whose holder PID is not running (same host and PID namespace) is taken over at once with a message; a holder whose PID cannot be checked from here (another host or PID namespace) is judged by its heartbeat (the holder touches the lock every 10 s; untouched for 120 s is stale).
 - **`gate-lock-stale-reused-pid`**: a lock untouched for 120 s is stale even when its PID runs on this host (a PID reused after its holder was killed outright), so a killed gate never blocks the machine forever.
-- **`gate-lock-wait-limit`**: with `GATE_LOCK_WAIT_S`, a gate still waiting after that many seconds exits non-zero with `lock busy … retry later`, leaving the holder's lock in place.
+- **`gate-lock-wait-limit`**: with `GATE_LOCK_WAIT_S`, a gate still waiting after that many seconds runs no step, exits 75 (EX_TEMPFAIL) with `lock busy`, says it is not a gate result and to run it again, and its summary is `not run (machine gate lock busy)`, never a list of failed or undefined steps; the holder's lock stays in place.
 - **`gate-lock-off-in-ci`**: under `GITHUB_ACTIONS=true` no lock is taken or waited for (runners are isolated).
 - **`gate-lock-opt-out`**: `GATE_LOCK=off` skips the lock and says so.
 - **`gate-lock-releases-only-its-own`**: a gate releases the lock only while it still names that gate; a lock taken over meanwhile is left alone.

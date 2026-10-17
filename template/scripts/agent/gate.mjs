@@ -461,11 +461,12 @@ if (cmd === "local") {
     const why = has(skipPath) ? rd(skipPath, "utf8").trim() : null, result = why === null ? "PASS" : why ? `SKIP (${why})` : "SKIP";
     results.set(name, result); console.log(`local: ${name} ${result}`);
   };
-  let releaseLock = () => {};
+  let releaseLock = () => {}, lockBusy = false;
   const execute = async () => {
     // One heavy local gate per machine (gate-lock.mjs): wait for any other to finish before the first step.
     const top = git("rev-parse", "--show-toplevel").trim();
-    releaseLock = await machineLock({ env, repo: `${top.split("/").pop()}@${git("branch", "--show-current").trim() || head.slice(0, 7)}`, interrupted: () => Boolean(interrupted) });
+    try { releaseLock = await machineLock({ env, repo: `${top.split("/").pop()}@${git("branch", "--show-current").trim() || head.slice(0, 7)}`, interrupted: () => Boolean(interrupted) }); }
+    catch (e) { lockBusy = e.message.startsWith("lock busy:"); throw e; }
     if (interrupted) throw new Error("interrupted");
     await run("setup --check", "scripts/agent/setup.sh", ["--check"]);
     const config = localConfig(std.local);
@@ -520,7 +521,11 @@ if (cmd === "local") {
     releaseLock();
     for (const [signal, handler] of Object.entries(handlers)) process.off(signal, handler);
     if (interrupted) process.exitCode = interrupted;
-    console.log(`local gate ${head}: ${steps.map((s) => `${s}=${results.get(s)}`).join("; ")}`);
+    // GATE_LOCK_WAIT_S ran out before any step: no result at all, so a distinct exit (75, EX_TEMPFAIL) and a summary
+    // that says to run it again rather than one that reads as a failed gate.
+    else if (lockBusy) process.exitCode = 75;
+    if (lockBusy && !interrupted) console.log(`local gate ${head}: not run (machine gate lock busy). This is not a gate result: wait, then run the local gate again.`);
+    else console.log(`local gate ${head}: ${steps.map((s) => `${s}=${results.get(s)}`).join("; ")}`);
     if (!process.exitCode && !dirtyBefore && !dirty() && git("rev-parse", "HEAD").trim() === head) writeFileSync(passFile, `${head}\n`);
   }
 } else if (cmd === "instructions") {

@@ -81,7 +81,8 @@ kill "$REUSED" 2>/dev/null; wait "$REUSED" 2>/dev/null
 plant 1 elsewhere ""
 start fresh GATE_LOCK_WAIT_S=1
 wait "$GATE"; code=$?
-if [ "$code" -ne 0 ] && seen 'lock busy: another local gate holds the machine gate lock (pid 1 (someone on elsewhere' fresh && ! seen 'setup --check starting' fresh && grep -q '"host":"elsewhere"' "$LOCK"; then ok gate-lock-wait-limit
+if [ "$code" -eq 75 ] && seen 'lock busy: another local gate holds the machine gate lock (pid 1 (someone on elsewhere' fresh && seen 'not a gate result: wait, then run the local gate again' fresh \
+  && grep -q '^local gate [0-9a-f]*: not run (machine gate lock busy)' "$T/fresh.log" && ! grep -q '=undefined' "$T/fresh.log" && ! seen 'setup --check starting' fresh && grep -q '"host":"elsewhere"' "$LOCK"; then ok gate-lock-wait-limit
 else fail gate-lock-wait-limit "exit=$code; $(cat "$T/fresh.log")"; fi
 rm -f "$LOCK"
 

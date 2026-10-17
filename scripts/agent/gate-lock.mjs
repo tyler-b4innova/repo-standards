@@ -6,7 +6,8 @@
 // directory: it coordinates the machine's trusted users and is not a security boundary.
 //   GATE_LOCK_DIR     shared directory (default /tmp/std-gate-lock; the system temp directory on Windows): a real
 //                     directory (not a symlink) every user of the gate can write; created mode 0777 when missing
-//   GATE_LOCK_WAIT_S  give up after this many seconds with "lock busy" (default: wait until the lock is free)
+//   GATE_LOCK_WAIT_S  give up after this many seconds with "lock busy" and exit 75, not a gate result (default: wait
+//                     until the lock is free)
 import { randomBytes } from "node:crypto";
 import { accessSync, closeSync, constants, fchmodSync, fstatSync, futimesSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readlinkSync, renameSync, rmdirSync, unlinkSync, writeSync } from "node:fs";
 import { hostname, tmpdir, userInfo } from "node:os";
@@ -163,7 +164,7 @@ export async function machineLock({ env = process.env, repo, log = console.log, 
       if (outcome === "changed") continue;
     }
     const now = Date.now(), waited = Math.round((now - start) / 1000);
-    if (now >= deadline) throw new Error(`lock busy: another local gate holds the machine gate lock (${describe(holder)}) after ${waited}s; retry later`);
+    if (now >= deadline) throw new Error(`lock busy: another local gate holds the machine gate lock (${describe(holder)}) after ${waited}s (GATE_LOCK_WAIT_S); not a gate result: wait, then run the local gate again`);
     const line = describe(holder);
     if (line !== said || now - reported >= REPORT_MS) {
       log(`local: queued behind another local gate: ${line}; waited ${waited}s. This gate is waiting its turn, not stuck: do not stop it or the holder.`);
