@@ -33,11 +33,10 @@ workflow=$R/.github/workflows/std-gate.yml
 has() { grep -qF -e "$1" "$T/$2.log"; }
 waitfor() { local i; for i in $(seq 1 "${3:-60}"); do has "$1" "$2" && return 0; sleep 0.1; done; return 1; }
 start() { local name=$1; shift; (cd "$R" && exec env "$@" node scripts/agent/gate.mjs local --base main) > "$T/$name.log" 2>&1 & GATE=$!; }
-stopgate() { kill -TERM "$GATE" 2>/dev/null; wait "$GATE" 2>/dev/null; }
 # An outer watchdog is essential on the old implementation: report the missing timeout, never leave a hung test.
 finish() { local i; for i in $(seq 1 60); do kill -0 "$GATE" 2>/dev/null || break; sleep 0.1; done; kill -TERM "$GATE" 2>/dev/null; wait "$GATE" 2>/dev/null; }
 # Applied timeout, absent workflow/setting, extension-only override validation, and a very large extension (no Node timer overflow).
-start applied FAST=1; wait "$GATE"; ax=$?
+start applied FAST=1; wait "$GATE"
 cp "$workflow" "$T/workflow"
 rm "$workflow"; start absent FAST=1; wait "$GATE"
 cp "$T/workflow" "$workflow"; sed '/^    timeout-minutes:/d' "$workflow" > "$T/no-setting"; cp "$T/no-setting" "$workflow"
@@ -54,6 +53,8 @@ if [ "$limits" -eq 1 ] && has 'wall-clock limit 10.5 min' applied && has 'wall-c
 else fail gate-local-limit-from-apply "validation=$limits; $(cat "$T/applied.log" "$T/absent.log" "$T/no-setting.log" "$T/extended.log" "$T/huge.log")"; fi
 # A small rendered timeout keeps the real timer test fast; the override may extend it fractionally, never shorten it.
 sed 's/^    timeout-minutes: .*/    timeout-minutes: 0.02/' "$T/workflow" > "$workflow"
+# A clean timed-out checkout must not qualify for the pass record that pr.sh ready reads.
+git -C "$R" add .github/workflows/std-gate.yml; git -C "$R" commit -qm 'small fixture timeout'
 rec=$R/$(git -C "$R" rev-parse --git-path std-local-gate)
 echo stale > "$rec"
 start holder GATE_LOCAL_TIMEOUT_MIN=0.08; FIRST=$GATE
