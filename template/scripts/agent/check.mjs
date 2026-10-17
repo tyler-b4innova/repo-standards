@@ -259,7 +259,7 @@ else {
       fail(`${f} job ${j.name} has no timeout-minutes (GitHub's default is 360 minutes)`, `add timeout-minutes to ${j.name}: the org's one job timeout, the overlay's gate.timeout_minutes (the value every job in std-gate.yml carries)`);
     const runs = jobs.flatMap((j) => j.body).filter((l) => !/^\s*(-\s*)?(name|uses|id|if):/.test(l)).join("\n");
     if (/playwright install\b(?![^\n;&|]*\b(chromium|chrome|firefox|webkit|msedge)\b)/.test(runs))
-      fail(`${f} runs playwright install without naming a browser (it downloads all of them)`, "name the browser: playwright install chromium");
+      fail(`${f} runs playwright install without naming a browser (it downloads all of them)`, "name the browser: playwright install --with-deps chromium");
     // The trigger alone decides, never the words in its steps or the name of its branch. `managed` (std-*, hash-locked) keeps
     // its exemption: std-gate.yml is the one gate.
     const prs = triggers.filter((t) => ["pull_request", "pull_request_target"].includes(t));
@@ -271,9 +271,10 @@ else {
   if (/playwright install\b(?![^\n;&|]*\b(chromium|chrome|firefox|webkit|msedge)\b)/.test(scripts))
     fail("package.json scripts or gate.local.sh run playwright install without naming a browser", "name the browser: playwright install chromium");
   // Browser system packages come from the gate's own install (gate.mjs install: the named browsers, and system packages only
-  // when a library is missing). --with-deps and install-deps run apt through sudo for any user, which an agent sandbox
-  // (no_new_privs) cannot run. A GitHub runner has passwordless sudo, so its workflow steps keep --with-deps.
-  if (/--with-deps(?![\w-])|\binstall-deps\b/.test(scripts))
+  // when a library is missing). A real Playwright invocation of --with-deps or install-deps runs apt through sudo for any user,
+  // which an agent sandbox (no_new_privs) cannot run. Only that invocation is matched: an unrelated --with-deps or install-deps
+  // mention is not Playwright's. A GitHub runner has passwordless sudo, so its workflow steps keep --with-deps.
+  if (/\bplaywright\s+install-deps\b|\bplaywright\s+install\b[^\n;&|]*--with-deps(?![\w-])/.test(scripts))
     fail("package.json scripts or gate.local.sh install system packages with --with-deps or install-deps (they need root)", "install the browsers with node scripts/agent/gate.mjs install, which installs system packages only when one is missing; a gate never needs root");
   // Quarantined tests: @quarantine(<issue link>, until YYYY-MM-DD), at most 14 days out, never past due.
   let q = "";
