@@ -260,22 +260,31 @@ P1=$S/bin-present; mksetup "$SR" "$P1" yes yes
 o1=$(sy PATH="$P1" LDD_MISSING=); l1=$(cat "$SL"); s1=$(cat "$SUL")
 if [ -z "$s1" ] && has "playwright install chromium" "$l1" && ! has "install-deps" "$l1" && ! has "with-deps" "$l1" && ! has "sudo cannot run here" "$o1"; then ok setup-no-sudo-without-need
 else fail setup-no-sudo-without-need "sudo=[$s1] playwright=[$l1] out=$o1"; fi
-# setup-installs-when-sudo-works: a library is missing and sudo can run: setup installs the apt packages and the browser's libraries
+# setup-installs-when-sudo-works: a library is missing and the host can install packages: setup installs the apt packages (through sudo -n
+# without root; directly as UID 0, which needs no sudo) and the browser's libraries
 P2=$S/bin-sudo; mksetup "$SR" "$P2" yes no
 o2=$(sy PATH="$P2" LDD_MISSING=1); l2=$(cat "$SL"); s2=$(cat "$SUL")
-if has "sudo -n true" "$s2" && has "sudo -n apt-get install" "$s2" && has "install-deps chromium" "$l2" && ! has "sudo cannot run here" "$o2"; then ok setup-installs-when-sudo-works
+if [ "$(id -u)" = 0 ]; then apt_ok=$(has "apt-get install" "$s2" && ! has "sudo" "$s2" && echo yes)
+else apt_ok=$(has "sudo -n true" "$s2" && has "sudo -n apt-get install" "$s2" && echo yes); fi
+if [ "$apt_ok" = yes ] && has "install-deps chromium" "$l2" && ! has "sudo cannot run here" "$o2"; then ok setup-installs-when-sudo-works
 else fail setup-installs-when-sudo-works "sudo=[$s2] playwright=[$l2] out=$o2"; fi
-# setup-no-sudo-under-no-new-privs: agent sandboxes. A library and gh are missing: no sudo call (not even sudo -n true), no install,
-# and one line names the packages and the host requirement. Linux with setpriv, not root.
-if command -v setpriv >/dev/null 2>&1 && [ "$(id -u)" != 0 ]; then
+# setup-no-sudo-under-no-new-privs: agent sandboxes. A library and gh are missing: no sudo call (not even sudo -n true), no install, and one
+# line names the packages and the host requirement. Linux with setpriv. As UID 0 the case runs as nobody (65534), as the browser-deps case
+# does: the trees and logs it writes are opened to that user for this case only.
+if command -v setpriv >/dev/null 2>&1; then
   P3=$S/bin-nnp; mksetup "$SR" "$P3" yes no
   SP=$(command -v setpriv); : > "$SL"; : > "$SUL"
-  o3=$(cd "$SR" && env SETUP_LOG="$SL" SUDO_LOG="$SUL" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH="$S/browsers" LDD_MISSING=1 PATH="$P3" "$SP" --no-new-privs bash scripts/agent/setup.sh 2>&1)
+  if [ "$(id -u)" = 0 ]; then
+    chmod -R a+rX "$S" "$SR"; chmod 666 "$SL" "$SUL"
+    rm -f "$P3/node"; cp "$(command -v node)" "$P3/node"; chmod 755 "$P3/node"
+  fi
+  o3=$(cd "$SR" && env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0='*' SETUP_LOG="$SL" SUDO_LOG="$SUL" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH="$S/browsers" LDD_MISSING=1 PATH="$P3" "$SP" --no-new-privs $DROP bash scripts/agent/setup.sh 2>&1)
   l3=$(cat "$SL"); s3=$(cat "$SUL")
   if [ -z "$s3" ] && ! has "install-deps" "$l3" && ! has "apt-get" "$s3" && [ "$(grep -c 'sudo cannot run here' <<<"$o3")" = 1 ] && has "system packages" "$o3" && has "libgbm.so.1" "$o3" \
     && has "playwright install chromium" "$l3"; then ok setup-no-sudo-under-no-new-privs
   else fail setup-no-sudo-under-no-new-privs "sudo=[$s3] playwright=[$l3] out=$o3"; fi
-else echo "skip setup-no-sudo-under-no-new-privs (needs setpriv, Linux, not root)"; fi
+elif [ "$(uname -s)" = Linux ]; then echo "skip setup-no-sudo-under-no-new-privs (needs setpriv)"
+else echo "skip setup-no-sudo-under-no-new-privs (linux only: setpriv)"; fi
 
 # e2e-budget-removed: a slow suite passes, a leftover e2e.budget warns in --check and changes nothing, and an overlay still setting gate.budget loads with one notice
 R=$(mkrepo)
