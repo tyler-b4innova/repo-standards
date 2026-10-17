@@ -183,6 +183,14 @@ if waitfor 'setup --check starting' noparent 50 && seen 'machine gate lock unava
 else fail gate-lock-dir-parent-missing "$(ls -la "$T"; cat "$T/noparent.log")"; fi
 stopgate
 
+# An existing sticky lock directory (mode 1777, like /tmp itself) is refused: another user could not take over a stale
+# lock in it. The gate warns and runs without the lock.
+mkdir "$T/sticky" && chmod 1777 "$T/sticky"
+start sticky GATE_LOCK_DIR="$T/sticky"
+if waitfor 'setup --check starting' sticky 50 && seen 'machine gate lock unavailable' sticky && seen 'sticky (mode 1777)' sticky && [ ! -e "$T/sticky/gate.lock" ]; then ok gate-lock-sticky-dir-refused
+else fail gate-lock-sticky-dir-refused "$(ls -la "$T/sticky"; cat "$T/sticky.log")"; fi
+stopgate
+
 # Off under GitHub Actions and with GATE_LOCK=off: no lock file is made and a planted holder is ignored.
 sleep 300 & HOLDER=$!
 plant "$HOLDER"
@@ -237,6 +245,13 @@ if [ "$(id -u)" != 0 ] && sudo -n true 2>/dev/null && id nobody >/dev/null 2>&1;
   out=$(node "$T/take.mjs" "$MOD" "$X/lock" 2>&1)
   if [ "$owner" = other ] && printf '%s' "$out" | grep -q 'took over a stale machine gate lock from pid [0-9]* (nobody on .*is no longer running' && printf '%s' "$out" | grep -q 'machine gate lock taken'; then ok gate-lock-cross-user-takeover
   else fail gate-lock-cross-user-takeover "owner=$owner other: $(cat "$T/xu-other.log") :: $out"; fi
+  # Through the real gate, in an existing (pre-created, non-sticky) lock directory: another user dies holding the lock.
+  mkdir "$X/pre" && chmod 0777 "$X/pre"
+  sudo -n -u nobody env -i PATH="$PATH" sh -c 'umask 077; exec "$0" "$@"' "$(command -v node)" "$X/take.mjs" "$X/gate-lock.mjs" "$X/pre" die > "$T/xu-other2.log" 2>&1
+  start xu GATE_LOCK_DIR="$X/pre"
+  if waitfor 'took over a stale machine gate lock from pid' xu && seen '(nobody on' xu && waitfor 'setup --check starting' xu 50 && grep -q "\"pid\":$GATE," "$X/pre/gate.lock"; then ok gate-lock-cross-user-takeover
+  else fail gate-lock-cross-user-takeover "entry point: $(cat "$T/xu-other2.log"; cat "$T/xu.log")"; fi
+  stopgate
   sudo -n rm -rf "$X"
 else echo "skip gate-lock-cross-user-takeover (platform: needs a second user through passwordless sudo)"; fi
 done_cases
