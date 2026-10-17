@@ -257,4 +257,20 @@ if [ "$knob" -eq 1 ] && [ "$tc" -eq 0 ] && [ "$tg" -eq 0 ] && [ "$tl" -eq 0 ] &&
 else fail gate-local-trusts-checkout "scrubbed-home git (knob works: $knob): $scrubbed | exit=$tc summary: $tsum | caller global exit=$tg summary: $gsum | linked worktree exit=$tl summary: $lsum"; grep -m3 -i 'dubious\|caller.*git' "$T/trust.log" "$T/trust-global.log" "$T/trust-linked.log"; fi
 printf '\nLocal gate evidence (real Worker):\n'; tail -1 "$T/default.log"; tail -1 "$T/failing.log"; tail -1 "$T/optout.log"
 printf 'Local gate evidence (steps that ran nothing):\n'; echo "$skipsum"; echo "$nssum"
+# gitleaks-temp-dir-removed: the secret scan's temp directory is gone after a success, after a checksum failure and after
+# a SIGTERM during the download (a signal ends Node without its exit event, so the handler must route it through exit)
+if node -e 'process.exit(["linux", "darwin"].includes(process.platform) && ["x64", "arm64"].includes(process.arch) ? 0 : 1)'; then
+  tt=$T/secrets-tmp; mkdir -p "$tt"; left() { ls -A "$tt" | wc -l | tr -d ' '; }
+  (cd "$R" && exec env -u GITHUB_EVENT_PATH -u GITHUB_EVENT_NAME GATE_GITLEAKS_ARCHIVE="$GATE_GITLEAKS_ARCHIVE" TMPDIR="$tt" node scripts/agent/gate.mjs secrets) > "$T/tmp-ok.log" 2>&1; x1=$?; l1=$(left)
+  printf 'not an archive\n' > "$T/junk.tgz"
+  (cd "$R" && exec env -u GITHUB_EVENT_PATH -u GITHUB_EVENT_NAME GATE_GITLEAKS_ARCHIVE="$T/junk.tgz" TMPDIR="$tt" node scripts/agent/gate.mjs secrets) > "$T/tmp-bad.log" 2>&1; x2=$?; l2=$(left)
+  node -e 'require("http").createServer(() => {}).listen(0, "127.0.0.1", function () { require("fs").writeFileSync(process.argv[1], String(this.address().port)) })' "$T/hang.port" & hang=$!
+  for i in $(seq 100); do [ -s "$T/hang.port" ] && break; sleep 0.1; done
+  (cd "$R" && exec env -u GITHUB_EVENT_PATH -u GITHUB_EVENT_NAME -u GATE_GITLEAKS_ARCHIVE GATE_GITLEAKS_BASE="http://127.0.0.1:$(cat "$T/hang.port")" TMPDIR="$tt" node scripts/agent/gate.mjs secrets) > "$T/tmp-signal.log" 2>&1 & run_pid=$!
+  for i in $(seq 100); do ls "$tt"/gitleaks-* >/dev/null 2>&1 && break; sleep 0.1; done; started=$(left)
+  kill -TERM "$run_pid" 2>/dev/null; wait "$run_pid"; x3=$?; l3=$(left)
+  kill "$hang" 2>/dev/null; wait "$hang" 2>/dev/null
+  if [ "$x1" -eq 0 ] && has 'no leaks found' tmp-ok && [ "$l1" -eq 0 ] && [ "$x2" -eq 1 ] && has 'checksum mismatch' tmp-bad && [ "$l2" -eq 0 ] && [ "$started" -eq 1 ] && [ "$x3" -eq 143 ] && [ "$l3" -eq 0 ]; then ok gitleaks-temp-dir-removed
+  else fail gitleaks-temp-dir-removed "success=$x1 left=$l1 mismatch=$x2 left=$l2 started=$started signal=$x3 left=$l3"; fi
+else echo "skip gitleaks-temp-dir-removed (no pinned gitleaks build for this platform)"; fi
 done_cases
