@@ -12,7 +12,7 @@
 //   GATE_LOCK_WAIT_S  give up after this many seconds with "lock busy" and exit 75, not a gate result (default: wait
 //                     until the lock is free)
 import { randomBytes } from "node:crypto";
-import { accessSync, closeSync, constants, fchmodSync, fstatSync, futimesSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readlinkSync, renameSync, rmdirSync, unlinkSync, writeSync } from "node:fs";
+import { accessSync, closeSync, constants, fchmodSync, fstatSync, futimesSync, linkSync, lstatSync, mkdtempSync, openSync, readFileSync, readlinkSync, renameSync, rmdirSync, unlinkSync, writeSync } from "node:fs";
 import { hostname, tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -85,7 +85,8 @@ const describe = (h) => (h ? `pid ${h.pid} (${h.user} on ${h.host}, ${h.repo}, s
 const lstat = (p) => { try { return lstatSync(p); } catch (e) { if (e.code === "ENOENT") return null; throw e; } };
 function sharedDir(dir) {
   if (!lstat(dir)) {
-    mkdirSync(dirname(dir), { recursive: true });
+    // Its parent must already exist: one created here would carry this user's umask, which other users may not traverse.
+    if (!lstat(dirname(dir))) throw new Error(`its parent ${dirname(dir)} does not exist; use a directory every user of the gate can reach`);
     const fresh = mkdtempSync(`${dir}.new-`);
     try {
       if (process.platform !== "win32") {
@@ -179,6 +180,15 @@ export async function machineLock({ env = process.env, repo, log = console.log, 
         if (left > 0) guarded(guard, () => {
           const again = read(file);
           if (!again || again.text !== seen.text || !staleness(parse(again.text), again.mtime, Date.now())) { outcome = "changed"; return; }
+          if (lstat(file)?.isDirectory()) {
+            // A rename cannot replace a directory with a file: move the verified directory aside, then create the lock
+            // exclusively, so a gate that took the free name first keeps it.
+            const aside = `${file}.aside-${randomBytes(8).toString("hex")}`;
+            try { renameSync(file, aside); } catch { outcome = "failed"; return; }
+            try { rmdirSync(aside); } catch {}
+            try { writeRecord(file, record); outcome = "took"; } catch (e) { outcome = e.code === "EEXIST" ? "changed" : "failed"; }
+            return;
+          }
           const fresh = `${file}.new-${randomBytes(8).toString("hex")}`;
           let made = false;
           outcome = "failed";
