@@ -3,7 +3,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 . test/lib.sh
-unset GITHUB_ACTIONS GATE_LOCK GATE_LOCK_WAIT_S GATE_LOCAL_TIMEOUT_MIN GITHUB_EVENT_PATH GITHUB_EVENT_NAME
+unset GITHUB_ACTIONS GATE_LOCK GATE_LOCK_WAIT_S GATE_LOCK_SLOTS GATE_LOCAL_TIMEOUT_MIN GITHUB_EVENT_PATH GITHUB_EVENT_NAME
 T=$(mktemp -d)
 trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$T"' EXIT
 R=$T/repo; mkdir "$R"; git -C "$R" init -q -b main
@@ -88,4 +88,20 @@ start blocked FAST=1 GATE_LOCAL_TIMEOUT_MIN=0.04
 finish; blocked=$?
 if [ "$blocked" -eq 124 ] && has 'TIMEOUT (exceeded 0.04 min during setup --check)' blocked && [ ! -e "$rec" ] && [ ! -e "$T/lock/gate.lock" ]; then ok gate-local-wall-clock
 else fail gate-local-wall-clock "blocked event loop exit=$blocked; $(cat "$T/blocked.log")"; fi
+# Slot integration: a timeout frees permit 2 while a live holder keeps permit 1; the queued gate takes only permit 2.
+rm "$R/.env"
+sleep 30 & HOLDER=$!
+node - "$T/lock/gate.lock" "$HOLDER" <<'JS'
+const fs=require('fs'),os=require('os');let ns='';try{ns=fs.readlinkSync('/proc/self/ns/pid')}catch{}
+fs.writeFileSync(process.argv[2],JSON.stringify({pid:Number(process.argv[3]),user:'fixture',host:os.hostname(),ns,repo:'other@main',worktree:'/fixture/other',started:new Date().toISOString()}));
+JS
+start slot-holder GATE_LOCK_SLOTS=2 GATE_LOCAL_TIMEOUT_MIN=0.08; FIRST=$GATE
+waitfor 'setup --check starting' slot-holder
+start slot-queued FAST=1 GATE_LOCK_SLOTS=2 GATE_LOCK_WAIT_S=8; SECOND=$GATE
+waitfor 'queued behind 2 local gates' slot-queued 20
+GATE=$FIRST; finish; sx=$?
+GATE=$SECOND; finish; qx=$?
+if [ "$sx" -eq 124 ] && has 'machine gate lock taken (permit 2 of 2:' slot-holder && has 'TIMEOUT (exceeded 0.08 min during setup --check)' slot-holder && has 'queued behind 2 local gates' slot-queued && has 'machine gate lock taken (permit 2 of 2:' slot-queued && has 'setup --check starting' slot-queued && grep -q "\"pid\":$HOLDER," "$T/lock/gate.lock" && [ ! -e "$T/lock/gate.lock.2" ] && [ ! -e "$rec" ]; then ok gate-lock-released-on-timeout
+else fail gate-lock-released-on-timeout "permit 2 holder=$sx queued=$qx; $(cat "$T/slot-holder.log" "$T/slot-queued.log")"; fi
+kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null
 done_cases

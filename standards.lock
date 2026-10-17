@@ -1,4 +1,4 @@
-# example v0.8.21 internal engine 0.8.21
+# example v0.8.23 internal engine 0.8.23
 858a14ce18d56f9742af174b3b15ad38cc1fddec3817ba101c24ab04aebeac96  .agents/skills/std-babysit/SKILL.md
 56eeb0978f20d2ca911fbb5b140d68b2de336283668553511eb0eed95de6f8fa  .agents/skills/std-evidence/SKILL.md
 d875810599db1d3189dfd0b45fad04a755032523c9fb2b45903a4079c9fcb3e6  .agents/skills/std-file-pr/SKILL.md
@@ -13,12 +13,12 @@ afee2bcacbed0ee2626cc82b0d1d8c92760133e4f061b53773a2f31585ce84a1  scripts/agent/
 46a0192cafd501887eaab127f799247a073456f11f1e2d1a4d9a8f0509b97f78  scripts/agent/cleanup.mjs
 04c219c30b3a0ec531806167b24d5b7803a20877fe970b050110f5ceca8b67b5  scripts/agent/evidence.mjs
 02a65e9c7a3baf8f89e91399249be69d4da00162d6dd876ffcf6335e4622f83c  scripts/agent/fresh.mjs
-c418c83a55c7da18d83284d6d40df9d542093bd86c17e4ae3c65e0f961cf4afe  scripts/agent/gate-lock.mjs
+dd8e69411108655589049d2bcd24f352af52c2c166f8fc90a8d56e4784eb9509  scripts/agent/gate-lock.mjs
 0e24e8b874946fdb67e6ac8e2503471405348a1bc64e8d678fcb862f89ac0878  scripts/agent/gate.mjs
 41e0b18586c7967cf33038c19d10620861d3f267f87c4f03d913a9457ba487bc  scripts/agent/jsscan.mjs
 3c3042738a15d1eae5d9f17d05f1c53c755b0f6a97f4b9fd816e9db33c04e325  scripts/agent/local-timeout.mjs
 9e823c34444bb0f2004c3095aa0b74f85ad62ff06308a265ef3a275c84173b7b  scripts/agent/local.mjs
-bf180f2dcfff67038e336e8162e96f4d2e9a1b6ea28add1f8eaaa7385b87f575  scripts/agent/pack.json
+2bb8c22b6b8d1365a8ca20721933d3ccb06f578d443d9c532defed1c8a0da364  scripts/agent/pack.json
 f931301273d5f4fa6e77183f1ba995d54c25e4771e30b1d59c89dc7aae870b4c  scripts/agent/pins.mjs
 f8e2755413af6688a8041a0fecf0970a76024dfb33de3b80ccb150ca3b9194d3  scripts/agent/portal-pass.mjs
 fcfb9dce21d741771fe6ee85fa70f1a77e0b935c8740617b795a5fe7dc3fa8bf  scripts/agent/pr.sh
