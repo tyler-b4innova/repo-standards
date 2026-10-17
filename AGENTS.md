@@ -20,6 +20,10 @@
 - No per-repo exceptions, and no new rules, gates or numbers to fix a symptom: use the one org-wide pattern or remove something. Never present an inference as the founder's decision; his decisions are his own words in the issue, commit or PR they concern.
 - Cloudflare deploys: Workers Builds in the account that owns the Worker runs `scripts/agent/release.mjs`. Nothing is deployed by hand, and no Cloudflare tokens in GitHub.
 - Deploys run from the org's CI builds, never from a personal token.
+
+## Code Review Rules
+- Report every finding you can see in this head in one review, not only the first.
+- In a re-review, raise only what the new commits changed or what the last fix missed, and say which. A fail-open, security or data-loss finding that an earlier round missed is still raised at any severity, marked missed earlier.
 <!-- std:end -->
 
 ## Repo rules
