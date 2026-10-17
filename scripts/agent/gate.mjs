@@ -177,12 +177,13 @@ function canEscalate() {
 // The build folder is any `chrome-linux*` or `chrome-headless-shell-linux*`: Playwright renames it between versions and
 // architectures (chrome-linux up to 1.56; chrome-linux64 and chrome-headless-shell-linux64 on x64 from 1.57;
 // chrome-linux-arm64 on arm64 from 1.63), so no one name decides; a browser without one has nothing to scan and is missing.
-// Firefox and WebKit load libraries it also checks through a library path and dlopen (libxul.so, libGLESv2.so.2,
-// libx264.so) that this scan cannot reproduce, so they are always reported missing. Linux only: elsewhere there are none.
+// Firefox and WebKit load libraries through a library path and dlopen (libxul.so, libGLESv2.so.2, libx264.so) that this scan
+// cannot reproduce: it checks what ldd sees in their folders; a dlopen-only library is left to the browser run.
 // What this run's browsers have. Chromium is checked by its build folders: ldd over each library and executable, with the build
-// folder on LD_LIBRARY_PATH, as Playwright does. Firefox and WebKit are checked the same way over their folders when a folder has
-// a file to check. A library that ldd reports missing is a confirmed problem (`missing`); a browser with no folder to check is
-// `unchecked`: named, never counted as missing. Linux only; elsewhere there is nothing to check.
+// folder on LD_LIBRARY_PATH, as Playwright does. Firefox and WebKit are checked the same way over their folders when a folder has a
+// file to check. Only the revision folders this playwright-core names are checked (ownFolders), so another project's revision in a
+// shared cache does not count here. A library that ldd reports missing is a confirmed problem (`missing`); a browser with no folder to
+// check is `unchecked`: named, never counted as missing. Linux only; elsewhere there is nothing to check.
 function browserCheck() {
   const missing = [], unchecked = [];
   if ((env.GATE_PLATFORM || process.platform) !== "linux") return { missing, unchecked };
@@ -196,7 +197,8 @@ function browserCheck() {
   };
   for (const b of browsers()) {
     if (b === "chromium") {
-      const folders = dirs.filter((x) => /^chromium(_headless_shell)?-/.test(x));
+      const own = ownFolders(["chromium", "chromium-headless-shell"]);
+      const folders = own ? own.filter((x) => isDir(`${root}/${x}`)) : dirs.filter((x) => /^chromium(_headless_shell)?-/.test(x));
       if (!folders.some((x) => /^chromium-/.test(x))) { missing.push(`chromium: not found under ${root}`); continue; }
       for (const x of folders) {
         const builds = isDir(`${root}/${x}`) ? ls(`${root}/${x}`).filter((g) => /^chrome-(headless-shell-)?linux/.test(g) && isDir(`${root}/${x}/${g}`)) : [];
@@ -210,9 +212,10 @@ function browserCheck() {
         }
       }
     } else {
-      // firefox-<rev> and webkit-<rev>: every library and executable in the folder, subfolders included
-      const files = dirs.filter((x) => x.startsWith(`${b}-`) && isDir(`${root}/${x}`)).flatMap((x) => libraryFiles(`${root}/${x}`));
-      if (!files.length) unchecked.push(b);
+      const own = ownFolders([b]);
+      const folders = own ? own.filter((x) => isDir(`${root}/${x}`)) : dirs.filter((x) => x.startsWith(`${b}-`) && isDir(`${root}/${x}`));
+      const files = folders.flatMap((x) => libraryFiles(`${root}/${x}`));
+      if (!files.length) { unchecked.push(b); continue; }
       for (const f of files) ldd(f, dirname(f));
     }
   }
@@ -227,6 +230,17 @@ function libraryFiles(dir) {
     try { if (e.isFile() && (/\.so(\.|$)/i.test(e.name) || (statSync(f).mode & 0o111))) out.push(f); } catch {}
   }
   return out;
+}
+// The revision folders this playwright-core names for the given browsers, from its browsers.json: <name> with dashes as underscores,
+// then -<revision>, which is how Playwright names them. Linux has no revisionOverrides (WebKit's are macOS only). Null when the file
+// or an entry is missing, so the caller falls back to the browser's folder prefix.
+function ownFolders(names) {
+  try {
+    const list = JSON.parse(rd(`${playwrightCoreRoot()}/browsers.json`, "utf8")).browsers ?? [];
+    const found = names.map((n) => list.find((e) => e.name === n));
+    if (found.some((e) => !e?.revision)) return null;
+    return found.map((e) => `${e.name.replace(/-/g, "_")}-${e.revision}`);
+  } catch { return null; }
 }
 // The playwright-core package that the project's playwright runs with: resolved from playwright (nested under pnpm, flat under
 // npm), else from @playwright/test, else from the project itself; the flat copy when none resolves.

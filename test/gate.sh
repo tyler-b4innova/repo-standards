@@ -182,6 +182,21 @@ RL=$(mktemp -d "$T/rel.XXXXXX"); pwlayout "$RL/init/browsers" chrome-linux64 chr
 rr=$(INIT="$RL/init" BPATH=browsers BAD=libfoo bdrun)
 if has "exit=1" "$rr" && has "libfoo.so.1: libgbm.so.1" "$rr" && has "$RL/init/browsers" "$rr"; then ok browser-deps-relative-path
 else fail browser-deps-relative-path "relative=$rr"; fi
+# browser-deps-own-revision: the revisions are the ones this playwright-core names in its browsers.json. A broken revision of the same
+# browser in a shared cache (chromium-1 here) belongs to another project and is not checked, so it does not fail this one
+OW=$(mkrepo); echo '{"name":"app","private":true,"devDependencies":{"@playwright/test":"1.63.0"}}' > "$OW/package.json"
+OV="$OW/node_modules/.pnpm/playwright@1.63.0/node_modules"; mkdir -p "$OV/playwright" "$OV/playwright-core"
+echo '{"name":"playwright","version":"1.63.0"}' > "$OV/playwright/package.json"; echo '{"name":"playwright-core","version":"1.63.0"}' > "$OV/playwright-core/package.json"
+ln -s "$OV/playwright" "$OW/node_modules/playwright"
+printf '{"browsers":[{"name":"chromium","revision":"2"},{"name":"chromium-headless-shell","revision":"2"}]}' > "$OV/playwright-core/browsers.json"
+pwlayout "$OV/playwright-core/.local-browsers" chrome-linux64 chrome-headless-shell-linux64 chrome-headless-shell
+for d in chromium-2/chrome-linux64 chromium_headless_shell-2/chrome-headless-shell-linux64; do mkdir -p "$OV/playwright-core/.local-browsers/$d"; : > "$OV/playwright-core/.local-browsers/$d/libok.so.1"; done
+: > "$OV/playwright-core/.local-browsers/chromium-2/chrome-linux64/chrome"; chmod 755 "$OV/playwright-core/.local-browsers/chromium-2/chrome-linux64/chrome"
+: > "$OV/playwright-core/.local-browsers/chromium-2/INSTALLATION_COMPLETE"; : > "$OV/playwright-core/.local-browsers/chromium_headless_shell-2/INSTALLATION_COMPLETE"
+: > "$OV/playwright-core/.local-browsers/chromium_headless_shell-2/chrome-headless-shell-linux64/chrome-headless-shell"; chmod 755 "$OV/playwright-core/.local-browsers/chromium_headless_shell-2/chrome-headless-shell-linux64/chrome-headless-shell"
+ow=$(cd "$OW" && env HOME="$EH" PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH=0 LDD_BAD=libfoo node scripts/agent/gate.mjs browser-deps 2>&1; echo "exit=$?")
+if has "exit=0" "$ow" && has "browser-deps: system packages present" "$ow"; then ok browser-deps-own-revision
+else fail browser-deps-own-revision "own-revision=$ow"; fi
 # browser-deps-requested-only: only the browsers this run requests are checked. With GATE_BROWSERS=firefox and no browser cache,
 # Firefox is named as not checked here, is not counted as missing (exit 0), and no Chromium is reported
 mf=$(GATE_BROWSERS=firefox BPATH="$T/no-browsers" bdrun)
