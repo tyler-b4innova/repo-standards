@@ -244,20 +244,32 @@ resolve() {
   echo "resolved the thread holding comment $2"
 }
 
-arm() { # arm <pr>: squash auto-merge on a ready PR whose base branch rules require both gate and review; nothing merges here
+arm() { # arm <pr>: squash auto-merge on a ready PR whose base branch rules require both gate and review; nothing merges or changes here
   [ $# -eq 1 ] || die 'usage: pr.sh arm <pr>'
   req GET "pulls/$1"
   [ "$(js 'd.state' <<<"$R")" = open ] || die "PR #$1 is not open"
   [ "$(js 'String(!!d.draft)' <<<"$R")" = false ] || die "PR #$1 is a draft, so it is not ready; mark it ready with pr.sh ready $1 first"
-  local base pid missing
+  local base pid missing rules page n
   base=$(js 'd.base.ref' <<<"$R"); pid=$(js 'd.node_id' <<<"$R")
-  # the base branch's rules, across rulesets (GitHub lists what applies); a token that cannot read them arms nothing
-  req GET "rules/branches/$(enc "$base")"
-  missing=$(js '["gate", "review"].filter((c) => !d.some((x) => x.type === "required_status_checks" && (x.parameters?.required_status_checks || []).some((y) => y.context === c))).join(", ")' <<<"$R")
+  # the repository's auto-merge setting is read, never written: an agent does not change merge settings; an org admin does
+  req GET ""
+  [ "$(js 'String(d.allow_auto_merge === true)' <<<"$R")" = true ] || die "auto-merge is off for this repository; an org admin enables it (pr.sh arm changes no settings)"
+  # the base branch's rules, across rulesets, page by page (GitHub returns 30 a page unless asked for more); a token that cannot read them arms nothing
+  rules='[]'; page=1
+  while :; do
+    req GET "rules/branches/$(enc "$base")?per_page=100&page=$page"
+    n=$(js 'Array.isArray(d) ? d.length : 0' <<<"$R")
+    rules=$(js 'JSON.parse(a[0]).concat(d)' "$rules" <<<"$R")
+    [ "$n" -ge 100 ] || break
+    page=$((page + 1))
+  done
+  missing=$(js '["gate", "review"].filter((c) => !d.some((x) => x.type === "required_status_checks" && (x.parameters?.required_status_checks || []).some((y) => y.context === c))).join(", ")' <<<"$rules")
   [ -z "$missing" ] || die "branch $base does not require both gate and review (missing: $missing); auto-merge not armed on #$1"
   req POST /graphql "$(node -e 'console.log(JSON.stringify({ query: "mutation($id:ID!){enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:SQUASH}){pullRequest{autoMergeRequest{enabledAt}}}}", variables: { id: process.argv[1] } }))' -- "$pid")"
-  [ "$(js 'String(!!d.data?.enablePullRequestAutoMerge?.pullRequest?.autoMergeRequest)' <<<"$R")" = true ] || die "GitHub did not arm auto-merge on #$1: ${R:0:300}"
-  echo "auto-merge armed on #$1 (squash); it merges once gate and review pass"
+  [ "$(js 'String(!!d.data?.enablePullRequestAutoMerge?.pullRequest?.autoMergeRequest)' <<<"$R")" = true ] && { echo "auto-merge armed on #$1 (squash); it merges once gate and review pass"; return 0; }
+  # GitHub refuses auto-merge once the PR is already clean (it can merge now): report it, do not retry or merge by hand
+  [ "$(js 'String(/clean status/i.test(JSON.stringify(d.errors || [])))' <<<"$R")" = true ] && die "GitHub did not arm auto-merge on #$1: the PR is already clean, so it can merge now. Stop and report it; do not merge it by hand."
+  die "GitHub did not arm auto-merge on #$1: ${R:0:300}"
 }
 
 gql_draft() { # gql_draft <pr> convertPullRequestToDraft|markPullRequestReadyForReview <want-draft true|false> [expected-head-sha]
