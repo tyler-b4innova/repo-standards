@@ -180,13 +180,13 @@ function canEscalate() {
 // libx264.so) that this scan cannot reproduce, so they are always reported missing. Linux only: elsewhere there are none.
 function browserDepsProblems() {
   if ((env.GATE_PLATFORM || process.platform) !== "linux") return [];
+  // Firefox and WebKit cannot be checked here, but they do not stop the Chromium scan: the others are named and Chromium is still checked.
   const other = browsers().filter((b) => b !== "chromium");
-  if (other.length) return [`${other.join(", ")}: its system packages cannot be checked here`];
+  const problems = other.length ? [`${other.join(", ")}: its system packages cannot be checked here`] : [];
   const root = browsersRoot();
   const dirs = (has(root) ? ls(root) : []).filter((x) => /^chromium(_headless_shell)?-/.test(x));
-  if (!dirs.some((x) => /^chromium-/.test(x))) return [`chromium: not found under ${root}`];
+  if (!dirs.some((x) => /^chromium-/.test(x))) return [...problems, `chromium: not found under ${root}`];
   const isDir = (p) => { try { return statSync(p).isDirectory(); } catch { return false; } };
-  const problems = [];
   for (const x of dirs) {
     const builds = isDir(`${root}/${x}`) ? ls(`${root}/${x}`).filter((b) => /^chrome-(headless-shell-)?linux/.test(b) && isDir(`${root}/${x}/${b}`)) : [];
     if (!builds.length) { problems.push(`${root}/${x}: no chrome-linux* build folder`); continue; }

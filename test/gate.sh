@@ -144,6 +144,9 @@ mb=$(BAD=libfoo bdrun); mbl=$(cat "$T/bd.log")
 mi=$(BAD=libfoo bdrun --install); mil=$(cat "$T/bd.log"); msudo=$(cat "$T/sudo.log")
 dw=$(PLATFORM=darwin BPATH= bdrun); dwl=$(cat "$T/bd.log")
 echo '{"name":"app","private":true}' > "$H/package.json"; np=$(bdrun); npl=$(cat "$T/bd.log")
+# Firefox or WebKit alongside Chromium cannot be checked here, but Chromium is still scanned: its missing library is named
+echo '{"name":"app","private":true,"devDependencies":{"@playwright/test":"1.63.0"}}' > "$H/package.json"
+mo=$(GATE_BROWSERS=chromium,firefox BAD=libfoo bdrun)
 # a package.json that is not valid JSON is an error, not a repository without Playwright; nothing is installed
 echo '{' > "$H/package.json"; bad=$(bdrun); badl=$(cat "$T/bd.log")
 echo '{"name":"app","private":true,"devDependencies":{"@playwright/test":"1.63.0"}}' > "$H/package.json"
@@ -152,8 +155,9 @@ if [ "$(id -u)" = 0 ]; then probe=$([ -z "$msudo" ] && echo yes); else probe=$(h
 if has "exit=1" "$mb" && has "libfoo.so.1: libgbm.so.1" "$mb" && ! has "install-deps" "$mbl" \
   && has "exit=0" "$mi" && has "install-deps chromium" "$mil" && [ "$probe" = yes ] \
   && has "exit=0" "$dw" && ! has "install-deps" "$dwl" && has "exit=0" "$np" && ! has "install-deps" "$npl" \
-  && has "exit=1" "$bad" && has "package.json is not valid JSON" "$bad" && ! has "install-deps" "$badl"; then ok browser-deps-command
-else fail browser-deps-command "missing=$mb | $mbl || install=$mi | $mil sudo=$msudo probe=$probe || darwin=$dw || nopw=$np || invalid=$bad | $badl"; fi
+  && has "exit=1" "$bad" && has "package.json is not valid JSON" "$bad" && ! has "install-deps" "$badl" \
+  && has "exit=1" "$mo" && has "libfoo.so.1: libgbm.so.1" "$mo" && has "firefox" "$mo"; then ok browser-deps-command
+else fail browser-deps-command "missing=$mb | $mbl || install=$mi | $mil sudo=$msudo probe=$probe || darwin=$dw || nopw=$np || invalid=$bad | $badl || other-browsers=$mo"; fi
 # browser-deps-no-new-privs: under no_new_privs (agent sandboxes) a missing library is reported with the host requirement, and
 # no sudo is called at all, `--install` included; the install step fails the same way. Linux only (setpriv sets the flag).
 if command -v setpriv >/dev/null 2>&1; then
@@ -163,6 +167,8 @@ if command -v setpriv >/dev/null 2>&1; then
   DROP=""
   if [ "$(id -u)" = 0 ]; then
     DROP="--reuid=65534 --regid=65534 --clear-groups"; chmod 711 "$T"; chmod -R a+rX "$H" "$LB"
+    # node may sit where the dropped UID cannot reach (a root-only version manager's directory): run a copy it can read
+    mkdir -p "$T/nodebin" && cp "$NP" "$T/nodebin/node" && chmod 755 "$T/nodebin" "$T/nodebin/node" && NP="$T/nodebin/node"
     : > "$T/sudo.log"; : > "$T/bd.log"; chmod 666 "$T/sudo.log" "$T/bd.log"
   fi
   npr() { : > "$T/sudo.log"; : > "$T/bd.log"; (cd "$H" && setpriv --no-new-privs $DROP env PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH=0 LDD_BAD=libfoo "$NP" scripts/agent/gate.mjs "$@") 2>&1; echo "exit=$?"; }
