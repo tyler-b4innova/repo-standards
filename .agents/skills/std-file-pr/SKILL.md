@@ -23,4 +23,4 @@ Open PRs as drafts and keep them drafts while iterating: drafts start no billed 
 
 If you close a PR without merging, delete its branch.
 
-Never merge or enable auto-merge yourself.
+A draft is not ready. Once ready, arm auto-merge only when the base branch rules require both `gate` and `review`: `scripts/agent/pr.sh arm <pr>` checks that and refuses otherwise. Never merge directly or through a bypass. Link the PR to this task and watch it until it merges; you own it until then, so do not settle the task while it is open.
