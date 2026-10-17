@@ -582,7 +582,38 @@ if node -e 'process.exit(["linux", "darwin"].includes(process.platform) && ["x64
   gc -C "$W" checkout -q feat; echo "token = ghp_$(printf 'Zy8xW7vU6tS5rQ4pO3nM2lK1jI0hG9fE8dC7')" > "$W/new.txt" && commit "$W" "new leak"; mr; o2=$(se); x2=$?
   if [ $x1 -eq 0 ] && has "HEAD^1..HEAD^2" "$o1" && [ $x2 -eq 1 ]; then ok secrets-scan-changes-only
   else fail secrets-scan-changes-only "clean=$x1 leak=$x2: $o1 | $o2"; fi
-else echo "skip secrets-scan-changes-only (no pinned gitleaks build for this platform)"; fi
+  # secrets-org-key-formats: a CLIProxyAPI client key in a YAML list matches no default gitleaks rule, only the
+  # engine's own; a placeholder (cpk-<new>) does not match
+  W=$(mkrepo); gc -C "$W" checkout -qb feat
+  echo 'api-keys: ["cpk-<new>"]' > "$W/doc.yaml" && commit "$W" placeholder; mr; o3=$(se); x3=$?
+  gc -C "$W" checkout -q feat; echo "api-keys: [\"cpk-$(printf 'q7Rt2Wz9Lm4Xc8Vb1Nk6Hj3Gf5Ds0Pa7Ey2Ui9Oo4Tq')\"]" > "$W/config.yaml" && commit "$W" "client key"; mr; o4=$(se); x4=$?
+  if [ $x3 -eq 0 ] && [ $x4 -eq 1 ] && has "cliproxy-client-key" "$o4"; then ok secrets-org-key-formats
+  else fail secrets-org-key-formats "placeholder=$x3 key=$x4: $o3 | $o4"; fi
+  # secrets-repo-config-nested: the repository's .gitleaks.toml extends a shared file that sets useDefault; a default rule
+  # still catches a token that only it matches
+  W=$(mkrepo); gc -C "$W" checkout -qb feat
+  printf '[extend]\npath = "shared.toml"\n' > "$W/.gitleaks.toml"; printf '[extend]\nuseDefault = true\n' > "$W/shared.toml"
+  printf '%s\n' "ghp_$(printf 'Zy8xW7vU6tS5rQ4pO3nM2lK1jI0hG9fE8dC7')" > "$W/leak.txt" && commit "$W" nested; mr; o5=$(se); x5=$?
+  if [ $x5 -eq 1 ] && has "github-pat" "$o5"; then ok secrets-repo-config-nested
+  else fail secrets-repo-config-nested "nested=$x5: $o5"; fi
+  # secrets-repo-config-allowlist: the repository's targeted allowlist still exempts its path; a default rule and the key rule
+  # still catch secrets elsewhere in the same change
+  W=$(mkrepo); gc -C "$W" checkout -qb feat
+  cat > "$W/.gitleaks.toml" <<'TOML'
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "fixture path"
+targetRules = ["github-pat"]
+paths = ['''^allowed\.txt$''']
+TOML
+  printf '%s\n' "ghp_$(printf 'Zy8xW7vU6tS5rQ4pO3nM2lK1jI0hG9fE8dC7')" > "$W/allowed.txt" && commit "$W" allowed; mr; o6=$(se); x6=$?
+  gc -C "$W" checkout -q feat; printf '%s\n' "ghp_$(printf 'Qw3Er5Ty7Ui9Op1As3Df5Gh7Jk9Lz1Xc3Vb5')" > "$W/src.txt"
+  printf 'key: cpk-%s\n' "$(printf 'q7Rt2Wz9Lm4Xc8Vb1Nk6Hj3Gf5Ds0Pa7Ey2Ui9Oo4Tq')" > "$W/keys.yaml" && commit "$W" elsewhere; mr; o7=$(se); x7=$?
+  if [ $x6 -eq 0 ] && [ $x7 -eq 1 ] && has "github-pat" "$o7" && has "cliproxy-client-key" "$o7" && ! has "allowed.txt" "$o7"; then ok secrets-repo-config-allowlist
+  else fail secrets-repo-config-allowlist "allowed=$x6 elsewhere=$x7: $o6 | $o7"; fi
+else echo "skip secrets-scan-changes-only, secrets-org-key-formats, secrets-repo-config-nested, secrets-repo-config-allowlist (no pinned gitleaks build for this platform)"; fi
 
 # gitleaks-cache-wiring: std-gate restores the gitleaks archive before its secrets step, under the key std-cache-warm saves on
 # main, and the gate never saves a cache; std-cache-warm saves it after gitleaks-fetch fills the directory
