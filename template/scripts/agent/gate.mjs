@@ -169,7 +169,8 @@ const playwrightBin = () => has("node_modules/.bin/playwright") ? ["node_modules
 function canEscalate() {
   if (process.getuid?.() === 0) return true;
   try { if (/^NoNewPrivs:\s*1$/m.test(rd("/proc/self/status", "utf8"))) return false; } catch {}
-  return spawnSync("sudo", ["-n", "true"], { stdio: "ignore" }).status === 0;
+  // sudo -l asks whether the apt-get the install runs is permitted without a password (a least-privilege policy may allow only that)
+  return spawnSync("sudo", ["-n", "-l", "apt-get"], { stdio: "ignore" }).status === 0;
 }
 // The browsers' system packages this host lacks, as `<file>: <library>` lines (empty when present, or not applicable).
 // Playwright's own host validation is bundled and not callable, so Chromium gets an equivalent check: `ldd` over every

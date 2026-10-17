@@ -29,11 +29,12 @@ online() { curl -sSfI --max-time 5 https://registry.npmjs.org/ >/dev/null 2>&1; 
 sudo=""
 [ "$(id -u)" = 0 ] || sudo="sudo -n" # never wait for a password
 # Whether this process can install system packages here: root, or sudo that can run. Under no_new_privs (agent sandboxes)
-# sudo cannot run at all, so the kernel's flag decides and sudo is not called. Asked only when something is missing.
+# sudo cannot run at all, so the kernel's flag decides and sudo is not called. Asked only when something is missing. Otherwise sudo
+# is asked whether the apt-get this script runs is permitted without a password (sudo -l), not whether an unrelated command is.
 can_sudo() {
   [ "$(id -u)" = 0 ] && return 0
   grep -qE '^NoNewPrivs:[[:space:]]*1' /proc/self/status 2>/dev/null && return 1
-  $sudo true >/dev/null 2>&1
+  $sudo -l "$(command -v apt-get)" >/dev/null 2>&1
 }
 host="" # what is missing and this host must provide, because sudo cannot install it here
 
