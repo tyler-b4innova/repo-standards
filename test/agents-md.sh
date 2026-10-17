@@ -31,7 +31,7 @@ why=""
 blk=$(sed -n '/<!-- std:begin/,/<!-- std:end -->/p' "$R/AGENTS.md")
 [ "$(grep -c '^## Code Review Rules$' <<<"$blk")" = 1 ] || why="$why; section heading not once in the block"
 has "- Report every finding you can see in this head in one review, not only the first." "$blk" || why="$why; one-review rule missing"
-has "- In a re-review, raise only what the new commits changed or what the last fix missed, and say which. A fail-open, security or data-loss blocker that an earlier round missed is still raised, marked missed earlier." "$blk" || why="$why; re-review rule missing"
+has "- In a re-review, raise only what the new commits changed or what the last fix missed, and say which. A fail-open, security or data-loss finding that an earlier round missed is still raised at any severity, marked missed earlier." "$blk" || why="$why; re-review rule missing"
 [ "$(tail -1 <<<"$blk")" = "<!-- std:end -->" ] || why="$why; end marker is not last in the block"
 if [ -z "$why" ]; then ok block-code-review-rules; else fail block-code-review-rules "$why"; fi
 

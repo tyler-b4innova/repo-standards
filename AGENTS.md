@@ -23,7 +23,7 @@
 
 ## Code Review Rules
 - Report every finding you can see in this head in one review, not only the first.
-- In a re-review, raise only what the new commits changed or what the last fix missed, and say which. A fail-open, security or data-loss blocker that an earlier round missed is still raised, marked missed earlier.
+- In a re-review, raise only what the new commits changed or what the last fix missed, and say which. A fail-open, security or data-loss finding that an earlier round missed is still raised at any severity, marked missed earlier.
 <!-- std:end -->
 
 ## Repo rules
