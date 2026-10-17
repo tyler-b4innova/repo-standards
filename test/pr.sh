@@ -301,4 +301,40 @@ since "$n" | grep -q '/pulls/1/merge"' && why="$why; a merge request was sent"
 mut "S.autoMerge=[];S.rules=[]"
 if [ -z "$why" ]; then ok pr-arm-gate-and-review; else fail pr-arm-gate-and-review "$why"; fi
 
+# pr-arm-rules-paged: the base branch rules are read page by page (100 a page, until a short one), so a required check on a
+# later page counts: gate on the first page and review on the second, and arm arms.
+why=""
+mut "S.pulls[0].draft=false;S.pulls[0].state='open';S.pulls[0].merged=false;S.autoMerge=[];S.allowAutoMerge=true;S.autoMergeError=null;S.rules=[...Array(99).fill({type:'pull_request'}),{type:'required_status_checks',parameters:{required_status_checks:[{context:'gate'}]}},{type:'required_status_checks',parameters:{required_status_checks:[{context:'review'}]}}]"
+n=$(lines)
+out=$("$PR" arm 1 2>&1) || why="$why; arm refused rules spread over two pages: $out"
+since "$n" | grep -q '"query":"?per_page=100&page=2"' || why="$why; the second page was not read: $(since "$n" | grep -F rules)"
+[ "$(state 'JSON.stringify(S.autoMerge)')" = "[1]" ] || why="$why; auto-merge not armed: $(state 'JSON.stringify(S.autoMerge)')"
+mut "S.autoMerge=[];S.rules=[]"
+if [ -z "$why" ]; then ok pr-arm-rules-paged; else fail pr-arm-rules-paged "$why"; fi
+
+# pr-arm-clean-status-reported: GitHub refuses auto-merge on a PR that is already clean; arm says so, tells the agent to report
+# it, and merges nothing.
+why=""
+mut "S.pulls[0].draft=false;S.pulls[0].state='open';S.pulls[0].merged=false;S.autoMerge=[];S.allowAutoMerge=true;S.autoMergeError='Pull request is in clean status';S.rules=[{type:'required_status_checks',parameters:{required_status_checks:[{context:'gate'},{context:'review'}]}}]"
+n=$(lines)
+out=$("$PR" arm 1 2>&1) && why="$why; arm reported success on a clean PR"
+case "$out" in *"already clean"*"report it"*) ;; *) why="$why; no clean-status message: $out" ;; esac
+[ "$(state 'JSON.stringify(S.autoMerge)')" = "[]" ] || why="$why; auto-merge recorded"
+since "$n" | grep -q '/pulls/1/merge"' && why="$why; a merge request was sent"
+mut "S.autoMergeError=null;S.autoMerge=[];S.rules=[]"
+if [ -z "$why" ]; then ok pr-arm-clean-status-reported; else fail pr-arm-clean-status-reported "$why"; fi
+
+# pr-arm-auto-merge-off-refused: a repository with auto-merge off is refused by arm, which names an org admin as the one who
+# enables it; arm writes no repository setting and sends no auto-merge mutation.
+why=""
+mut "S.pulls[0].draft=false;S.pulls[0].state='open';S.pulls[0].merged=false;S.autoMerge=[];S.autoMergeError=null;S.allowAutoMerge=false;S.rules=[{type:'required_status_checks',parameters:{required_status_checks:[{context:'gate'},{context:'review'}]}}]"
+n=$(lines)
+out=$("$PR" arm 1 2>&1) && why="$why; arm armed with auto-merge off for the repository"
+case "$out" in *"auto-merge is off for this repository; an org admin enables it"*) ;; *) why="$why; no auto-merge-off message: $out" ;; esac
+since "$n" | grep -q enablePullRequestAutoMerge && why="$why; the auto-merge mutation was sent"
+since "$n" | grep -q -E '"method":"(PATCH|PUT|POST|DELETE)","path":"/repos/acme/demo"' && why="$why; a repository setting was written"
+[ "$(state 'JSON.stringify(S.autoMerge)')" = "[]" ] || why="$why; auto-merge recorded"
+mut "S.allowAutoMerge=true;S.autoMerge=[];S.rules=[]"
+if [ -z "$why" ]; then ok pr-arm-auto-merge-off-refused; else fail pr-arm-auto-merge-off-refused "$why"; fi
+
 done_cases

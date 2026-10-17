@@ -29,7 +29,7 @@ createServer((req, res) => {
     appendFileSync(logFile, JSON.stringify({ method: req.method, path: p, query: url.search, auth: !!req.headers.authorization, body }) + "\n");
     let m;
     if (p === "/user") return send(200, { login: "agent" });
-    if (p === R) return send(200, { full_name: "acme/demo", default_branch: "main" });
+    if (p === R) return send(200, { full_name: "acme/demo", default_branch: "main", allow_auto_merge: S.allowAutoMerge ?? true });
     if ((m = p.match(/^\/repos\/acme\/demo\/branches\/(.+)$/))) {
       const name = decodeURIComponent(m[1]), sha = git("rev-parse", "--verify", `refs/heads/${name}`);
       return sha ? send(200, { name, commit: { sha } }) : send(404, { message: "Branch not found" });
@@ -61,6 +61,7 @@ createServer((req, res) => {
     // auto-merge: records the PR in S.autoMerge (its node id names it); any other query falls through to the threads answer
     if (p === "/graphql" && body?.query?.includes("enablePullRequestAutoMerge")) {
       const x = S.pulls.find((y) => `PR_${y.number}` === body.variables.id);
+      if (S.autoMergeError) return send(200, { errors: [{ message: S.autoMergeError }] });
       if (!x) return send(200, { errors: [{ message: "stub: no such PR" }] });
       (S.autoMerge ??= []).push(x.number);
       return send(200, { data: { enablePullRequestAutoMerge: { pullRequest: { autoMergeRequest: { enabledAt: new Date().toISOString() } } } } });
@@ -126,7 +127,11 @@ createServer((req, res) => {
     }
     if ((m = p.match(/^\/repos\/acme\/demo\/pulls\/(\d+)\/reviews$/))) return send(200, S.reviews[m[1]] ?? []);
     // the base branch's rules, as GitHub lists them: S.rules (default none)
-    if ((m = p.match(/^\/repos\/acme\/demo\/rules\/branches\/(.+)$/))) return send(200, S.rules ?? []);
+    // paged like GitHub: per_page (default 30) and page from 1; S.rules default none
+    if ((m = p.match(/^\/repos\/acme\/demo\/rules\/branches\/(.+)$/))) {
+      const per = Number(url.searchParams.get("per_page") ?? 30), pg = Number(url.searchParams.get("page") ?? 1);
+      return send(200, (S.rules ?? []).slice((pg - 1) * per, pg * per));
+    }
     // github.com blob URLs, served from the bare origin: 200 only if the path exists at that commit
     if ((m = p.match(/^\/acme\/demo\/blob\/([0-9a-f]{40})\/(.+)$/)))
       return git("cat-file", "-e", `${m[1]}:${decodeURIComponent(m[2])}`) === null ? send(404, {}) : send(200, {});
