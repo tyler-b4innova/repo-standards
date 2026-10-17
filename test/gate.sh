@@ -134,9 +134,18 @@ H=$(mkrepo); mkdir -p "$H/node_modules/.bin"; EH=$(mktemp -d "$T/home.XXXXXX")
 printf '#!/bin/sh\necho "playwright $*" >> "%s/bd.log"\nexit 0\n' "$T" > "$H/node_modules/.bin/playwright"; chmod +x "$H/node_modules/.bin/playwright"
 echo '{"name":"app","private":true,"devDependencies":{"@playwright/test":"1.63.0"}}' > "$H/package.json"
 HB="$H/node_modules/playwright-core/.local-browsers"; pwlayout "$HB" chrome-linux64 chrome-headless-shell-linux64 chrome-headless-shell
-bdrun() { : > "$T/bd.log"; (cd "$H" && env HOME="$EH" PATH="$LB" GATE_PLATFORM="${PLATFORM:-linux}" PLAYWRIGHT_BROWSERS_PATH="${BPATH-0}" LDD_BAD="${BAD:-NONE}" node scripts/agent/gate.mjs browser-deps "$@") 2>&1; echo "exit=$?"; }
+bdrun() { : > "$T/bd.log"; (cd "$H" && env HOME="$EH" INIT_CWD="${INIT-}" PATH="$LB" GATE_PLATFORM="${PLATFORM:-linux}" PLAYWRIGHT_BROWSERS_PATH="${BPATH-0}" LDD_BAD="${BAD:-NONE}" node scripts/agent/gate.mjs browser-deps "$@") 2>&1; echo "exit=$?"; }
+# nested: under pnpm, playwright-core sits beside playwright in node_modules/.pnpm and not at the top of node_modules; with
+# PLAYWRIGHT_BROWSERS_PATH=0 the browsers are in the .local-browsers of the playwright-core that playwright resolves (libfoo there is named)
+PN=$(mkrepo); mkdir -p "$PN/node_modules/.bin"; printf '#!/bin/sh\nexit 0\n' > "$PN/node_modules/.bin/playwright"; chmod +x "$PN/node_modules/.bin/playwright"
+echo '{"name":"app","private":true,"devDependencies":{"@playwright/test":"1.63.0"}}' > "$PN/package.json"
+PV="$PN/node_modules/.pnpm/playwright@1.63.0/node_modules"; mkdir -p "$PV/playwright" "$PV/playwright-core"
+echo '{"name":"playwright","version":"1.63.0"}' > "$PV/playwright/package.json"; echo '{"name":"playwright-core","version":"1.63.0"}' > "$PV/playwright-core/package.json"
+ln -s "$PV/playwright" "$PN/node_modules/playwright"; pwlayout "$PV/playwright-core/.local-browsers" chrome-linux64 chrome-headless-shell-linux64 chrome-headless-shell
+pn=$(cd "$PN" && env HOME="$EH" PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH=0 LDD_BAD=libfoo node scripts/agent/gate.mjs browser-deps 2>&1; echo "exit=$?")
 : > "$T/sudo.log"; hp=$(bdrun); hpl=$(cat "$T/bd.log")
-if has "exit=0" "$hp" && has "browser-deps: system packages present" "$hp" && ! has "install-deps" "$hpl"; then ok browser-deps-hermetic-root
+if has "exit=0" "$hp" && has "browser-deps: system packages present" "$hp" && ! has "install-deps" "$hpl" \
+  && has "exit=1" "$pn" && has "libfoo.so.1: libgbm.so.1" "$pn" && has "/.pnpm/playwright@1.63.0/node_modules/playwright-core/.local-browsers" "$pn"; then ok browser-deps-hermetic-root
 else fail browser-deps-hermetic-root "present=$hp log=$hpl"; fi
 # browser-deps-command: exit 0 when present (above); exit 1 naming the file and library when missing, with no install
 # unless --install; --install then runs install-deps for the run's browsers; non-Linux and a repo without Playwright have nothing to check
@@ -167,10 +176,16 @@ xf=$(XDG_CACHE_HOME= BPATH= BAD=libfoo bdrun)
 if has "exit=1" "$xd" && has "libfoo.so.1: libgbm.so.1" "$xd" && has "$XC/ms-playwright" "$xd" \
   && has "exit=1" "$xf" && has "libfoo.so.1: libgbm.so.1" "$xf" && has "$EH/.cache/ms-playwright" "$xf"; then ok browser-deps-default-cache
 else fail browser-deps-default-cache "xdg=$xd | fallback=$xf"; fi
+# browser-deps-relative-path: a relative PLAYWRIGHT_BROWSERS_PATH resolves against INIT_CWD (the folder npm ran from), else the current
+# folder; here the current folder has no browsers, so only INIT_CWD's folder can hold the missing library
+RL=$(mktemp -d "$T/rel.XXXXXX"); pwlayout "$RL/init/browsers" chrome-linux64 chrome-headless-shell-linux64 chrome-headless-shell
+rr=$(INIT="$RL/init" BPATH=browsers BAD=libfoo bdrun)
+if has "exit=1" "$rr" && has "libfoo.so.1: libgbm.so.1" "$rr" && has "$RL/init/browsers" "$rr"; then ok browser-deps-relative-path
+else fail browser-deps-relative-path "relative=$rr"; fi
 # browser-deps-requested-only: only the browsers this run requests are checked. With GATE_BROWSERS=firefox and no browser cache,
-# Firefox is named as uncheckable and no Chromium is reported missing
+# Firefox is named as not checked here, is not counted as missing (exit 0), and no Chromium is reported
 mf=$(GATE_BROWSERS=firefox BPATH="$T/no-browsers" bdrun)
-if has "exit=1" "$mf" && has "firefox" "$mf" && ! has "chromium" "$mf"; then ok browser-deps-requested-only
+if has "exit=0" "$mf" && has "not checked on this host: firefox" "$mf" && ! has "chromium" "$mf"; then ok browser-deps-requested-only
 else fail browser-deps-requested-only "firefox-only=$mf"; fi
 # browser-deps-no-new-privs: under no_new_privs (agent sandboxes) a missing library is reported with the host requirement, and
 # no sudo is called at all, `--install` included; the install step fails the same way. Linux only (setpriv sets the flag).
@@ -188,9 +203,26 @@ if command -v setpriv >/dev/null 2>&1; then
   npr() { : > "$T/sudo.log"; : > "$T/bd.log"; (cd "$H" && setpriv --no-new-privs $DROP env PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH=0 LDD_BAD=libfoo "$NP" scripts/agent/gate.mjs "$@") 2>&1; echo "exit=$?"; }
   npb=$(npr browser-deps --install); npbs=$(cat "$T/sudo.log"); npbl=$(cat "$T/bd.log")
   npi=$(cd "$H" && : > "$T/sudo.log" && setpriv --no-new-privs $DROP env PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH=0 LDD_BAD=libfoo "$NP" scripts/agent/gate.mjs install --browsers-only 2>&1; echo "exit=$?"); npis=$(cat "$T/sudo.log")
+  # Firefox requested on this host, which cannot install packages: it is named as not checked, never counted as missing, so
+  # install and browser-deps still pass (the browser run is the check); no sudo, no install-deps
+  npff=$(cd "$H" && : > "$T/sudo.log"; : > "$T/bd.log"; setpriv --no-new-privs $DROP env PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH=0 GATE_BROWSERS=firefox "$NP" scripts/agent/gate.mjs install --browsers-only 2>&1; echo "exit=$?"); npffs=$(cat "$T/sudo.log"); npffl=$(cat "$T/bd.log")
+  npfd=$(cd "$H" && : > "$T/sudo.log" && setpriv --no-new-privs $DROP env PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH=0 GATE_BROWSERS=firefox "$NP" scripts/agent/gate.mjs browser-deps 2>&1; echo "exit=$?"); npfds=$(cat "$T/sudo.log")
+  # Firefox folder present with its libraries on this host (no sudo, no install): install and browser-deps pass; a missing Firefox
+  # library is a confirmed failure, reported with the host requirement
+  FX="$HB/firefox-1/firefox"; mkdir -p "$FX"; : > "$FX/firefox"; chmod 755 "$FX/firefox"; : > "$FX/libxul.so"; chmod -R a+rX "$HB"
+  npfp=$(cd "$H" && : > "$T/sudo.log"; : > "$T/bd.log"; setpriv --no-new-privs $DROP env PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH=0 GATE_BROWSERS=firefox "$NP" scripts/agent/gate.mjs install --browsers-only 2>&1; echo "exit=$?"); npfps=$(cat "$T/sudo.log"); npfpl=$(cat "$T/bd.log")
+  npfpd=$(cd "$H" && : > "$T/sudo.log" && setpriv --no-new-privs $DROP env PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH=0 GATE_BROWSERS=firefox "$NP" scripts/agent/gate.mjs browser-deps 2>&1; echo "exit=$?"); npfpds=$(cat "$T/sudo.log")
+  npfx=$(cd "$H" && : > "$T/sudo.log" && setpriv --no-new-privs $DROP env PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH=0 GATE_BROWSERS=firefox LDD_BAD=libxul "$NP" scripts/agent/gate.mjs install --browsers-only 2>&1; echo "exit=$?")
+  npfxd=$(cd "$H" && : > "$T/sudo.log" && setpriv --no-new-privs $DROP env PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH=0 GATE_BROWSERS=firefox LDD_BAD=libxul "$NP" scripts/agent/gate.mjs browser-deps 2>&1; echo "exit=$?")
   if has "exit=1" "$npb" && has "libfoo.so.1: libgbm.so.1" "$npb" && has "cannot install system packages" "$npb" && [ -z "$npbs" ] && ! has "install-deps" "$npbl" \
-    && has "exit=1" "$npi" && has "cannot install them" "$npi" && [ -z "$npis" ]; then ok browser-deps-no-new-privs
-  else fail browser-deps-no-new-privs "browser-deps=$npb sudo=[$npbs] | install=$npi sudo=[$npis]"; fi
+    && has "exit=1" "$npi" && has "cannot install them" "$npi" && [ -z "$npis" ] \
+    && has "exit=0" "$npff" && has "not checked on this host" "$npff" && [ -z "$npffs" ] && ! has "install-deps" "$npffl" \
+    && has "exit=0" "$npfd" && has "not checked on this host: firefox" "$npfd" && [ -z "$npfds" ] \
+    && has "exit=0" "$npfp" && has "present" "$npfp" && ! has "not checked" "$npfp" && [ -z "$npfps" ] && ! has "install-deps" "$npfpl" \
+    && has "exit=0" "$npfpd" && has "present" "$npfpd" && [ -z "$npfpds" ] \
+    && has "exit=1" "$npfx" && has "libxul.so" "$npfx" && has "cannot install them" "$npfx" \
+    && has "exit=1" "$npfxd" && has "libxul.so" "$npfxd"; then ok browser-deps-no-new-privs
+  else fail browser-deps-no-new-privs "browser-deps=$npb sudo=[$npbs] | install=$npi sudo=[$npis] | firefox-install=$npff sudo=[$npffs] | firefox-check=$npfd sudo=[$npfds] | firefox-present-install=$npfp | firefox-present-check=$npfpd | firefox-missing-install=$npfx | firefox-missing-check=$npfxd"; fi
 elif [ "$(uname -s)" = Linux ]; then echo "skip browser-deps-no-new-privs (needs setpriv)"
 else echo "skip browser-deps-no-new-privs (linux only: setpriv)"; fi
 
