@@ -4,7 +4,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 . test/lib.sh
-unset GITHUB_ACTIONS GATE_LOCK GATE_LOCK_WAIT_S GITHUB_EVENT_PATH GITHUB_EVENT_NAME
+unset GITHUB_ACTIONS GATE_LOCK GATE_LOCK_WAIT_S GATE_LOCK_SLOTS GITHUB_EVENT_PATH GITHUB_EVENT_NAME
 T=$(mktemp -d)
 # Only this script's own unreaped background jobs: a PID already waited for (and possibly reused) is never signalled.
 trap 'kill $(jobs -p) 2>/dev/null; rm -rf "$T"' EXIT
@@ -26,6 +26,48 @@ seen() { grep -qF -e "$1" "$T/$2.log"; }
 waitfor() { local i; for i in $(seq 1 "${3:-100}"); do seen "$1" "$2" && return 0; sleep 0.1; done; return 1; }
 stopgate() { kill -TERM "$GATE" 2>/dev/null; wait "$GATE" 2>/dev/null; }
 plant() { mkdir -p "$T/lock"; printf '{"pid":%s,"user":"someone","host":"%s","ns":"%s","repo":"other@main","started":"2026-01-01T00:00:00.000Z"}\n' "$1" "${2:-$host}" "${3:-$ns}" > "$LOCK"; }
+
+# Two permits let a gate run beside a live holder, and release only its own permit.
+sleep 300 & HOLDER=$!
+plant "$HOLDER"
+start slots GATE_LOCK_SLOTS=2 GATE_LOCK_WAIT_S=1
+if waitfor 'setup --check starting' slots 50 && seen "machine gate lock taken (permit 2 of 2: $LOCK.2)" slots \
+  && grep -q "\"pid\":$GATE," "$LOCK.2" && grep -q "\"pid\":$HOLDER," "$LOCK"; then ok gate-lock-slots-run-together
+else fail gate-lock-slots-run-together "$(cat "$T/slots.log")"; fi
+stopgate
+if [ ! -e "$LOCK.2" ] && grep -q "\"pid\":$HOLDER," "$LOCK"; then ok gate-lock-slots-run-together
+else fail gate-lock-slots-run-together 'release changed the other permit or left its own'; fi
+
+# When both permits are held, both holder descriptions appear while queued and at the deadline.
+sleep 300 & SECOND=$!
+LOCK="$LOCK.2" plant "$SECOND"
+start full GATE_LOCK_SLOTS=2 GATE_LOCK_WAIT_S=1
+wait "$GATE"; code=$?
+if [ "$code" -eq 75 ] && grep -q "queued behind 2 local gates: pid $HOLDER .*; pid $SECOND (" "$T/full.log" && grep -q "lock busy:.*pid $HOLDER .*; pid $SECOND (" "$T/full.log" \
+  && seen 'not run (machine gate lock busy)' full && ! seen 'setup --check starting' full \
+  && grep -q "\"pid\":$HOLDER," "$LOCK" && grep -q "\"pid\":$SECOND," "$LOCK.2"; then ok gate-lock-slots-full-waits
+else fail gate-lock-slots-full-waits "exit=$code; $(cat "$T/full.log")"; fi
+kill "$SECOND" 2>/dev/null; wait "$SECOND" 2>/dev/null
+
+# Permit 2 uses the same stale takeover and its own guard, leaving the live first permit alone.
+sleep 0.01 & DEAD=$!; wait "$DEAD"
+LOCK="$LOCK.2" plant "$DEAD"
+start slotstale GATE_LOCK_SLOTS=2 GATE_LOCK_WAIT_S=1
+if waitfor 'setup --check starting' slotstale 50 && seen "took over a stale machine gate lock from pid $DEAD" slotstale \
+  && seen "machine gate lock taken (permit 2 of 2: $LOCK.2)" slotstale && grep -q "\"pid\":$GATE," "$LOCK.2" \
+  && grep -q "\"pid\":$HOLDER," "$LOCK"; then ok gate-lock-slots-stale-permit
+else fail gate-lock-slots-stale-permit "$(cat "$T/slotstale.log")"; fi
+stopgate
+kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null; rm -f "$LOCK" "$LOCK.2"
+
+# Invalid counts fail before any step, through the same entry point as invalid wait values.
+for slots in 0 abc; do
+  start invalid GATE_LOCK_SLOTS="$slots" GATE_LOCK_WAIT_S=0
+  waitfor 'GATE_LOCK_SLOTS must be an integer, 1 or more' invalid 20
+  stopgate; code=$?
+  if [ "$code" -ne 0 ] && seen 'GATE_LOCK_SLOTS must be an integer, 1 or more' invalid && ! seen 'setup --check starting' invalid; then ok gate-lock-slots-invalid
+  else fail gate-lock-slots-invalid "slots=$slots exit=$code; $(cat "$T/invalid.log")"; fi
+done
 
 # A live holder: the gate waits, names it, and starts only once the holder's lock is gone.
 sleep 300 & HOLDER=$!
@@ -176,6 +218,17 @@ start dirlock
 if waitfor 'took over a stale machine gate lock from an unreadable holder' dirlock && waitfor 'setup --check starting' dirlock 50 && [ -f "$LOCK" ] && grep -q "\"pid\":$GATE," "$LOCK"; then ok gate-lock-dir-at-lock-name
 else fail gate-lock-dir-at-lock-name "$(ls -la "$T/lock"; cat "$T/dirlock.log")"; fi
 stopgate; rm -rf "$LOCK"
+# The same directory takeover applies to permit 2, using its guard while permit 1 remains live.
+sleep 300 & HOLDER=$!
+plant "$HOLDER"
+mkdir "$LOCK.2"; touch -t 202001010000 "$LOCK.2"
+start dirslot GATE_LOCK_SLOTS=2 GATE_LOCK_WAIT_S=1
+if waitfor 'setup --check starting' dirslot 50 && seen 'took over a stale machine gate lock from an unreadable holder' dirslot \
+  && seen "machine gate lock taken (permit 2 of 2: $LOCK.2)" dirslot && [ -f "$LOCK.2" ] \
+  && grep -q "\"pid\":$GATE," "$LOCK.2" && grep -q "\"pid\":$HOLDER," "$LOCK"; then ok gate-lock-dir-at-lock-name
+else fail gate-lock-dir-at-lock-name "$(ls -la "$T/lock"; cat "$T/dirslot.log")"; fi
+stopgate
+kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null; rm -f "$LOCK"
 # A lock directory whose parent is missing is not created (its parent would carry this user's umask): the gate warns and
 # runs without the lock.
 start noparent GATE_LOCK_DIR="$T/missing/lock"
