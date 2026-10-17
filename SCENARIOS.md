@@ -58,6 +58,14 @@ Each scenario reproduces a failure that actually happened or a rule the owners s
 
 - **`codex-earlier-verdict-refused`**: an earlier review (summary or submitted review) cannot authorize an unreviewed fix head.
 - **`codex-unresolved-thread-fails`**: an unresolved Codex thread fails the rule, even when the review is of an earlier commit.
+- **`hosted-codex-pack-setting`**: the overlay's `hosted_codex_review: "required"` is written to the pack; any other value is refused before managed files are written.
+- **`hosted-codex-required`**: a clean App record with the setting on waits for a completed hosted Codex verdict: running, missing, dismissed, pending, other-bot and earlier-head verdicts stay pending, then fail after the existing wait. Incident: in a downstream repository an independent review came back clean four times, and each time the hosted reviewer found more within minutes, once at high priority.
+- **`hosted-codex-complete`**: with the setting on, a clean full or follow-up App record plus a hosted summary or bot review of the head completes the candidate; unresolved threads and a head not containing the current base still fail.
+- **`hosted-codex-full-sha`**: with the setting on, an abbreviated hosted summary or review commit cannot authorize a head sharing that prefix, even with a clean App record.
+- **`hosted-codex-retarget`**: with the setting on and a clean App record, hosted summary and bot reviews must postdate the latest retarget; an uncheckable retarget time fails closed.
+- **`hosted-codex-app-required`**: with the setting on, a completed hosted review alone never completes a candidate; App findings and missing verification still block it.
+- **`hosted-codex-reads-base`**: a head pack omitting the setting cannot relax the current base branch's hosted review requirement.
+- **`hosted-codex-default-unchanged`**: absent the setting, the pack omits its key and a clean App record completes a candidate even with a missing, running or earlier-head hosted review.
 - **`codex-no-review-pending`**: a ready PR with no Codex review yet, in a repo whose recent PRs have them, stays pending inside 20 minutes.
 - **`review-rule-reads-base`**: the rule reads its settings from the current base branch commit (a pull request cannot bring its own; GitHub can retain an older `base.sha`, so the branch is resolved), even when the head is this repository's default branch.
 - **`gate-code-only`**: only code changes start gate (a pull request's commits, the merge queue, the launcher's dispatch after a base change); comments, reviews, edits and pushes start nothing, no re-run wrapper ships, and gate has no step that reads the conversation (no `review` subcommand; the rulesets require resolved threads instead). Incident: every Codex event and thread reply rebuilt the site (759 billed minutes of review re-runs in one org in a day; 241 minutes in 138 runs on one repo in the other; 104 minutes from preview-bot comments).

@@ -34,6 +34,8 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.n
   const read = async (f) => b64(await api("GET", `${R}/contents/${f}?ref=${encodeURIComponent(cfgRef)}`));
   const pack = await read("scripts/agent/pack.json"), std = (await read("standards.json")) ?? {};
   if (!pack) return null;
+  // The overlay's hosted_codex_review "required": a clean App review completes a candidate only with the hosted Codex review of the head too.
+  const hostedRequired = pack.hosted_codex_review === "required";
   // base, base_sha: what was judged against (the pack is read at that commit); a caller re-reads the PR and acts only
   // if its head and base (ref and commit) are unchanged.
   const verdict = (state, description, details = []) => ({ state, description: description.slice(0, 140), sha: head, base: pr.base?.ref ?? null, base_sha: baseHead ?? null, target_url: pr.html_url, details });
@@ -144,7 +146,8 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.n
   }
 
   // Completion covers this candidate. The App attests a complete independent review
-  // (including verification of fixes), or GitHub's reviewer completed this exact head.
+  // (including verification of fixes), or GitHub's reviewer completed this exact head. With hosted_codex_review
+  // "required", both are needed: the App record, and GitHub's reviewer completed this exact head.
   async function codex() {
     const comments = await all(`${R}/issues/${n}/comments`);
     const trusted = comments.filter((c) => pack.sync_app_login && c.user?.login === pack.sync_app_login && c.user?.type === "Bot");
@@ -175,10 +178,12 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.n
     const bot = (u) => /codex/i.test(u?.login ?? "") && u?.type === "Bot", MARK = "<!-- codex-pull-request-review-summary -->";
     const summary = comments.filter((c) => bot(c.user) && c.body?.includes(MARK)).at(-1);
     const row = summary?.body.match(/\|[^|\n]*Code Review[^|\n]*\|([^|\n]*)\|\s*`([0-9a-f]{7,40})`\s*\|/i);
-    const reviews = appComplete ? [] : await all(`${R}/pulls/${n}/reviews`);
-    const timeline = appComplete ? [] : await all(`${R}/issues/${n}/timeline`);
+    // Read when it can decide the result: with no App record, or when the setting also requires the hosted review.
+    const hostedRead = hostedRequired || !appComplete;
+    const reviews = hostedRead ? await all(`${R}/pulls/${n}/reviews`) : [];
+    const timeline = hostedRead ? await all(`${R}/issues/${n}/timeline`) : [];
     const baseChanges = timeline.filter((e) => e.event === "base_ref_changed").map((e) => Date.parse(e.created_at));
-    if (!appComplete && baseChanges.some((at) => !Number.isFinite(at)))
+    if (hostedRead && baseChanges.some((at) => !Number.isFinite(at)))
       return { state: "failure", description: "cannot establish when the PR base changed; native review coverage is uncheckable" };
     const baseChangedAt = Math.max(0, ...baseChanges);
     const afterRetarget = (at) => !baseChangedAt || Date.parse(at ?? "") > baseChangedAt;
@@ -186,9 +191,11 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.n
     const summaryAt = /datetime="([^"]+)"/.exec(row?.[1] ?? "")?.[1];
     // A displayed abbreviation cannot bind coverage to a head: colliding commits
     // can share that prefix. The summary or submitted review must name the full SHA.
-    const reviewed = appComplete || (row && /Completed/i.test(row[1]) && row[2] === head && afterRetarget(summaryAt))
+    const hosted = (row && /Completed/i.test(row[1]) && row[2] === head && afterRetarget(summaryAt))
       || reviews.some((r) => bot(r.user) && r.commit_id === head && r.state !== "DISMISSED" && r.state !== "PENDING" && afterRetarget(r.submitted_at));
-    if (reviewed && !appComplete && baseHead) {
+    const reviewed = hostedRequired ? appComplete && hosted : appComplete || hosted;
+    // The containment check covers the hosted review's head whenever that review is what completes the candidate.
+    if (reviewed && (!appComplete || hostedRequired) && baseHead) {
       const comparison = await api("GET", `${R}/compare/${baseHead}...${head}`);
       if (!comparison || !["ahead", "identical"].includes(comparison.status))
         return { state: "failure", description: "reviewed head does not contain the current base; update the branch and review its integration" };
@@ -204,7 +211,9 @@ export async function reviewStatus({ api, owner, repo, pr: n, pull, now = Date.n
     }
     const open = threads.filter((t) => !t.isResolved);
     if (open.length) return { state: "failure", description: `${open.length} unresolved review thread(s): verify and answer each, then resolve`, details: open.map((t) => `open: ${t.comments.nodes[0]?.url ?? "unknown thread"}`) };
-    if (reviewed) return { state: "success", description: appComplete ? "independent review complete for this head and base" : "Codex review complete, no open findings" };
+    if (reviewed) return { state: "success", description: appComplete
+      ? `independent review complete for this head and base${hostedRequired ? "; hosted Codex review complete on this head" : ""}`
+      : "Codex review complete, no open findings" };
     const readyAt = timeline.filter((e) => e.event === "ready_for_review").map((e) => Date.parse(e.created_at));
     const since = Math.max(Date.parse(pr.created_at ?? 0) || 0, baseChangedAt, ...readyAt), mins = Math.floor((now - since) / 60000);
     const candidate = baseChangedAt ? "this head and base" : "this head";

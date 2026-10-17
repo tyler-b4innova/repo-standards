@@ -211,6 +211,101 @@ native_retarget fresh-review; chk 0 "Codex review complete, no open findings"
 native_retarget missing-time; chk 1 "coverage is uncheckable"
 if [ -z "$r" ]; then ok native-review-retarget-refused; else fail native-review-retarget-refused "$r"; fi
 r=""
+# The opt-in is rendered through apply; the exported review rule reads that base pack.
+RQ=$T/required-overlay.json RR=$T/required
+node -e 'const fs=require("fs"),o=JSON.parse(fs.readFileSync("examples/overlay.json","utf8"));o.hosted_codex_review="required";fs.writeFileSync(process.argv[1],JSON.stringify(o))' "$RQ"
+git init -q -b main "$RR" && node bin/repo-standards.mjs apply --target "$RR" --overlay "$RQ" --version 0.1.0 >/dev/null
+grep -q '"hosted_codex_review":"required"' "$RR/scripts/agent/pack.json" || r="$r [required pack lacks the key]"
+# Bad values fail before writing any managed file.
+mkdir -p "$T/bad" && git init -q -b main "$T/bad"
+for value in '"always"' false null 1 '{}'; do
+  node -e 'const fs=require("fs"),o=JSON.parse(fs.readFileSync("examples/overlay.json","utf8"));o.hosted_codex_review=JSON.parse(process.argv[2]);fs.writeFileSync(process.argv[1],JSON.stringify(o))' "$T/bad-overlay.json" "$value"
+  out=$(node bin/repo-standards.mjs apply --target "$T/bad" --overlay "$T/bad-overlay.json" --version 0.1.0 2>&1); x=$?
+  { [ $x -ne 0 ] && has 'hosted_codex_review must be "required"' "$out" && [ ! -e "$T/bad/standards.lock" ]; } || r="$r [bad value $value: exit $x: $out]"
+done
+if [ -z "$r" ]; then ok hosted-codex-pack-setting; else fail hosted-codex-pack-setting "$r"; fi
+r=""
+# Add hosted evidence to clean App records; opened <min> sets the existing wait clock.
+hosted() {
+  node -e 'const fs=require("fs"),f=process.argv[1],s=JSON.parse(fs.readFileSync(f,"utf8"));
+    s.comments[7].push({user:{login:"chatgpt-codex-connector[bot]",type:"Bot"},updated_at:new Date().toISOString(),body:"<!-- codex-pull-request-review-summary -->\n| Review | Status | Commit | Trigger |\n| --- | --- | --- | --- |\n| 📝 **Code Review** | "+process.argv[2]+" | `"+process.argv[3]+"` | New commits |"});
+    fs.writeFileSync(f,JSON.stringify(s));' "$T/state.json" "$1" "$2"; }
+opened() { node -e 'const fs=require("fs"),f=process.argv[1],s=JSON.parse(fs.readFileSync(f,"utf8"));s.pr.created_at=new Date(Date.now()-Number(process.argv[2])*60000).toISOString();fs.writeFileSync(f,JSON.stringify(s));' "$T/state.json" "$1"; }
+hosted_review() {
+  node -e 'const fs=require("fs"),f=process.argv[1],s=JSON.parse(fs.readFileSync(f));s.reviews=[{user:{login:process.argv[4]||"chatgpt-codex-connector[bot]",type:"Bot"},commit_id:process.argv[2],state:process.argv[3],submitted_at:new Date().toISOString()}];fs.writeFileSync(f,JSON.stringify(s));' "$T/state.json" "$@"; }
+export PACK=$RR/scripts/agent/pack.json
+# A running, earlier-head or missing hosted review remains pending, then fails after the wait.
+record_state full; opened 5; hosted "🔄 **Running** since" "$HEAD1"; chk 1 "awaiting a completed review of this head"
+record_state full; opened 5; hosted "✅ **Completed** now" "$OLD"; chk 1 "awaiting a completed review of this head"
+record_state full; opened 30; hosted "🔄 **Running** since" "$HEAD1"; chk 1 "no completed review of this head after"
+record_state full; opened 5; chk 1 "awaiting a completed review of this head"
+for state in PENDING DISMISSED; do
+  record_state full; opened 5; hosted_review "$HEAD1" "$state"; chk 1 "awaiting a completed review of this head"
+done
+record_state full; opened 5; hosted_review "$OLD" COMMENTED; chk 1 "awaiting a completed review of this head"
+record_state full; opened 5; hosted_review "$HEAD1" COMMENTED "other-reviewer[bot]"; chk 1 "awaiting a completed review of this head"
+if [ -z "$r" ]; then ok hosted-codex-required; else fail hosted-codex-required "$r"; fi
+r=""
+# Either hosted verdict format completes the candidate; all threads and base containment still count.
+record_state full; hosted "✅ **Completed** now" "$HEAD1"; chk 0 "hosted Codex review complete on this head"
+record_state followup; hosted_review "$HEAD1" COMMENTED; chk 0 "hosted Codex review complete on this head"
+record_state thread; hosted "✅ **Completed** now" "$HEAD1"; chk 1 "1 unresolved review thread"
+record_state full; hosted "✅ **Completed** now" "$HEAD1"
+node -e 'const f=process.argv[1],s=require(f);s.compareStatus="diverged";require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json"
+chk 1 "does not contain the current base"
+if [ -z "$r" ]; then ok hosted-codex-complete; else fail hosted-codex-complete "$r"; fi
+r=""
+# A summary abbreviation cannot authorize a colliding, unreviewed head, nor can a shortened review commit_id.
+record_state full; opened 5; hosted "✅ **Completed** now" "${HEAD1:0:7}"; chk 1 "awaiting a completed review of this head"
+record_state full; opened 5; hosted_review "${HEAD1:0:7}" COMMENTED; chk 1 "awaiting a completed review of this head"
+if [ -z "$r" ]; then ok hosted-codex-full-sha; else fail hosted-codex-full-sha "$r"; fi
+r=""
+# Keep the clean App record while exercising both hosted formats before and after a retarget.
+for format in summary review; do
+  for age in 30 5; do
+    record_state full
+    if [ "$format" = summary ]; then hosted "✅ **Completed** now" "$HEAD1"; else hosted_review "$HEAD1" COMMENTED; fi
+    node - "$T/state.json" "$age" <<'JS'
+const fs=require("fs"),f=process.argv[2],s=JSON.parse(fs.readFileSync(f)),at=(min)=>new Date(Date.now()-min*60000).toISOString();
+s.timeline=[{event:"base_ref_changed",created_at:at(10)}];
+if(s.reviews.length) s.reviews[0].submitted_at=at(Number(process.argv[3]));
+else s.comments[7].at(-1).body=s.comments[7].at(-1).body.replace("Completed** now", `Completed** <relative-time datetime="${at(Number(process.argv[3]))}">`);
+fs.writeFileSync(f,JSON.stringify(s));
+JS
+    if [ "$age" = 30 ]; then chk 1 "awaiting a completed review of this head and base"; else chk 0 "hosted Codex review complete on this head"; fi
+  done
+done
+record_state full; hosted "✅ **Completed** now" "$HEAD1"
+node -e 'const f=process.argv[1],s=require(f);s.timeline=[{event:"base_ref_changed",created_at:null}];require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json"
+chk 1 "coverage is uncheckable"
+if [ -z "$r" ]; then ok hosted-codex-retarget; else fail hosted-codex-retarget "$r"; fi
+r=""
+# Hosted completion alone cannot replace App completion when the setting requires both.
+st false alice feat "$HEAD1" '✅ **Completed** now' 5 "$DONE" yes "$HEAD1" "$OLD"; chk 1 "awaiting a completed review of this head"
+record_state findings; hosted "✅ **Completed** now" "$HEAD1"; chk 1 "independent review has unresolved findings"
+record_state full-missing; hosted_review "$HEAD1" COMMENTED; chk 1 "has not verified every earlier finding"
+if [ -z "$r" ]; then ok hosted-codex-app-required; else fail hosted-codex-app-required "$r"; fi
+r=""
+# A head pack without the setting cannot relax the base branch's requirement.
+record_state full; opened 5
+node - "$T/state.json" "$R/scripts/agent/pack.json" "$HEAD1" "$OLD" <<'JS'
+const fs=require("fs"),f=process.argv[2],s=JSON.parse(fs.readFileSync(f)),key="scripts/agent/pack.json";
+s.files[`${key}@${process.argv[5]}`]=s.files[key];
+s.files[`${key}@${process.argv[4]}`]={content:fs.readFileSync(process.argv[3]).toString("base64")};
+delete s.files[key];
+fs.writeFileSync(f,JSON.stringify(s));
+JS
+chk 1 "awaiting a completed review of this head"
+if [ -z "$r" ]; then ok hosted-codex-reads-base; else fail hosted-codex-reads-base "$r"; fi
+r=""
+# Unset (the default pack): the App record alone completes, whatever the hosted review says.
+export PACK=$R/scripts/agent/pack.json
+grep -q hosted_codex_review "$PACK" && r="$r [unset pack carries the key]"
+record_state full; chk 0 "independent review complete for this head and base"
+record_state full; hosted "🔄 **Running** since" "$HEAD1"; chk 0 "independent review complete for this head and base"
+record_state full; hosted "✅ **Completed** now" "$OLD"; chk 0 "independent review complete for this head and base"
+if [ -z "$r" ]; then ok hosted-codex-default-unchanged; else fail hosted-codex-default-unchanged "$r"; fi
+r=""
 
 GWF="$R/.github/workflows/std-gate.yml"
 gtrig=$(node -e 'const y=require("fs").readFileSync(process.argv[1],"utf8");console.log(y.slice(y.indexOf("\non:"),y.indexOf("permissions:")).replace(/\s+/g," "))' "$GWF")
