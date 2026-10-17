@@ -177,7 +177,8 @@ if command -v setpriv >/dev/null 2>&1; then
   if has "exit=1" "$npb" && has "libfoo.so.1: libgbm.so.1" "$npb" && has "cannot install system packages" "$npb" && [ -z "$npbs" ] && ! has "install-deps" "$npbl" \
     && has "exit=1" "$npi" && has "cannot install them" "$npi" && [ -z "$npis" ]; then ok browser-deps-no-new-privs
   else fail browser-deps-no-new-privs "browser-deps=$npb sudo=[$npbs] | install=$npi sudo=[$npis]"; fi
-else echo "skip browser-deps-no-new-privs (needs setpriv, Linux)"; fi
+elif [ "$(uname -s)" = Linux ]; then echo "skip browser-deps-no-new-privs (needs setpriv)"
+else echo "skip browser-deps-no-new-privs (linux only: setpriv)"; fi
 
 # e2e-budget-removed: a slow suite passes, a leftover e2e.budget warns in --check and changes nothing, and an overlay still setting gate.budget loads with one notice
 R=$(mkrepo)
