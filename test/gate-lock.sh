@@ -176,6 +176,20 @@ mkdir -p "$T/dl"; printf '{"pid":%s,"user":"someone","host":"%s","ns":"%s","repo
 out=$(node "$T/deadline.mjs" "$MOD" "$T/dl" 2>&1)
 if [ "$out" = busy ]; then ok gate-lock-guard-wait-deadline; else fail gate-lock-guard-wait-deadline "$out"; fi
 
+# A directory at the lock's name (anyone can make one) is an unreadable holder: once stale it is moved aside and the lock
+# created, never a queue that lasts forever.
+rm -f "$LOCK"; mkdir "$LOCK"; touch -t 202001010000 "$LOCK"
+start dirlock
+if waitfor 'took over a stale machine gate lock from an unreadable holder' dirlock && waitfor 'setup --check starting' dirlock 50 && [ -f "$LOCK" ] && grep -q "\"pid\":$GATE," "$LOCK"; then ok gate-lock-dir-at-lock-name
+else fail gate-lock-dir-at-lock-name "$(ls -la "$T/lock"; cat "$T/dirlock.log")"; fi
+stopgate; rm -rf "$LOCK"
+# A lock directory whose parent is missing is not created (its parent would carry this user's umask): the gate warns and
+# runs without the lock.
+start noparent GATE_LOCK_DIR="$T/missing/lock"
+if waitfor 'setup --check starting' noparent 50 && seen 'machine gate lock unavailable' noparent && seen 'does not exist' noparent && [ ! -e "$T/missing" ]; then ok gate-lock-dir-parent-missing
+else fail gate-lock-dir-parent-missing "$(ls -la "$T"; cat "$T/noparent.log")"; fi
+stopgate
+
 # Off under GitHub Actions and with GATE_LOCK=off: no lock file is made and a planted holder is ignored.
 sleep 300 & HOLDER=$!
 plant "$HOLDER"
