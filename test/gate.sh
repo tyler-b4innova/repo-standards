@@ -286,6 +286,14 @@ if command -v setpriv >/dev/null 2>&1; then
 elif [ "$(uname -s)" = Linux ]; then echo "skip setup-no-sudo-under-no-new-privs (needs setpriv)"
 else echo "skip setup-no-sudo-under-no-new-privs (linux only: setpriv)"; fi
 
+# setup-install-failure-no-library-check: a failed browser install is reported as the failure; the library check does not run on the
+# browser that is missing, so no dependency install runs
+SF=$(mkrepo); mkdir -p "$SF/node_modules/.bin"; echo '{"name":"app","private":true,"devDependencies":{"@playwright/test":"1.63.0"}}' > "$SF/package.json"; echo '{}' > "$SF/package-lock.json"
+PF=$S/bin-fail; mksetup "$SF" "$PF" yes no
+printf '#!/bin/sh\necho "playwright $*" >> "$SETUP_LOG"\n[ "$1" = install ] && exit 1\nexit 0\n' > "$SF/node_modules/.bin/playwright"; chmod +x "$SF/node_modules/.bin/playwright"
+: > "$SL"; : > "$SUL"; of=$(cd "$SF" && env SETUP_LOG="$SL" SUDO_LOG="$SUL" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH="$S/browsers" LDD_MISSING=1 PATH="$PF" bash scripts/agent/setup.sh 2>&1); lf=$(cat "$SL"); sf=$(cat "$SUL")
+if has "playwright install chromium failed" "$of" && ! has "install-deps" "$lf" && ! has "the host must provide" "$of"; then ok setup-install-failure-no-library-check
+else fail setup-install-failure-no-library-check "playwright=[$lf] sudo=[$sf] out=$of"; fi
 # e2e-budget-removed: a slow suite passes, a leftover e2e.budget warns in --check and changes nothing, and an overlay still setting gate.budget loads with one notice
 R=$(mkrepo)
 jset "$R/standards.json" 'o.e2e={command:"sleep 2",budget:0.01}'

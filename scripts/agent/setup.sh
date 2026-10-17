@@ -74,8 +74,9 @@ else
       if [ -z "$pw" ]; then note "playwright is in package.json but not installed (did the install above fail?); no browser installed"
       else
         # The browser only. Its system packages are installed only when a library is missing and this host can install them.
-        try $pw install chromium
-        if ! lib=$(node scripts/agent/gate.mjs browser-deps 2>/dev/null); then
+        # A failed browser install ends this step: the library check would otherwise report the browser as missing.
+        if ! $pw install chromium; then note "playwright install chromium failed; no browser libraries were checked"
+        elif ! lib=$(node scripts/agent/gate.mjs browser-deps 2>/dev/null); then
           if can_sudo; then try node scripts/agent/gate.mjs browser-deps --install
           else host="$host; browser libraries $(sed -n 's/^browser-deps: missing //p' <<<"$lib")"; fi
         fi
