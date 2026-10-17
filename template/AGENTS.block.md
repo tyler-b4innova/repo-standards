@@ -13,6 +13,7 @@
 - Never commit plans, notes, scratch, decision records, secrets, `.mcp.json`, `.env`, `.dev.vars`, `*.pem` or `.evidence/` on main.
 - Managed paths change only upstream (`setup.sh --check` names drift; `scripts/agent/gate.local.sh` is yours). Cloud setup calls `scripts/agent/setup.sh`; a missing path there breaks cloud tasks.
 - Gates never need root: a gate runs on the machine it is given, which provisions its system packages (the host for an agent, the workflow's own step on a runner). Never key an install or a clean-up on `CI`; `node scripts/agent/gate.mjs browser-deps` names any browser library the host lacks, and `--install` installs them only when one is missing.
+- Shared machines: stop only the processes and containers you started, by PID, process group or container ID. Never `pkill -f`, `killall` or `docker kill` by name or image: other sessions run on the same host.
 - Add a line only for a failure that happened.
 - No per-repo exceptions, and no new rules, gates or numbers to fix a symptom: use the one org-wide pattern or remove something. Never present an inference as the founder's decision; his decisions are his own words in the issue, commit or PR they concern.
 - Cloudflare deploys: Workers Builds in the account that owns the Worker runs `scripts/agent/release.mjs`. Nothing is deployed by hand, and no Cloudflare tokens in GitHub.
