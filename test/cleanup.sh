@@ -89,9 +89,12 @@ t0=$(date +%s); out2=$(run); s2=$?; dt=$(( $(date +%s) - t0 ))
 # a GitHub runner: the gate runs --check there; nothing is cleaned there. CI alone (a sandbox) is a person's checkout: cleaned.
 node -e 'const f=process.argv[1],s=JSON.parse(require("fs").readFileSync(f,"utf8"));s.hang=false;require("fs").writeFileSync(f,JSON.stringify(s))' "$T/state.json"
 out4=$(GITHUB_ACTIONS=true run); s4=$?; kept4=$(exists hang)
+# a local gate run (gate.mjs local sets STD_GATE and CI): the merged `hang` branch is still there, nothing cleaned
+out4b=$(CI=true STD_GATE=1 run); s4b=$?; kept4b=$(exists hang)
 if [ $s1 -eq 0 ] && [ "$(exists sess)" = yes ] && [ -d "$T/wt-sess" ] && [ $s2 -eq 0 ] && [ "$(exists hang)" = yes ] && [ $dt -le 4 ] \
-  && [ $s3 -eq 1 ] && ! has "cleanup:" "$out3" && [ "$asked" = 0 ] && [ $s4 -eq 0 ] && [ "$kept4" = yes ] && ! has "cleanup:" "$out4"
-then ok cleanup-never-blocks; else fail cleanup-never-blocks "session=$s1/$(exists sess) hang=$s2 ${dt}s failing-check=$s3/asked=$asked github-actions=$s4/$kept4 :: $out | $out2 | $out3 | $out4"; fi
+  && [ $s3 -eq 1 ] && ! has "cleanup:" "$out3" && [ "$asked" = 0 ] && [ $s4 -eq 0 ] && [ "$kept4" = yes ] && ! has "cleanup:" "$out4" \
+  && [ $s4b -eq 0 ] && [ "$kept4b" = yes ] && ! has "cleanup:" "$out4b"
+then ok cleanup-never-blocks; else fail cleanup-never-blocks "session=$s1/$(exists sess) hang=$s2 ${dt}s failing-check=$s3/asked=$asked github-actions=$s4/$kept4 gate=$s4b/$kept4b :: $out | $out2 | $out3 | $out4 | $out4b"; fi
 # a sandbox exports CI but is a person's checkout: the same run cleans it (run from the session worktree, which keeps its own work)
 out5=$(CI=true run "$T/wt-sess"); s5=$?
 if [ $s5 -eq 0 ] && [ "$(exists hang)" = no ] && [ "$(exists sess)" = yes ] && has "cleanup:" "$out5"; then ok cleanup-ci-sandbox-cleans

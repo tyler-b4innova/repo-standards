@@ -134,9 +134,18 @@ H=$(mkrepo); mkdir -p "$H/node_modules/.bin"; EH=$(mktemp -d "$T/home.XXXXXX")
 printf '#!/bin/sh\necho "playwright $*" >> "%s/bd.log"\nexit 0\n' "$T" > "$H/node_modules/.bin/playwright"; chmod +x "$H/node_modules/.bin/playwright"
 echo '{"name":"app","private":true,"devDependencies":{"@playwright/test":"1.63.0"}}' > "$H/package.json"
 HB="$H/node_modules/playwright-core/.local-browsers"; pwlayout "$HB" chrome-linux64 chrome-headless-shell-linux64 chrome-headless-shell
-bdrun() { : > "$T/bd.log"; (cd "$H" && env HOME="$EH" PATH="$LB" GATE_PLATFORM="${PLATFORM:-linux}" PLAYWRIGHT_BROWSERS_PATH="${BPATH-0}" LDD_BAD="${BAD:-NONE}" node scripts/agent/gate.mjs browser-deps "$@") 2>&1; echo "exit=$?"; }
+bdrun() { : > "$T/bd.log"; (cd "$H" && env HOME="$EH" INIT_CWD="${INIT-}" PATH="$LB" GATE_PLATFORM="${PLATFORM:-linux}" PLAYWRIGHT_BROWSERS_PATH="${BPATH-0}" LDD_BAD="${BAD:-NONE}" node scripts/agent/gate.mjs browser-deps "$@") 2>&1; echo "exit=$?"; }
+# nested: under pnpm, playwright-core sits beside playwright in node_modules/.pnpm and not at the top of node_modules; with
+# PLAYWRIGHT_BROWSERS_PATH=0 the browsers are in the .local-browsers of the playwright-core that playwright resolves (libfoo there is named)
+PN=$(mkrepo); mkdir -p "$PN/node_modules/.bin"; printf '#!/bin/sh\nexit 0\n' > "$PN/node_modules/.bin/playwright"; chmod +x "$PN/node_modules/.bin/playwright"
+echo '{"name":"app","private":true,"devDependencies":{"@playwright/test":"1.63.0"}}' > "$PN/package.json"
+PV="$PN/node_modules/.pnpm/playwright@1.63.0/node_modules"; mkdir -p "$PV/playwright" "$PV/playwright-core"
+echo '{"name":"playwright","version":"1.63.0"}' > "$PV/playwright/package.json"; echo '{"name":"playwright-core","version":"1.63.0"}' > "$PV/playwright-core/package.json"
+ln -s "$PV/playwright" "$PN/node_modules/playwright"; pwlayout "$PV/playwright-core/.local-browsers" chrome-linux64 chrome-headless-shell-linux64 chrome-headless-shell
+pn=$(cd "$PN" && env HOME="$EH" PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH=0 LDD_BAD=libfoo node scripts/agent/gate.mjs browser-deps 2>&1; echo "exit=$?")
 : > "$T/sudo.log"; hp=$(bdrun); hpl=$(cat "$T/bd.log")
-if has "exit=0" "$hp" && has "browser-deps: system packages present" "$hp" && ! has "install-deps" "$hpl"; then ok browser-deps-hermetic-root
+if has "exit=0" "$hp" && has "browser-deps: system packages present" "$hp" && ! has "install-deps" "$hpl" \
+  && has "exit=1" "$pn" && has "libfoo.so.1: libgbm.so.1" "$pn" && has "/.pnpm/playwright@1.63.0/node_modules/playwright-core/.local-browsers" "$pn"; then ok browser-deps-hermetic-root
 else fail browser-deps-hermetic-root "present=$hp log=$hpl"; fi
 # browser-deps-command: exit 0 when present (above); exit 1 naming the file and library when missing, with no install
 # unless --install; --install then runs install-deps for the run's browsers; non-Linux and a repo without Playwright have nothing to check
@@ -144,22 +153,93 @@ mb=$(BAD=libfoo bdrun); mbl=$(cat "$T/bd.log")
 mi=$(BAD=libfoo bdrun --install); mil=$(cat "$T/bd.log"); msudo=$(cat "$T/sudo.log")
 dw=$(PLATFORM=darwin BPATH= bdrun); dwl=$(cat "$T/bd.log")
 echo '{"name":"app","private":true}' > "$H/package.json"; np=$(bdrun); npl=$(cat "$T/bd.log")
+# Firefox or WebKit alongside Chromium cannot be checked here, but Chromium is still scanned: its missing library is named
 echo '{"name":"app","private":true,"devDependencies":{"@playwright/test":"1.63.0"}}' > "$H/package.json"
+mo=$(GATE_BROWSERS=chromium,firefox BAD=libfoo bdrun)
+# a package.json that is not valid JSON is an error, not a repository without Playwright; nothing is installed
+echo '{' > "$H/package.json"; bad=$(bdrun); badl=$(cat "$T/bd.log")
+echo '{"name":"app","private":true,"devDependencies":{"@playwright/test":"1.63.0"}}' > "$H/package.json"
+# the escalation probe: a host that is not root runs `sudo -n true` before install-deps; root installs directly and calls no sudo
+if [ "$(id -u)" = 0 ]; then probe=$([ -z "$msudo" ] && echo yes); else probe=$(has "sudo -n true" "$msudo" && echo yes); fi
 if has "exit=1" "$mb" && has "libfoo.so.1: libgbm.so.1" "$mb" && ! has "install-deps" "$mbl" \
-  && has "exit=0" "$mi" && has "install-deps chromium" "$mil" && has "sudo -n true" "$msudo" \
-  && has "exit=0" "$dw" && ! has "install-deps" "$dwl" && has "exit=0" "$np" && ! has "install-deps" "$npl"; then ok browser-deps-command
-else fail browser-deps-command "missing=$mb | $mbl || install=$mi | $mil sudo=$msudo || darwin=$dw || nopw=$np"; fi
+  && has "exit=0" "$mi" && has "install-deps chromium" "$mil" && [ "$probe" = yes ] \
+  && has "exit=0" "$dw" && ! has "install-deps" "$dwl" && has "exit=0" "$np" && ! has "install-deps" "$npl" \
+  && has "exit=1" "$bad" && has "package.json is not valid JSON" "$bad" && ! has "install-deps" "$badl" \
+  && has "exit=1" "$mo" && has "libfoo.so.1: libgbm.so.1" "$mo" && has "firefox" "$mo"; then ok browser-deps-command
+else fail browser-deps-command "missing=$mb | $mbl || install=$mi | $mil sudo=$msudo probe=$probe || darwin=$dw || nopw=$np || invalid=$bad | $badl || other-browsers=$mo"; fi
+# browser-deps-default-cache: with PLAYWRIGHT_BROWSERS_PATH unset, Playwright's Linux default is $XDG_CACHE_HOME/ms-playwright, or
+# ~/.cache/ms-playwright when XDG_CACHE_HOME is unset or empty; browser-deps checks the browsers in that folder
+XC=$(mktemp -d "$T/xdg.XXXXXX"); pwlayout "$XC/ms-playwright" chrome-linux64 chrome-headless-shell-linux64 chrome-headless-shell
+xd=$(XDG_CACHE_HOME="$XC" BPATH= BAD=libfoo bdrun)
+pwlayout "$EH/.cache/ms-playwright" chrome-linux64 chrome-headless-shell-linux64 chrome-headless-shell
+xf=$(XDG_CACHE_HOME= BPATH= BAD=libfoo bdrun)
+if has "exit=1" "$xd" && has "libfoo.so.1: libgbm.so.1" "$xd" && has "$XC/ms-playwright" "$xd" \
+  && has "exit=1" "$xf" && has "libfoo.so.1: libgbm.so.1" "$xf" && has "$EH/.cache/ms-playwright" "$xf"; then ok browser-deps-default-cache
+else fail browser-deps-default-cache "xdg=$xd | fallback=$xf"; fi
+# browser-deps-relative-path: a relative PLAYWRIGHT_BROWSERS_PATH resolves against INIT_CWD (the folder npm ran from), else the current
+# folder; here the current folder has no browsers, so only INIT_CWD's folder can hold the missing library
+RL=$(mktemp -d "$T/rel.XXXXXX"); pwlayout "$RL/init/browsers" chrome-linux64 chrome-headless-shell-linux64 chrome-headless-shell
+rr=$(INIT="$RL/init" BPATH=browsers BAD=libfoo bdrun)
+if has "exit=1" "$rr" && has "libfoo.so.1: libgbm.so.1" "$rr" && has "$RL/init/browsers" "$rr"; then ok browser-deps-relative-path
+else fail browser-deps-relative-path "relative=$rr"; fi
+# browser-deps-own-revision: the revisions are the ones this playwright-core names in its browsers.json. A broken revision of the same
+# browser in a shared cache (chromium-1 here) belongs to another project and is not checked, so it does not fail this one
+OW=$(mkrepo); echo '{"name":"app","private":true,"devDependencies":{"@playwright/test":"1.63.0"}}' > "$OW/package.json"
+OV="$OW/node_modules/.pnpm/playwright@1.63.0/node_modules"; mkdir -p "$OV/playwright" "$OV/playwright-core"
+echo '{"name":"playwright","version":"1.63.0"}' > "$OV/playwright/package.json"; echo '{"name":"playwright-core","version":"1.63.0"}' > "$OV/playwright-core/package.json"
+ln -s "$OV/playwright" "$OW/node_modules/playwright"
+printf '{"browsers":[{"name":"chromium","revision":"2"},{"name":"chromium-headless-shell","revision":"2"}]}' > "$OV/playwright-core/browsers.json"
+pwlayout "$OV/playwright-core/.local-browsers" chrome-linux64 chrome-headless-shell-linux64 chrome-headless-shell
+for d in chromium-2/chrome-linux64 chromium_headless_shell-2/chrome-headless-shell-linux64; do mkdir -p "$OV/playwright-core/.local-browsers/$d"; : > "$OV/playwright-core/.local-browsers/$d/libok.so.1"; done
+: > "$OV/playwright-core/.local-browsers/chromium-2/chrome-linux64/chrome"; chmod 755 "$OV/playwright-core/.local-browsers/chromium-2/chrome-linux64/chrome"
+: > "$OV/playwright-core/.local-browsers/chromium-2/INSTALLATION_COMPLETE"; : > "$OV/playwright-core/.local-browsers/chromium_headless_shell-2/INSTALLATION_COMPLETE"
+: > "$OV/playwright-core/.local-browsers/chromium_headless_shell-2/chrome-headless-shell-linux64/chrome-headless-shell"; chmod 755 "$OV/playwright-core/.local-browsers/chromium_headless_shell-2/chrome-headless-shell-linux64/chrome-headless-shell"
+ow=$(cd "$OW" && env HOME="$EH" PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH=0 LDD_BAD=libfoo node scripts/agent/gate.mjs browser-deps 2>&1; echo "exit=$?")
+if has "exit=0" "$ow" && has "browser-deps: system packages present" "$ow"; then ok browser-deps-own-revision
+else fail browser-deps-own-revision "own-revision=$ow"; fi
+# browser-deps-requested-only: only the browsers this run requests are checked. With GATE_BROWSERS=firefox and no browser cache,
+# Firefox is named as not checked here, is not counted as missing (exit 0), and no Chromium is reported
+mf=$(GATE_BROWSERS=firefox BPATH="$T/no-browsers" bdrun)
+if has "exit=0" "$mf" && has "not checked on this host: firefox" "$mf" && ! has "chromium" "$mf"; then ok browser-deps-requested-only
+else fail browser-deps-requested-only "firefox-only=$mf"; fi
 # browser-deps-no-new-privs: under no_new_privs (agent sandboxes) a missing library is reported with the host requirement, and
 # no sudo is called at all, `--install` included; the install step fails the same way. Linux only (setpriv sets the flag).
 if command -v setpriv >/dev/null 2>&1; then
   NP=$(command -v node)
-  npr() { : > "$T/sudo.log"; : > "$T/bd.log"; (cd "$H" && setpriv --no-new-privs env PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH=0 LDD_BAD=libfoo "$NP" scripts/agent/gate.mjs "$@") 2>&1; echo "exit=$?"; }
+  # no_new_privs does not limit root, which may install packages itself, so as UID 0 the case runs as nobody (65534), the
+  # way a sandbox's user does: the temporary tree and the two logs it writes are opened to that user for this case only.
+  DROP=""
+  if [ "$(id -u)" = 0 ]; then
+    DROP="--reuid=65534 --regid=65534 --clear-groups"; chmod 711 "$T"; chmod -R a+rX "$H" "$LB"
+    # node may sit where the dropped UID cannot reach (a root-only version manager's directory): run a copy it can read
+    mkdir -p "$T/nodebin" && cp "$NP" "$T/nodebin/node" && chmod 755 "$T/nodebin" "$T/nodebin/node" && NP="$T/nodebin/node"
+    : > "$T/sudo.log"; : > "$T/bd.log"; chmod 666 "$T/sudo.log" "$T/bd.log"
+  fi
+  npr() { : > "$T/sudo.log"; : > "$T/bd.log"; (cd "$H" && setpriv --no-new-privs $DROP env PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH=0 LDD_BAD=libfoo "$NP" scripts/agent/gate.mjs "$@") 2>&1; echo "exit=$?"; }
   npb=$(npr browser-deps --install); npbs=$(cat "$T/sudo.log"); npbl=$(cat "$T/bd.log")
-  npi=$(cd "$H" && : > "$T/sudo.log" && setpriv --no-new-privs env PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH=0 LDD_BAD=libfoo "$NP" scripts/agent/gate.mjs install --browsers-only 2>&1; echo "exit=$?"); npis=$(cat "$T/sudo.log")
+  npi=$(cd "$H" && : > "$T/sudo.log" && setpriv --no-new-privs $DROP env PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH=0 LDD_BAD=libfoo "$NP" scripts/agent/gate.mjs install --browsers-only 2>&1; echo "exit=$?"); npis=$(cat "$T/sudo.log")
+  # Firefox requested on this host, which cannot install packages: it is named as not checked, never counted as missing, so
+  # install and browser-deps still pass (the browser run is the check); no sudo, no install-deps
+  npff=$(cd "$H" && : > "$T/sudo.log"; : > "$T/bd.log"; setpriv --no-new-privs $DROP env PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH=0 GATE_BROWSERS=firefox "$NP" scripts/agent/gate.mjs install --browsers-only 2>&1; echo "exit=$?"); npffs=$(cat "$T/sudo.log"); npffl=$(cat "$T/bd.log")
+  npfd=$(cd "$H" && : > "$T/sudo.log" && setpriv --no-new-privs $DROP env PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH=0 GATE_BROWSERS=firefox "$NP" scripts/agent/gate.mjs browser-deps 2>&1; echo "exit=$?"); npfds=$(cat "$T/sudo.log")
+  # Firefox folder present with its libraries on this host (no sudo, no install): install and browser-deps pass; a missing Firefox
+  # library is a confirmed failure, reported with the host requirement
+  FX="$HB/firefox-1/firefox"; mkdir -p "$FX"; : > "$FX/firefox"; chmod 755 "$FX/firefox"; : > "$FX/libxul.so"; chmod -R a+rX "$HB"
+  npfp=$(cd "$H" && : > "$T/sudo.log"; : > "$T/bd.log"; setpriv --no-new-privs $DROP env PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH=0 GATE_BROWSERS=firefox "$NP" scripts/agent/gate.mjs install --browsers-only 2>&1; echo "exit=$?"); npfps=$(cat "$T/sudo.log"); npfpl=$(cat "$T/bd.log")
+  npfpd=$(cd "$H" && : > "$T/sudo.log" && setpriv --no-new-privs $DROP env PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH=0 GATE_BROWSERS=firefox "$NP" scripts/agent/gate.mjs browser-deps 2>&1; echo "exit=$?"); npfpds=$(cat "$T/sudo.log")
+  npfx=$(cd "$H" && : > "$T/sudo.log" && setpriv --no-new-privs $DROP env PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH=0 GATE_BROWSERS=firefox LDD_BAD=libxul "$NP" scripts/agent/gate.mjs install --browsers-only 2>&1; echo "exit=$?")
+  npfxd=$(cd "$H" && : > "$T/sudo.log" && setpriv --no-new-privs $DROP env PATH="$LB" GATE_PLATFORM=linux PLAYWRIGHT_BROWSERS_PATH=0 GATE_BROWSERS=firefox LDD_BAD=libxul "$NP" scripts/agent/gate.mjs browser-deps 2>&1; echo "exit=$?")
   if has "exit=1" "$npb" && has "libfoo.so.1: libgbm.so.1" "$npb" && has "cannot install system packages" "$npb" && [ -z "$npbs" ] && ! has "install-deps" "$npbl" \
-    && has "exit=1" "$npi" && has "cannot install them" "$npi" && [ -z "$npis" ]; then ok browser-deps-no-new-privs
-  else fail browser-deps-no-new-privs "browser-deps=$npb sudo=[$npbs] | install=$npi sudo=[$npis]"; fi
-else echo "skip browser-deps-no-new-privs (needs setpriv, Linux)"; fi
+    && has "exit=1" "$npi" && has "cannot install them" "$npi" && [ -z "$npis" ] \
+    && has "exit=0" "$npff" && has "not checked on this host" "$npff" && [ -z "$npffs" ] && ! has "install-deps" "$npffl" \
+    && has "exit=0" "$npfd" && has "not checked on this host: firefox" "$npfd" && [ -z "$npfds" ] \
+    && has "exit=0" "$npfp" && has "present" "$npfp" && ! has "not checked" "$npfp" && [ -z "$npfps" ] && ! has "install-deps" "$npfpl" \
+    && has "exit=0" "$npfpd" && has "present" "$npfpd" && [ -z "$npfpds" ] \
+    && has "exit=1" "$npfx" && has "libxul.so" "$npfx" && has "cannot install them" "$npfx" \
+    && has "exit=1" "$npfxd" && has "libxul.so" "$npfxd"; then ok browser-deps-no-new-privs
+  else fail browser-deps-no-new-privs "browser-deps=$npb sudo=[$npbs] | install=$npi sudo=[$npis] | firefox-install=$npff sudo=[$npffs] | firefox-check=$npfd sudo=[$npfds] | firefox-present-install=$npfp | firefox-present-check=$npfpd | firefox-missing-install=$npfx | firefox-missing-check=$npfxd"; fi
+elif [ "$(uname -s)" = Linux ]; then echo "skip browser-deps-no-new-privs (needs setpriv)"
+else echo "skip browser-deps-no-new-privs (linux only: setpriv)"; fi
 
 # ---- setup and system packages: sudo is tried only when something is missing and sudo can run here
 S=$T/setup-sys; mkdir -p "$S"; SL=$S/setup.log; SUL=$S/sudo.log
@@ -320,7 +400,7 @@ if [ -z "$why" ]; then ok gate-concurrency-groups; else fail gate-concurrency-gr
 # run the same step, and the warm-up fires on any of the three lockfiles
 why=""; CW=$ENGINE/template/.github/workflows
 for wf in std-gate.yml std-cache-warm.yml; do [ "$(step_run "$CW/$wf" "package manager")" = "$(step_run "$CW/std-gate.yml" "package manager")" ] || why="$why; $wf step differs"; done
-grep -q 'uses: actions/cache@' "$CW/std-cache-warm.yml" && grep -q 'path: ${{ steps.pm.outputs.path }}' "$CW/std-cache-warm.yml" && grep -q 'paths: \[package-lock.json, pnpm-lock.yaml, yarn.lock\]' "$CW/std-cache-warm.yml" || why="$why; warm-up trigger or cache"
+grep -q 'uses: actions/cache@' "$CW/std-cache-warm.yml" && grep -q 'path: ${{ steps.pm.outputs.path }}' "$CW/std-cache-warm.yml" && grep -q 'paths: \[package-lock.json, pnpm-lock.yaml, yarn.lock, scripts/agent/gate.mjs\]' "$CW/std-cache-warm.yml" || why="$why; warm-up trigger or cache"
 pmrun() { # pmrun <lockfile> <corepack exit>: the step in a scratch dir with stub corepack/pnpm/yarn; prints its output
   local d; d=$(mktemp -d "$T/pm.XXXXXX"); mkdir "$d/bin"; : > "$d/$1"
   shim "$d/bin" corepack "exit $2"; shim "$d/bin" pnpm "echo 10.0.0"; shim "$d/bin" yarn "echo 1.22.0"
@@ -472,4 +552,17 @@ if node -e 'process.exit(["linux", "darwin"].includes(process.platform) && ["x64
   if [ $x1 -eq 0 ] && has "HEAD^1..HEAD^2" "$o1" && [ $x2 -eq 1 ]; then ok secrets-scan-changes-only
   else fail secrets-scan-changes-only "clean=$x1 leak=$x2: $o1 | $o2"; fi
 else echo "skip secrets-scan-changes-only (no pinned gitleaks build for this platform)"; fi
+
+# gitleaks-cache-wiring: std-gate restores the gitleaks archive before its secrets step, under the key std-cache-warm saves on
+# main, and the gate never saves a cache; std-cache-warm saves it after gitleaks-fetch fills the directory
+CWF=$ENGINE/template/.github/workflows/std-gate.yml; CWW=$ENGINE/template/.github/workflows/std-cache-warm.yml
+gl_key="key: std-gitleaks-\${{ runner.os }}-\${{ runner.arch }}-\${{ hashFiles('scripts/agent/gate.mjs') }}"; gl_path="path: \${{ runner.temp }}/std-gitleaks"
+gw=""
+grep -qF "$gl_key" "$CWF" && grep -qF "$gl_path" "$CWF" && grep -qF "uses: actions/cache/restore@" "$CWF" || gw="$gw; gate restore"
+grep -qF "$gl_key" "$CWW" && grep -qF "$gl_path" "$CWW" && grep -qF "uses: actions/cache@" "$CWW" || gw="$gw; warm save"
+grep -qF "GATE_GITLEAKS_CACHE: \${{ runner.temp }}/std-gitleaks" "$CWF" || gw="$gw; gate env"
+[ "$(step_run "$CWW" "gitleaks archive")" = "node scripts/agent/gate.mjs gitleaks-fetch" ] || gw="$gw; warm fetch"
+grep -q "uses: actions/cache@" "$CWF" && gw="$gw; gate saves a cache"
+[ "$(grep -n "name: gitleaks cache" "$CWF" | cut -d: -f1)" -lt "$(grep -n "name: secrets" "$CWF" | cut -d: -f1)" ] || gw="$gw; restore after secrets"
+if [ -z "$gw" ]; then ok gitleaks-cache-wiring; else fail gitleaks-cache-wiring "$gw"; fi
 done_cases

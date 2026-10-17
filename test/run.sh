@@ -2,6 +2,9 @@
 # Runs every case file; each prints `ok <id>` / `FAIL <id>` / `skip <id> (why)`.
 # Then checks coverage: every scenario id in SCENARIOS.md printed, no unknown id (engine-* are engine-only), and under CI
 # no skip line (a case that did not run is not coverage; outside CI, no network or an unsupported platform may skip).
+# GitHub (GITHUB_ACTIONS set, no STD_GATE) is the authoritative runner: there every skip fails. A local pre-flight (no
+# GITHUB_ACTIONS, or STD_GATE from `gate.mjs local`, which test/ci-env runs under GITHUB_ACTIONS) tolerates a skip whose reason
+# declares a platform limit, `(linux only` or `(platform:`, and names it; any other skip under CI still fails.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 unset GATE_SELECT GATE_AFFECTED GATE_AFFECTED_E2E # inherited when this suite is the gate e2e command; cases set their own
@@ -17,7 +20,14 @@ bash tools/parallel.sh "${files[@]}" | tee -a "$log"
 [ "${PIPESTATUS[0]}" -eq 0 ] || status=1
 want=$(grep -oE '^- \*\*`[a-z0-9-]+`\*\*' SCENARIOS.md | sed -E 's/^- \*\*`([^`]+)`\*\*/\1/' | sort -u)
 got=$(sed -nE 's/^(ok|FAIL|skip) ([a-z0-9-]+).*/\2/p' "$log" | sort -u)
-skipped=""; [ -z "${CI:-}" ] || skipped=$(sed -nE 's/^skip ([a-z0-9-]+).*/\1/p' "$log" | sort -u)
+skipped=""; locally=""
+if [ -n "${CI:-}" ]; then
+  if [ -n "${GITHUB_ACTIONS:-}" ] && [ -z "${STD_GATE:-}" ]; then skipped=$(sed -nE 's/^skip ([a-z0-9-]+).*/\1/p' "$log" | sort -u)
+  else
+    locally=$(sed -nE '/^skip [a-z0-9-]+ \((linux only|platform:)/s/^skip ([a-z0-9-]+).*/\1/p' "$log" | sort -u)
+    skipped=$(sed -nE '/^skip [a-z0-9-]+ \((linux only|platform:)/!s/^skip ([a-z0-9-]+).*/\1/p' "$log" | sort -u)
+  fi
+fi
 missing=$(comm -23 <(echo "$want") <(echo "$got"))
 unknown=$(comm -13 <(echo "$want") <(echo "$got") | grep -vE '^engine-(neutral|org)-' || true)
 if [ -z "$missing$unknown$skipped" ]; then echo "ok engine-scenarios-covered ($(echo "$want" | wc -l | tr -d ' ') scenarios)"
@@ -25,5 +35,6 @@ else
   echo "FAIL engine-scenarios-covered"; echo "  missing: $(echo $missing)"; echo "  unknown: $(echo $unknown)"
   [ -z "$skipped" ] || echo "  skipped under CI: $(echo $skipped)"; status=1
 fi
+[ -z "$locally" ] || echo "skipped locally (platform): $(echo $locally)"
 echo "summary: $(grep -c '^ok ' "$log") ok, $(grep -c '^FAIL ' "$log") FAIL, $(grep -c '^skip ' "$log") skip"
 exit $status

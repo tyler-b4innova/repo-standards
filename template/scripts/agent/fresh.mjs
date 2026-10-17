@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Fresh-base warnings, run by `setup.sh --check` at session start (never in CI). A session that starts on a stale
+// Fresh-base warnings, run by `setup.sh --check` at session start (not on a GitHub runner or in a local gate run). A session that starts on a stale
 // default branch works from outdated standards and skills; this names it. Warnings only: it fetches the default branch
 // (refs only, short timeout), never touches the working tree, never fast-forwards or resets, never fails the session.
 //   - on the default branch and behind origin/<default>: how many commits;
