@@ -307,6 +307,53 @@ jobs:
       - run: npx playwright install && npm test'; out=$(cr "$R") && why="$why; a manual workflow with no timeout and a bare playwright install passed"
 has "manual.yml job once has no timeout-minutes" "$out" && has "playwright install without naming a browser" "$out" || why="$why; manual-run guardrails: $out"
 if [ -z "$why" ]; then ok no-duplicate-gate-workflows; else fail no-duplicate-gate-workflows "$why"; fi
+# playwright-hints-no-root: the package and gate hints name the browser and never --with-deps; a bare playwright install in a gate
+# script fails with the same hint; a workflow's bare install keeps --with-deps in its hint (a runner can provision packages)
+R=$(mkrepo); printf '%s\n' '{"name":"app","private":true,"scripts":{"e2e:setup":"playwright install"}}' > "$R/package.json"; out=$(cr "$R"); st=$?
+R=$(mkrepo); wf "$R" ci.yml 'on:
+  workflow_dispatch:
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - run: npx playwright install && npm test'; w=$(cr "$R"); sw=$?
+if [ $st -eq 1 ] && has "package.json scripts or gate.local.sh run playwright install without naming a browser" "$out" && has "name the browser: playwright install chromium" "$out" && ! has "with-deps" "$out" \
+  && [ $sw -eq 1 ] && has "name the browser: playwright install --with-deps chromium" "$w"; then
+  ok playwright-hints-no-root; else fail playwright-hints-no-root "st=$st: $out | workflow st=$sw: $w"; fi
+# with-deps-gate-script-warns: a Playwright invocation that asks for a root install (--with-deps or install-deps; quoted or not; continued
+# across a shell line; ahead of a # comment) in a package.json script or gate.local.sh prints a warning and --check still exits 0. Text that
+# is not such an invocation prints nothing: a comment, another tool's flag, a value ending in "playwright" beside one starting with
+# install-deps, a continuation that runs into the next script value. A lifecycle hook's warning does not tell the user to run gate.mjs
+# install inside it (npm would run the hook again). A GitHub workflow step with --with-deps is not flagged.
+R=$(mkrepo); printf '%s\n' '{"name":"app","private":true,"scripts":{"e2e:setup":"playwright install --with-deps chromium"}}' > "$R/package.json"; a=$(cr "$R"); sa=$?
+R=$(mkrepo); printf '%s\n' '#!/usr/bin/env bash' 'npx playwright install-deps chromium' > "$R/scripts/agent/gate.local.sh"; b=$(cr "$R"); sb=$?
+R=$(mkrepo); printf '%s\n' '#!/usr/bin/env bash' 'npx playwright install chromium \' '  --with-deps' > "$R/scripts/agent/gate.local.sh"; f=$(cr "$R"); sf=$?
+R=$(mkrepo); printf '%s\n' '#!/usr/bin/env bash' 'npx playwright install chromium # do not add --with-deps' > "$R/scripts/agent/gate.local.sh"; k=$(cr "$R"); sk=$?
+R=$(mkrepo); printf '%s\n' '{"name":"app","private":true,"scripts":{"e2e:setup":"\"node_modules/.bin/playwright\" install-deps chromium"}}' > "$R/package.json"; h=$(cr "$R"); sh=$?
+R=$(mkrepo); printf '%s\n' '{"name":"app","private":true,"scripts":{"postinstall":"playwright install --with-deps chromium"}}' > "$R/package.json"; i=$(cr "$R"); si=$?
+R=$(mkrepo); printf '%s\n' '{"name":"app","private":true,"scripts":{"assets":"asset-tool --with-deps","reinstall":"npm run install-deps"}}' > "$R/package.json"; d=$(cr "$R"); sd=$?
+R=$(mkrepo); printf '%s\n' '{"name":"app","private":true,"scripts":{"label":"echo playwright","deps":"install-deps chromium"}}' > "$R/package.json"; e=$(cr "$R"); se=$?
+R=$(mkrepo); printf '%s\n' '{"name":"app","private":true,"scripts":{"a":"echo playwright install chromium \\","b":"echo --with-deps"}}' > "$R/package.json"; g=$(cr "$R"); sg=$?
+R=$(mkrepo); wf "$R" e2e.yml 'on:
+  workflow_dispatch:
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - run: npx playwright install --with-deps chromium && npm test'; c=$(cr "$R"); sc=$?
+if [ $sa -eq 0 ] && has 'script "e2e:setup" asks for a root install' "$a" \
+  && [ $sb -eq 0 ] && has 'scripts/agent/gate.local.sh asks for a root install' "$b" \
+  && [ $sf -eq 0 ] && has 'scripts/agent/gate.local.sh asks for a root install' "$f" \
+  && [ $sh -eq 0 ] && has 'script "e2e:setup" asks for a root install' "$h" \
+  && [ $sk -eq 0 ] && ! has "asks for a root install" "$k" \
+  && [ $si -eq 0 ] && has 'script "postinstall" asks for a root install' "$i" && has "drop --with-deps or install-deps from the postinstall hook" "$i" && ! has "gate.mjs install" "$i" \
+  && [ $sd -eq 0 ] && ! has "asks for a root install" "$d" \
+  && [ $se -eq 0 ] && ! has "asks for a root install" "$e" \
+  && [ $sg -eq 0 ] && ! has "asks for a root install" "$g" \
+  && [ $sc -eq 0 ] && ! has "asks for a root install" "$c" && ! has "playwright install" "$c"; then ok with-deps-gate-script-warns
+else fail with-deps-gate-script-warns "package st=$sa: $a | gate.local.sh st=$sb: $b | continuation st=$sf: $f | comment st=$sk: $k | quoted st=$sh: $h | lifecycle st=$si: $i | unrelated st=$sd: $d | adjacent st=$se: $e | value-continuation st=$sg: $g | workflow st=$sc: $c"; fi
 # the trigger alone decides: a pull request or a push to a branch of any name fails, whatever words its steps use; a tag push
 # passes however its trigger is written, and neither a comment after `on:` nor a listed trigger hides one
 why=""
