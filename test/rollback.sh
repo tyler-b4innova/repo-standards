@@ -270,6 +270,78 @@ printf '%s\n' 'CREATE TABLE things (id INTEGER); CREATE UNIQUE INDEX unique_id O
 rm "$R/rollback-contracts.json"
 out=$(check); [ "$?" -eq 0 ] || why="$why; new-table constraints failed: $out"
 if [ -z "$why" ]; then ok rollback-persistent-sql; else fail rollback-persistent-sql "$why"; fi
+# A trigger on a table this change creates is expand-only: the previous release never touches that table, RAISE in its body included.
+# "Created" means a CREATE TABLE earlier in the same file, or in an earlier new file of the same migrations folder. Names match as SQLite's do.
+# verdict <rc> <label> <needle>: setup.sh --check on the current db/ must exit <rc> with <needle> in its output; sets $out and $rc.
+verdict() {
+  git -C "$R" add -A; out=$(check); rc=$?
+  if [ "$rc" -eq "$1" ] && [[ "$out" == *"$3"* ]]; then return 0; fi
+  why="$why; $2: $out (exit=$rc)"
+}
+repo trigger-new-table
+why=""
+cat > "$R/db/0002.sql" <<'SQL'
+CREATE TABLE ledger_entry (id TEXT PRIMARY KEY, body TEXT NOT NULL);
+CREATE TRIGGER ledger_entry_no_update BEFORE UPDATE ON ledger_entry BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+CREATE TRIGGER ledger_entry_no_delete BEFORE DELETE ON ledger_entry BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+SQL
+verdict 0 minimal 'rollback-safe ok'
+cat > "$R/db/0002.sql" <<'SQL'
+CREATE TABLE "Ledger_Entry" (id TEXT PRIMARY KEY);
+CREATE TRIGGER ledger_entry_no_update BEFORE UPDATE ON ledger_entry BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+SQL
+verdict 0 quoted-create-bare-trigger 'rollback-safe ok'
+cat > "$R/db/0002.sql" <<'SQL'
+CREATE TABLE ledger_entry (id TEXT PRIMARY KEY, body TEXT);
+CREATE TRIGGER ledger_entry_guard BEFORE UPDATE ON "LEDGER_ENTRY" BEGIN SELECT RAISE(ABORT, 'append-only') WHERE NEW.body IS NULL; END;
+SQL
+verdict 0 quoted-trigger-conditional-raise 'rollback-safe ok'
+# The body is not a free pass: a later command still needs its own classification, and a top-level SELECT RAISE is not a trigger body.
+cat > "$R/db/0002.sql" <<'SQL'
+CREATE TABLE ledger_entry (id TEXT PRIMARY KEY);
+CREATE TRIGGER ledger_entry_no_update BEFORE UPDATE ON ledger_entry BEGIN SELECT RAISE(ABORT, 'append-only'); DELETE FROM users; END;
+SQL
+verdict 1 body-delete-existing 'DELETE data rewrite users'
+cat > "$R/db/0002.sql" <<'SQL'
+CREATE TABLE ledger_entry (id TEXT PRIMARY KEY);
+SELECT RAISE(ABORT, 'append-only');
+SQL
+verdict 1 top-level-raise 'SQL is not positively classified as expand-only raise'
+if [ -z "$why" ]; then ok rollback-trigger-new-table; else fail rollback-trigger-new-table "$why"; fi
+repo trigger-new-file
+why=""
+printf '%s\n' 'CREATE TABLE ledger_entry (id TEXT PRIMARY KEY, body TEXT NOT NULL);' > "$R/db/0002.sql"
+cat > "$R/db/0003.sql" <<'SQL'
+CREATE TRIGGER ledger_entry_no_update BEFORE UPDATE ON ledger_entry BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+CREATE TRIGGER ledger_entry_no_delete BEFORE DELETE ON ledger_entry BEGIN SELECT RAISE(ABORT, 'append-only'); END;
+SQL
+verdict 0 earlier-new-file 'rollback-safe ok'
+rm "$R/db/0003.sql"; printf '%s\n' 'CREATE TABLE "LEDGER_entry" (id TEXT PRIMARY KEY);' > "$R/db/0002.sql"
+printf '%s\n' 'CREATE TRIGGER ledger_entry_no_update BEFORE UPDATE ON ledger_entry BEGIN SELECT RAISE(ABORT, '"'"'append-only'"'"'); END;' > "$R/db/0003.sql"
+verdict 0 quoted-case-earlier-file 'rollback-safe ok'
+# Same migrations folder only: a subfolder is a different folder, and a trigger before its table is not after it.
+mkdir -p "$R/db/late"; rm "$R/db/0003.sql"
+printf '%s\n' 'CREATE TRIGGER ledger_entry_no_update BEFORE UPDATE ON ledger_entry BEGIN SELECT RAISE(ABORT, '"'"'append-only'"'"'); END;' > "$R/db/late/0003.sql"
+verdict 1 other-folder 'CREATE TRIGGER changes persistent behavior ledger_entry'
+rm -r "$R/db/late"
+printf '%s\n' 'CREATE TRIGGER ledger_entry_no_update BEFORE UPDATE ON ledger_entry BEGIN SELECT RAISE(ABORT, '"'"'append-only'"'"'); END;' > "$R/db/0002.sql"
+printf '%s\n' 'CREATE TABLE ledger_entry (id TEXT PRIMARY KEY);' > "$R/db/0003.sql"
+verdict 1 trigger-before-table 'CREATE TRIGGER changes persistent behavior ledger_entry'
+if [ -z "$why" ]; then ok rollback-trigger-new-file; else fail rollback-trigger-new-file "$why"; fi
+repo trigger-existing-table
+why=""
+printf '%s\n' "CREATE TRIGGER users_no_update BEFORE UPDATE ON users BEGIN SELECT RAISE(ABORT, 'append-only'); END;" > "$R/db/0002.sql"
+verdict 1 existing-table 'CREATE TRIGGER changes persistent behavior users'
+[[ "$out" == *'SQL is not positively classified as expand-only raise'* ]] || why="$why; RAISE body message changed: $out"
+# A quoted string is a literal, not a table name: it must never make a trigger look like it targets a new table.
+printf '%s\n' "CREATE TABLE 'ledger' (id TEXT PRIMARY KEY);" "CREATE TRIGGER users_no_update BEFORE UPDATE ON 'users' BEGIN SELECT RAISE(ABORT, 'no'); END;" > "$R/db/0002.sql"
+verdict 1 literal-name 'CREATE TRIGGER changes persistent behavior'
+# The contract requirement is unchanged: a listed, linked contract for the trigger's object and its RAISE passes with a note.
+printf '%s\n' '-- contract: previous release never wrote users through this trigger; issue #123' "CREATE TRIGGER users_no_update BEFORE UPDATE ON users BEGIN SELECT RAISE(ABORT, 'append-only'); END;" > "$R/db/0002.sql"
+echo '{"db/0002.sql":["users","raise"]}' > "$R/rollback-contracts.json"
+verdict 0 existing-table-contract 'NOTE: contract'
+rm "$R/rollback-contracts.json"
+if [ -z "$why" ]; then ok rollback-trigger-existing-table; else fail rollback-trigger-existing-table "$why"; fi
 repo generated
 cp "$ENGINE/test/fixtures/release-astro/"{build.mjs,package.json,wrangler.jsonc} "$R/"
 mv "$R/db" "$R/migrations"

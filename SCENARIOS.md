@@ -330,6 +330,9 @@ Retired in 0.6.0 with the staged flow: `promote-no-ui-auto`, `promote-ui-needs-h
 
 - **`rollback-nested-update`**: a nested WHERE cannot hide a later assignment to an existing column from setup.sh --check.
 - **`rollback-persistent-sql`**: view deletion, unique indexes, triggers with DELETE and unclassified SQL require exact affected-object contracts through setup.sh --check.
+- **`rollback-trigger-new-table`**: a trigger, with its RAISE body, on a table the same migration file creates passes setup.sh --check (bare, quoted or any case); a later body command still needs its own classification, and a top-level SELECT RAISE still fails.
+- **`rollback-trigger-new-file`**: a trigger on a table an earlier new file of the same migrations folder creates passes setup.sh --check; a trigger in a subfolder, or one before its table, still fails.
+- **`rollback-trigger-existing-table`**: a trigger on a table that exists at the comparison base fails with the same trigger and RAISE messages, passes only with a listed, linked contract, and a quoted string name is never taken as a new table.
 - **`rollback-generated-production`**: clean-checkout builds of both revisions expose generated D1 migration directories and removed production bindings to setup.sh --check.
 - **`rollback-cross-worker-do`**: a caller switching classes cannot permit the host to remove a class or delete its namespace required by the previous release.
 
