@@ -9,7 +9,7 @@
 //   GATE_LOCK_WAIT_S  give up after this many seconds with "lock busy" and exit 75, not a gate result (default: wait
 //                     until the lock is free)
 import { randomBytes } from "node:crypto";
-import { accessSync, closeSync, constants, fchmodSync, fstatSync, futimesSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readlinkSync, renameSync, rmdirSync, unlinkSync, writeSync } from "node:fs";
+import { accessSync, closeSync, constants, fchmodSync, fstatSync, futimesSync, linkSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readlinkSync, renameSync, rmdirSync, unlinkSync, writeSync } from "node:fs";
 import { hostname, tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -43,6 +43,14 @@ function writeRecord(path, text) {
   try { if (process.platform !== "win32") fchmodSync(fd, 0o644); writeSync(fd, text); } finally { closeSync(fd); }
 }
 const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+// Removes the entry at `name` only if it is still `doomed` once moved aside under a private name: an entry that replaced
+// it meanwhile (another gate's) is linked back, never deleted. There is no atomic compare-and-unlink, so this is the
+// check: judge what was actually moved, not what was seen before.
+function removeIf(name, doomed) {
+  const aside = `${name}.aside-${randomBytes(8).toString("hex")}`;
+  try { renameSync(name, aside); } catch { return; }
+  try { if (!doomed(lstatSync(aside))) linkSync(aside, name); } catch {} finally { try { unlinkSync(aside); } catch {} }
+}
 // Runs fn under the takeover guard and returns true, or false if the guard stayed busy for waitMs. Takeovers and
 // releases both run under it, so a release never checks its ownership and then unlinks a lock a takeover replaced in
 // between, and a holder a takeover has verified cannot be released (and the lock taken by a new gate) before it is
@@ -53,13 +61,14 @@ function guarded(guard, fn, waitMs = GUARD_WAIT_MS) {
     let fd;
     try { fd = openSync(guard, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o644); } catch (e) {
       if (e.code !== "EEXIST") throw e;
-      try { if (Date.now() - lstatSync(guard).mtimeMs > GUARD_STALE_MS) unlinkSync(guard); } catch {}
+      try { if (Date.now() - lstatSync(guard).mtimeMs > GUARD_STALE_MS) removeIf(guard, (st) => Date.now() - st.mtimeMs > GUARD_STALE_MS); } catch {}
       if (Date.now() >= until) return false;
-      pause(20);
+      pause(Math.min(20, Math.max(1, until - Date.now())));
       continue;
     }
-    closeSync(fd);
-    try { fn(); return true; } finally { try { unlinkSync(guard); } catch {} }
+    let own;
+    try { own = fstatSync(fd); } finally { closeSync(fd); }
+    try { fn(); return true; } finally { removeIf(guard, (st) => st.ino === own.ino && st.dev === own.dev && st.mtimeMs === own.mtimeMs); }
   }
 }
 const parse = (text) => { try { const h = JSON.parse(text); return h && Number.isInteger(h.pid) ? h : null; } catch { return null; } };
@@ -150,8 +159,10 @@ export async function machineLock({ env = process.env, repo, log = console.log, 
     if (why) {
       // Under the guard, check the holder is still the one judged stale, then replace it in one rename: a holder that
       // changed or came back to life is judged again, never removed.
+      // The guard is waited for only until the deadline: past it, the answer is lock busy.
       let outcome = "busy";
-      guarded(guard, () => {
+      const left = deadline - Date.now();
+      if (left > 0) guarded(guard, () => {
         const again = read(file);
         if (!again || again.text !== seen.text || !staleness(parse(again.text), again.mtime, Date.now())) { outcome = "changed"; return; }
         const fresh = `${file}.new-${randomBytes(8).toString("hex")}`;
@@ -159,7 +170,7 @@ export async function machineLock({ env = process.env, repo, log = console.log, 
         outcome = "failed";
         try { writeRecord(fresh, record); made = true; renameSync(fresh, file); outcome = "took"; } catch {}
         finally { if (made && outcome !== "took") try { unlinkSync(fresh); } catch {} }
-      });
+      }, Math.min(GUARD_WAIT_MS, left));
       if (outcome === "took") { log(`local: took over a stale machine gate lock from ${describe(holder)}: ${why}`); return held(); }
       if (outcome === "changed") continue;
     }
