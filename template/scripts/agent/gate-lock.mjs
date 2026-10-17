@@ -14,10 +14,43 @@ const BEAT_MS = 10_000; // the holder touches the lock this often
 const STALE_MS = 120_000; // a lock not touched for this long is stale, whatever its PID
 const POLL_MS = 2_000;
 const REPORT_MS = 60_000;
+const GUARD_STALE_MS = 5_000; // the takeover guard is held for a few file operations; older than this, its holder died
+const GUARD_WAIT_MS = 1_000;
 
 const pidNamespace = () => { try { return readlinkSync("/proc/self/ns/pid"); } catch { return ""; } };
 const user = () => { try { return userInfo().username; } catch { return String(process.getuid?.() ?? "unknown"); } };
-const read = (file) => { try { return { text: readFileSync(file, "utf8"), mtime: statSync(file).mtimeMs }; } catch (e) { if (e.code === "ENOENT") return null; throw e; } };
+// A lock file this user cannot read (one written by an older gate under a strict umask) is an unreadable holder.
+const read = (file) => {
+  try { return { text: readFileSync(file, "utf8"), mtime: statSync(file).mtimeMs }; } catch (e) {
+    if (e.code === "ENOENT") return null;
+    if (e.code !== "EACCES" && e.code !== "EPERM") throw e;
+    try { return { text: "", mtime: statSync(file).mtimeMs }; } catch (e2) { if (e2.code === "ENOENT") return null; throw e2; }
+  }
+};
+// The holder record, readable by every user whatever the creator's umask (set through the descriptor, not the path).
+function writeRecord(path, text) {
+  const fd = openSync(path, "wx", 0o644);
+  try { if (process.platform !== "win32") fchmodSync(fd, 0o644); writeSync(fd, text); } finally { closeSync(fd); }
+}
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+// Runs fn under the takeover guard and returns true, or false if the guard stayed busy. Takeovers and releases both run
+// under it, so a holder a takeover has verified cannot be released (and the lock taken by a new gate) before it is
+// replaced. A guard untouched for GUARD_STALE_MS was left by a gate that died holding it and is removed.
+function guarded(guard, fn) {
+  const until = Date.now() + GUARD_WAIT_MS;
+  for (;;) {
+    let fd;
+    try { fd = openSync(guard, "wx", 0o644); } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+      try { if (Date.now() - statSync(guard).mtimeMs > GUARD_STALE_MS) unlinkSync(guard); } catch {}
+      if (Date.now() >= until) return false;
+      pause(20);
+      continue;
+    }
+    closeSync(fd);
+    try { fn(); return true; } finally { try { unlinkSync(guard); } catch {} }
+  }
+}
 const parse = (text) => { try { const h = JSON.parse(text); return h && Number.isInteger(h.pid) ? h : null; } catch { return null; } };
 const describe = (h) => (h ? `pid ${h.pid} (${h.user} on ${h.host}, ${h.repo}, since ${h.started})` : "an unreadable holder");
 
@@ -61,6 +94,7 @@ function staleness(h, mtime, now) {
 export async function machineLock({ env = process.env, repo, log = console.log, interrupted = () => false } = {}) {
   if (env.GITHUB_ACTIONS === "true") return () => {};
   if (env.GATE_LOCK === "off") { log("local: machine gate lock off (GATE_LOCK=off)"); return () => {}; }
+  // Literally /tmp, never $TMPDIR: sessions with a per-user TMPDIR would each get a lock of their own.
   const dir = env.GATE_LOCK_DIR || (process.platform === "win32" ? join(tmpdir(), "std-gate-lock") : "/tmp/std-gate-lock");
   const file = join(dir, "gate.lock");
   const wait = env.GATE_LOCK_WAIT_S === undefined ? Infinity : Number(env.GATE_LOCK_WAIT_S);
@@ -71,51 +105,52 @@ export async function machineLock({ env = process.env, repo, log = console.log, 
   };
   try { sharedDir(dir); } catch (e) { return unavailable(dir, e); }
   const me = { pid: process.pid, user: user(), host: hostname(), ns: pidNamespace(), repo, started: new Date().toISOString() };
+  const record = `${JSON.stringify(me)}\n`, guard = `${file}.takeover`;
   const mine = (h) => h && h.pid === me.pid && h.started === me.started && h.host === me.host;
-  const start = Date.now();
+  const held = () => {
+    log(`local: machine gate lock taken (${file})`);
+    const beat = setInterval(() => { const now = new Date(); try { if (mine(parse(read(file)?.text ?? ""))) utimesSync(file, now, now); } catch {} }, BEAT_MS);
+    beat.unref();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      clearInterval(beat);
+      // Only this gate's own lock is removed: a lock taken over meanwhile belongs to someone else.
+      const drop = () => { if (mine(parse(read(file)?.text ?? ""))) unlinkSync(file); };
+      try { if (!guarded(guard, drop)) drop(); } catch {}
+    };
+  };
+  const start = Date.now(), deadline = start + wait * 1000;
   let reported = 0, said = "";
   for (;;) {
-    let fd;
-    try { fd = openSync(file, "wx", 0o666); } catch (e) {
-      if (e.code !== "EEXIST") return unavailable(file, e);
-    }
-    if (fd !== undefined) {
-      try { writeSync(fd, `${JSON.stringify(me)}\n`); } finally { closeSync(fd); }
-      log(`local: machine gate lock taken (${file})`);
-      const beat = setInterval(() => { const now = new Date(); try { if (mine(parse(read(file)?.text ?? ""))) utimesSync(file, now, now); } catch {} }, BEAT_MS);
-      beat.unref();
-      let released = false;
-      return () => {
-        if (released) return;
-        released = true;
-        clearInterval(beat);
-        // Only this gate's own lock is removed: a lock taken over meanwhile belongs to someone else.
-        try { if (mine(parse(read(file)?.text ?? ""))) unlinkSync(file); } catch {}
-      };
-    }
+    try { writeRecord(file, record); return held(); } catch (e) { if (e.code !== "EEXIST") return unavailable(file, e); }
     const seen = read(file);
     if (!seen) continue; // released between the two calls: try again at once
-    const holder = parse(seen.text), now = Date.now(), why = staleness(holder, seen.mtime, now);
+    const holder = parse(seen.text), why = staleness(holder, seen.mtime, Date.now());
     if (why) {
-      // Move the stale file aside under a name of our own, then check it is the one judged: a holder that took over
-      // in between is put back.
-      const aside = `${file}.stale-${me.pid}-${now}`;
-      try { renameSync(file, aside); } catch (e) { if (e.code === "ENOENT") continue; throw e; }
-      const moved = read(aside);
-      if (moved && moved.text !== seen.text) { try { renameSync(aside, file); } catch {} continue; }
-      try { unlinkSync(aside); } catch {}
-      log(`local: took over a stale machine gate lock from ${describe(holder)}: ${why}`);
-      continue;
+      // Under the guard, check the holder is still the one judged stale, then replace it in one rename: a holder that
+      // changed or came back to life is judged again, never removed.
+      let took = false;
+      const ran = guarded(guard, () => {
+        const again = read(file);
+        if (!again || again.text !== seen.text || !staleness(parse(again.text), again.mtime, Date.now())) return;
+        const fresh = `${file}.new-${me.pid}-${Date.now()}`;
+        try { writeRecord(fresh, record); renameSync(fresh, file); took = true; } finally { if (!took) try { unlinkSync(fresh); } catch {} }
+      });
+      if (took) { log(`local: took over a stale machine gate lock from ${describe(holder)}: ${why}`); return held(); }
+      if (ran) continue;
     }
-    const waited = Math.round((now - start) / 1000);
-    if (now - start >= wait * 1000) throw new Error(`lock busy: another local gate holds the machine gate lock (${describe(holder)}) after ${waited}s; retry later`);
+    const now = Date.now(), waited = Math.round((now - start) / 1000);
+    if (now >= deadline) throw new Error(`lock busy: another local gate holds the machine gate lock (${describe(holder)}) after ${waited}s; retry later`);
     const line = describe(holder);
     if (line !== said || now - reported >= REPORT_MS) {
       log(`local: queued behind another local gate: ${line}; waited ${waited}s. This gate is waiting its turn, not stuck: do not stop it or the holder.`);
       reported = now; said = line;
     }
     if (interrupted()) throw new Error("interrupted while waiting for the machine gate lock");
-    await new Promise((r) => setTimeout(r, POLL_MS));
+    // Never sleep past the deadline: GATE_LOCK_WAIT_S bounds the wait to within one acquisition attempt.
+    await new Promise((r) => setTimeout(r, Math.min(POLL_MS, deadline - now)));
     if (interrupted()) throw new Error("interrupted while waiting for the machine gate lock");
   }
 }

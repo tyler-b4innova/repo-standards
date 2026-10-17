@@ -71,6 +71,41 @@ if [ "$code" -ne 0 ] && seen 'lock busy: another local gate holds the machine ga
 else fail gate-lock-wait-limit "exit=$code; $(cat "$T/fresh.log")"; fi
 rm -f "$LOCK"
 
+# GATE_LOCK_WAIT_S bounds the wait itself: a lock freed after the limit but before the next poll is not taken.
+sleep 300 & HOLDER=$!; PIDS+=("$HOLDER")
+plant "$HOLDER"
+start exact GATE_LOCK_WAIT_S=0.5
+waitfor 'queued behind another local gate' exact
+sleep 1.2; rm -f "$LOCK"
+for i in $(seq 1 40); do kill -0 "$GATE" 2>/dev/null || break; seen 'setup --check starting' exact && break; sleep 0.1; done
+stopgate; code=$?
+if [ "$code" -ne 0 ] && seen 'lock busy' exact && ! seen 'setup --check starting' exact; then ok gate-lock-wait-limit-exact
+else fail gate-lock-wait-limit-exact "exit=$code; $(cat "$T/exact.log")"; fi
+kill "$HOLDER" 2>/dev/null; wait "$HOLDER" 2>/dev/null; rm -f "$LOCK"
+
+# A takeover replaces only the holder it judged stale: while another gate is mid-takeover (its guard), this gate waits,
+# and once that gate's lock is in place it is waited on, never moved aside.
+sleep 0.01 & DEAD=$!; wait "$DEAD"
+plant "$DEAD"; : > "$LOCK.takeover"
+start verify
+waitfor "queued behind another local gate: pid $DEAD" verify 60
+sleep 300 & LIVE=$!; PIDS+=("$LIVE")
+plant "$LIVE"; rm -f "$LOCK.takeover"
+if waitfor "queued behind another local gate: pid $LIVE" verify 60 && ! seen 'took over a stale machine gate lock' verify && grep -q "\"pid\":$LIVE," "$LOCK"; then ok gate-lock-takeover-verifies-holder
+else fail gate-lock-takeover-verifies-holder "$(cat "$T/verify.log"; cat "$LOCK" 2>&1)"; fi
+stopgate
+kill "$LIVE" 2>/dev/null; wait "$LIVE" 2>/dev/null; rm -f "$LOCK" "$LOCK.takeover"
+
+# A lock file this user cannot read is an unreadable holder, waited on like any other (root reads every file).
+if [ "$(id -u)" != 0 ]; then
+  plant 1 elsewhere ""; chmod 000 "$LOCK"
+  start unread GATE_LOCK_WAIT_S=0.5
+  wait "$GATE"; code=$?
+  if [ "$code" -ne 0 ] && seen 'lock busy: another local gate holds the machine gate lock (an unreadable holder)' unread && ! seen 'setup --check starting' unread; then ok gate-lock-unreadable-holder
+  else fail gate-lock-unreadable-holder "exit=$code; $(cat "$T/unread.log")"; fi
+  rm -f "$LOCK"
+else echo "skip gate-lock-unreadable-holder (platform: root reads every file)"; fi
+
 # Off under GitHub Actions and with GATE_LOCK=off: no lock file is made and a planted holder is ignored.
 sleep 300 & HOLDER=$!; PIDS+=("$HOLDER")
 plant "$HOLDER"
@@ -111,14 +146,17 @@ mkdir "$T/shared"
 out=$( umask 077; node "$T/take.mjs" "$MOD" "$T/shared/lock" 2>&1 )
 if [ "$(mode "$T/shared/lock")" = 777 ] && printf '%s' "$out" | grep -q 'machine gate lock taken' && [ -z "$(ls "$T/shared" | grep -v '^lock$')" ]; then ok gate-lock-shared-dir
 else fail gate-lock-shared-dir "mode=$(mode "$T/shared/lock") left=$(ls "$T/shared") :: $out"; fi
+out=$( umask 077; node "$T/take.mjs" "$MOD" "$T/rd" die 2>&1 )
+if [ "$(mode "$T/rd/gate.lock")" = 644 ]; then ok gate-lock-file-readable
+else fail gate-lock-file-readable "mode=$(mode "$T/rd/gate.lock") :: $out"; fi
 mkdir "$T/private" && chmod 700 "$T/private" && ln -s "$T/private" "$T/linked"
 out=$(node "$T/take.mjs" "$MOD" "$T/linked" 2>&1)
 if printf '%s' "$out" | grep -q 'machine gate lock unavailable.*not a real directory' && [ "$(mode "$T/private")" = 700 ] && [ ! -e "$T/private/gate.lock" ]; then ok gate-lock-dir-symlink
 else fail gate-lock-dir-symlink "target mode=$(mode "$T/private") files=$(ls "$T/private") :: $out"; fi
-# Another user makes the directory and dies holding the lock; this user takes it over. Needs a second user (CI has one).
+# Another user, under umask 077, makes the directory and dies holding the lock; this user reads and takes it over. Needs a second user (CI has one).
 if [ "$(id -u)" != 0 ] && sudo -n true 2>/dev/null && id nobody >/dev/null 2>&1; then
   X=$(mktemp -d /tmp/gate-lock-xu.XXXXXX); chmod 1777 "$X"; cp "$MOD" "$T/take.mjs" "$X/"; chmod 644 "$X"/*.mjs
-  sudo -n -u nobody env -i PATH="$PATH" "$(command -v node)" "$X/take.mjs" "$X/gate-lock.mjs" "$X/lock" die > "$T/xu-other.log" 2>&1
+  sudo -n -u nobody env -i PATH="$PATH" sh -c 'umask 077; exec "$0" "$@"' "$(command -v node)" "$X/take.mjs" "$X/gate-lock.mjs" "$X/lock" die > "$T/xu-other.log" 2>&1
   owner=$(node -p 'require("os").userInfo().uid === require("fs").statSync(process.argv[1]).uid ? "me" : "other"' "$X/lock/gate.lock" 2>&1)
   out=$(node "$T/take.mjs" "$MOD" "$X/lock" 2>&1)
   if [ "$owner" = other ] && printf '%s' "$out" | grep -q 'took over a stale machine gate lock from pid [0-9]* (nobody on .*is no longer running' && printf '%s' "$out" | grep -q 'machine gate lock taken'; then ok gate-lock-cross-user-takeover
