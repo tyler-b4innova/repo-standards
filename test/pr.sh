@@ -260,4 +260,45 @@ out=$("$PR" open "Add x" "$T/xrepo.md" 2>&1) || why="$why; a cross-repo referenc
 mut "S.issues={}"
 if [ -z "$why" ]; then ok pr-open-claimed-issue; else fail pr-open-claimed-issue "$why"; fi
 
+# pr-resolve-bot-threads-only: resolve refuses a thread whose first comment is a person's or a deleted account's, says to
+# reply instead, and sends no mutation for it; a thread that starts with a bot's resolves, whatever a person replies later.
+why=""
+mut "S.threads=[{id:'TP',isResolved:false,comments:{nodes:[{databaseId:31,url:'uP1',author:{login:'alice',__typename:'User'}},{databaseId:32,url:'uP2',author:{login:'chatgpt-codex-connector',__typename:'Bot'}}]}},{id:'TD',isResolved:false,comments:{nodes:[{databaseId:41,url:'uD1',author:null}]}},{id:'TB',isResolved:false,comments:{nodes:[{databaseId:51,url:'uB1',author:{login:'chatgpt-codex-connector',__typename:'Bot'}},{databaseId:52,url:'uB2',author:{login:'alice',__typename:'User'}}]}},{id:'TS',isResolved:false,comments:{nodes:[{databaseId:61,url:'uS1',author:{login:'example-sync',__typename:'Bot'}}]}}]"
+n=$(lines)
+p1=$("$PR" resolve 1 31 2>&1) && why="$why; a person's thread resolved"
+case "$p1" in *"@alice"*"reply"*) ;; *) why="$why; refusal does not name @alice and say to reply: $p1" ;; esac
+"$PR" resolve 1 32 >/dev/null 2>&1 && why="$why; a bot reply inside a person's thread resolved"
+"$PR" resolve 1 41 >/dev/null 2>&1 && why="$why; a deleted account's thread resolved"
+since "$n" | grep -q resolveReviewThread && why="$why; a refused resolve sent a mutation"
+"$PR" resolve 1 51 >/dev/null 2>&1 || why="$why; a thread that starts with a codex comment was refused"
+"$PR" resolve 1 61 >/dev/null 2>&1 || why="$why; a Bot-typed thread from another app was refused"
+[ "$(since "$n" | grep -c resolveReviewThread)" = 2 ] || why="$why; expected two resolves, sent $(since "$n" | grep -c resolveReviewThread)"
+[ "$(state "S.threads.map(t=>t.id+'='+t.isResolved).join(' ')")" = "TP=false TD=false TB=true TS=true" ] || why="$why; threads $(state "S.threads.map(t=>t.id+'='+t.isResolved).join(' ')")"
+mut "S.threads=[]"
+if [ -z "$why" ]; then ok pr-resolve-bot-threads-only; else fail pr-resolve-bot-threads-only "$why"; fi
+
+# pr-arm-gate-and-review: arm turns on squash auto-merge only for a ready PR whose base branch rules require both gate and
+# review (across rulesets); a draft, or a branch missing either, is refused by name and sends no mutation; nothing merges.
+why=""
+mut "S.pulls[0].draft=false;S.pulls[0].state='open';S.pulls[0].merged=false;S.autoMerge=[];S.rules=[{type:'required_status_checks',parameters:{required_status_checks:[{context:'gate'}]}}]"
+n=$(lines)
+out=$("$PR" arm 1 2>&1) && why="$why; arm armed with only gate required"
+case "$out" in *"missing: review"*) ;; *) why="$why; refusal does not name review: $out" ;; esac
+since "$n" | grep -q '"path":"/repos/acme/demo/rules/branches/main"' || why="$why; the base branch rules were not read"
+since "$n" | grep -q enablePullRequestAutoMerge && why="$why; refusal sent the auto-merge mutation"
+mut "S.rules=[{type:'required_status_checks',parameters:{required_status_checks:[{context:'gate'}]}},{type:'required_status_checks',parameters:{required_status_checks:[{context:'review'}]}}];S.pulls[0].draft=true"
+n=$(lines)
+out=$("$PR" arm 1 2>&1) && why="$why; arm armed a draft"
+case "$out" in *"is a draft"*) ;; *) why="$why; no draft message: $out" ;; esac
+since "$n" | grep -q enablePullRequestAutoMerge && why="$why; a draft got the mutation"
+mut "S.pulls[0].draft=false"
+out=$("$PR" arm 1 2>&1) || why="$why; arm refused a ready PR whose rulesets require both: $out"
+case "$out" in *"auto-merge armed on #1"*) ;; *) why="$why; no armed message: $out" ;; esac
+[ "$(state 'JSON.stringify(S.autoMerge)')" = "[1]" ] || why="$why; auto-merge not recorded: $(state 'JSON.stringify(S.autoMerge)')"
+since "$n" | grep enablePullRequestAutoMerge | grep -q 'mergeMethod:SQUASH' || why="$why; not a squash auto-merge"
+[ "$(state 'S.pulls[0].merged')" = false ] || why="$why; arm merged the PR"
+since "$n" | grep -q '/pulls/1/merge"' && why="$why; a merge request was sent"
+mut "S.autoMerge=[];S.rules=[]"
+if [ -z "$why" ]; then ok pr-arm-gate-and-review; else fail pr-arm-gate-and-review "$why"; fi
+
 done_cases

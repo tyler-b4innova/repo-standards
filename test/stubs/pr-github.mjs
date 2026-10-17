@@ -11,6 +11,8 @@ const R = "/repos/acme/demo";
 const git = (...a) => { try { return execFileSync("git", ["--git-dir", origin, ...a], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { return null; } };
 const S = { pulls: [], issueComments: {}, reviewComments: {}, reviews: {}, checks: {} };
 let nextId = 1000;
+// a review-thread comment whose fixture names no author is the review bot's (GraphQL shape: bare login, __typename Bot)
+const BOT = { login: "chatgpt-codex-connector", __typename: "Bot" };
 
 const pr = (x) => ({ ...x, node_id: `PR_${x.number}`, html_url: `https://github.com/acme/demo/pull/${x.number}`, head: { ref: x.head, sha: x.sha ?? git("rev-parse", `refs/heads/${x.head}`), repo: { full_name: "acme/demo" } }, base: { ref: x.base } });
 
@@ -56,6 +58,13 @@ createServer((req, res) => {
       if (S.moveHead && !x.draft) x.sha = "f".repeat(40); // a push lands while the toggle runs
       return send(200, { data: { pullRequest: { isDraft: x.draft } } });
     }
+    // auto-merge: records the PR in S.autoMerge (its node id names it); any other query falls through to the threads answer
+    if (p === "/graphql" && body?.query?.includes("enablePullRequestAutoMerge")) {
+      const x = S.pulls.find((y) => `PR_${y.number}` === body.variables.id);
+      if (!x) return send(200, { errors: [{ message: "stub: no such PR" }] });
+      (S.autoMerge ??= []).push(x.number);
+      return send(200, { data: { enablePullRequestAutoMerge: { pullRequest: { autoMergeRequest: { enabledAt: new Date().toISOString() } } } } });
+    }
     // review threads: S.threads (default none); S.threadsFail: the query errors
     if (p === "/graphql" && body?.query?.includes("resolveReviewThread")) {
       const t = (S.threads ?? []).find((x) => x.id === body.variables.t);
@@ -66,7 +75,7 @@ createServer((req, res) => {
     if (p === "/graphql" && body?.query?.includes("fullDatabaseId")) {
       const tp = S.threadPage ?? 100, cp = S.commentPage ?? 100, v = body.variables;
       const comments = (t, after) => { const all = t.comments.nodes, i = after ? Number(after) : 0;
-        return { pageInfo: { hasNextPage: i + cp < all.length, endCursor: String(i + cp) }, nodes: all.slice(i, i + cp).map((c) => ({ fullDatabaseId: String(c.fullDatabaseId ?? c.databaseId) })) }; };
+        return { pageInfo: { hasNextPage: i + cp < all.length, endCursor: String(i + cp) }, nodes: all.slice(i, i + cp).map((c) => ({ fullDatabaseId: String(c.fullDatabaseId ?? c.databaseId), author: c.author === undefined ? BOT : c.author })) }; };
       if (body.query.includes("node(id:")) return send(200, { data: { node: { comments: comments((S.threads ?? []).find((t) => t.id === v.t), v.c) } } });
       const all = S.threads ?? [], i = v.a ? Number(v.a) : 0;
       return send(200, { data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: i + tp < all.length, endCursor: String(i + tp) }, nodes: all.slice(i, i + tp).map((t) => ({ id: t.id, comments: comments(t, null) })) } } } } });
@@ -116,6 +125,8 @@ createServer((req, res) => {
       return send(201, c);
     }
     if ((m = p.match(/^\/repos\/acme\/demo\/pulls\/(\d+)\/reviews$/))) return send(200, S.reviews[m[1]] ?? []);
+    // the base branch's rules, as GitHub lists them: S.rules (default none)
+    if ((m = p.match(/^\/repos\/acme\/demo\/rules\/branches\/(.+)$/))) return send(200, S.rules ?? []);
     // github.com blob URLs, served from the bare origin: 200 only if the path exists at that commit
     if ((m = p.match(/^\/acme\/demo\/blob\/([0-9a-f]{40})\/(.+)$/)))
       return git("cat-file", "-e", `${m[1]}:${decodeURIComponent(m[2])}`) === null ? send(404, {}) : send(200, {});
