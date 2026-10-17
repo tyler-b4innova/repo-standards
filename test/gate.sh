@@ -158,6 +158,20 @@ if has "exit=1" "$mb" && has "libfoo.so.1: libgbm.so.1" "$mb" && ! has "install-
   && has "exit=1" "$bad" && has "package.json is not valid JSON" "$bad" && ! has "install-deps" "$badl" \
   && has "exit=1" "$mo" && has "libfoo.so.1: libgbm.so.1" "$mo" && has "firefox" "$mo"; then ok browser-deps-command
 else fail browser-deps-command "missing=$mb | $mbl || install=$mi | $mil sudo=$msudo probe=$probe || darwin=$dw || nopw=$np || invalid=$bad | $badl || other-browsers=$mo"; fi
+# browser-deps-default-cache: with PLAYWRIGHT_BROWSERS_PATH unset, Playwright's Linux default is $XDG_CACHE_HOME/ms-playwright, or
+# ~/.cache/ms-playwright when XDG_CACHE_HOME is unset or empty; browser-deps checks the browsers in that folder
+XC=$(mktemp -d "$T/xdg.XXXXXX"); pwlayout "$XC/ms-playwright" chrome-linux64 chrome-headless-shell-linux64 chrome-headless-shell
+xd=$(XDG_CACHE_HOME="$XC" BPATH= BAD=libfoo bdrun)
+pwlayout "$EH/.cache/ms-playwright" chrome-linux64 chrome-headless-shell-linux64 chrome-headless-shell
+xf=$(XDG_CACHE_HOME= BPATH= BAD=libfoo bdrun)
+if has "exit=1" "$xd" && has "libfoo.so.1: libgbm.so.1" "$xd" && has "$XC/ms-playwright" "$xd" \
+  && has "exit=1" "$xf" && has "libfoo.so.1: libgbm.so.1" "$xf" && has "$EH/.cache/ms-playwright" "$xf"; then ok browser-deps-default-cache
+else fail browser-deps-default-cache "xdg=$xd | fallback=$xf"; fi
+# browser-deps-requested-only: only the browsers this run requests are checked. With GATE_BROWSERS=firefox and no browser cache,
+# Firefox is named as uncheckable and no Chromium is reported missing
+mf=$(GATE_BROWSERS=firefox BPATH="$T/no-browsers" bdrun)
+if has "exit=1" "$mf" && has "firefox" "$mf" && ! has "chromium" "$mf"; then ok browser-deps-requested-only
+else fail browser-deps-requested-only "firefox-only=$mf"; fi
 # browser-deps-no-new-privs: under no_new_privs (agent sandboxes) a missing library is reported with the host requirement, and
 # no sudo is called at all, `--install` included; the install step fails the same way. Linux only (setpriv sets the flag).
 if command -v setpriv >/dev/null 2>&1; then

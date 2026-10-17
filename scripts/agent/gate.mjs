@@ -180,9 +180,10 @@ function canEscalate() {
 // libx264.so) that this scan cannot reproduce, so they are always reported missing. Linux only: elsewhere there are none.
 function browserDepsProblems() {
   if ((env.GATE_PLATFORM || process.platform) !== "linux") return [];
-  // Firefox and WebKit cannot be checked here, but they do not stop the Chromium scan: the others are named and Chromium is still checked.
+  // Firefox and WebKit cannot be checked here: they are named. Chromium is scanned only when this run requests it.
   const other = browsers().filter((b) => b !== "chromium");
   const problems = other.length ? [`${other.join(", ")}: its system packages cannot be checked here`] : [];
+  if (!browsers().includes("chromium")) return problems;
   const root = browsersRoot();
   const dirs = (has(root) ? ls(root) : []).filter((x) => /^chromium(_headless_shell)?-/.test(x));
   if (!dirs.some((x) => /^chromium-/.test(x))) return [...problems, `chromium: not found under ${root}`];
@@ -203,11 +204,16 @@ function browserDepsProblems() {
   return problems;
 }
 // Where this run's browsers are: PLAYWRIGHT_BROWSERS_PATH, or with `0` (Playwright's hermetic install) the project's own
-// node_modules/playwright-core/.local-browsers, or with it unset the user's cache. Relative paths are the project's.
+// node_modules/playwright-core/.local-browsers, or with it unset Playwright's own default cache: $XDG_CACHE_HOME (else ~/.cache) on
+// Linux, ~/Library/Caches on macOS, %LOCALAPPDATA% (else ~/AppData/Local) on Windows, then `ms-playwright`. Relative paths are the project's.
 function browsersRoot() {
-  const p = env.PLAYWRIGHT_BROWSERS_PATH;
+  const p = env.PLAYWRIGHT_BROWSERS_PATH, platform = env.GATE_PLATFORM || process.platform;
   if (p === "0") return resolvePath("node_modules/playwright-core/.local-browsers");
-  return p ? resolvePath(p) : `${homedir()}/.cache/ms-playwright`;
+  if (p) return resolvePath(p);
+  const cache = platform === "darwin" ? `${homedir()}/Library/Caches`
+    : platform === "win32" ? (env.LOCALAPPDATA || `${homedir()}/AppData/Local`)
+    : (env.XDG_CACHE_HOME || `${homedir()}/.cache`);
+  return `${cache}/ms-playwright`;
 }
 function ui(files) {
   const p = json("scripts/agent/pack.json") ?? {}, o = std.ui_paths;
