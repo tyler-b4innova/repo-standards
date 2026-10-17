@@ -100,6 +100,8 @@ function sharedDir(dir) {
   }
   const st = lstat(dir);
   if (!st || st.isSymbolicLink() || !st.isDirectory()) throw new Error("not a real directory (a symlink, a file or missing)");
+  // Sticky (as /tmp itself is), another user could not replace a dead holder's lock, so gates would queue behind it.
+  if (process.platform !== "win32" && st.mode & 0o1000) throw new Error("sticky (mode 1777): another user could not take over a stale lock; use a non-sticky directory (mode 0777)");
   accessSync(dir, constants.W_OK | constants.X_OK);
 }
 
