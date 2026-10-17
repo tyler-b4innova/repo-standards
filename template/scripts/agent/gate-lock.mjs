@@ -26,7 +26,7 @@ const GUARD_WAIT_MS = 1_000;
 // Every name in the shared directory is handled as a name: anyone can plant a symlink or a FIFO there (it is not sticky,
 // so the kernel's protected_symlinks/protected_regular do not apply). Opens never follow a symlink or block, files are
 // created exclusively, the heartbeat touches through the descriptor it verified, and a takeover renames over the name.
-const { O_RDONLY, O_WRONLY, O_CREAT, O_EXCL, O_NOFOLLOW = 0, O_NONBLOCK = 0 } = constants;
+const { O_RDONLY, O_WRONLY, O_RDWR, O_CREAT, O_EXCL, O_NOFOLLOW = 0, O_NONBLOCK = 0 } = constants;
 const pidNamespace = () => { try { return readlinkSync("/proc/self/ns/pid"); } catch { return ""; } };
 const user = () => { try { return userInfo().username; } catch { return String(process.getuid?.() ?? "unknown"); } };
 // The lock's text and the mtime of the name itself. Anything there that is not a regular file this user can read (a
@@ -140,7 +140,8 @@ export async function machineLock({ env = process.env, repo, log = console.log, 
     const beat = setInterval(() => {
       let fd;
       try {
-        fd = openSync(file, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+        // Read-write: Windows needs a writable handle to set times; on POSIX only the owner's own lock opens this way.
+        fd = openSync(file, O_RDWR | O_NOFOLLOW | O_NONBLOCK);
         if (fstatSync(fd).isFile() && mine(parse(readFileSync(fd, "utf8")))) { const now = new Date(); futimesSync(fd, now, now); }
       } catch {} finally { if (fd !== undefined) try { closeSync(fd); } catch {} }
     }, BEAT_MS);
