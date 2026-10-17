@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PR helper over the GitHub REST API (GraphQL only for review threads: status, resolve; and the draft toggle: ready). Auth: GH_TOKEN, GITHUB_TOKEN, else `gh auth token`.
+# PR helper over the GitHub REST API (GraphQL only for review threads: status, resolve; the draft toggle: ready; auto-merge: arm). Auth: GH_TOKEN, GITHUB_TOKEN, else `gh auth token`.
 # Repo: GH_REPO, else the origin remote. API: GITHUB_API_URL (default https://api.github.com).
 #   pr.sh open [--base B] [--dry-run] [--claimed-ok] [--] "<title>" <body-file>  draft PR (reused if open for this head and base); push first
 #                                         --claimed-ok skips the check that refuses an issue the launcher claimed (label agent-claimed) unless the branch is its agent/N-* or retro/N-*
@@ -7,10 +7,11 @@
 #   pr.sh evidence <pr> <file>...         upload captures as attachments (gh 2.99+) in one marked comment; no commit, no push
 #   pr.sh feedback <pr>                   comments and reviews newer than the last push, with ids
 #   pr.sh reply <pr> <comment-id> "<text>"  reply on the review thread, else as a PR comment
-#   pr.sh resolve <pr> <comment-id>       resolve the review thread holding that comment (after fixing or answering it)
+#   pr.sh resolve <pr> <comment-id>       resolve the review thread holding that comment, only when its first comment is a review bot's (a person's thread: reply instead)
 #   pr.sh ready <pr>                      mark the draft ready once: only when `gate.mjs local` passed on the pushed head, tree clean; GraphQL
+#   pr.sh arm <pr>                        squash auto-merge on a ready PR, only when its base branch rules require both gate and review; never merges
 set -euo pipefail
-usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; }
 die() { echo "pr.sh: $*" >&2; exit 1; }
 API=${GITHUB_API_URL:-https://api.github.com}
 REPO=${GH_REPO:-$(git remote get-url origin 2>/dev/null | sed -E 's#/+$##; s#\.git$##; s#.*[:/]([^/:]+/[^/:]+)$#\1#' || true)}
@@ -204,7 +205,7 @@ resolve() {
   [ $# -eq 2 ] || die 'usage: pr.sh resolve <pr> <comment-id>'
   [ -n "$TOKEN" ] || TOKEN=${GH_TOKEN:-${GITHUB_TOKEN:-}}
   [ -n "$TOKEN" ] || TOKEN=$(gh auth token 2>/dev/null) || die "set GH_TOKEN or run gh auth login"
-  local t
+  local t tid
   # Every thread and every comment in it, page by page; REST ids (fullDatabaseId) can exceed GraphQL's Int.
   t=$(TOKEN=$TOKEN API=$API node -e '
     const [owner, name, pr, id] = process.argv.slice(1), url = process.env.API.replace(/\/$/, "") + "/graphql";
@@ -214,7 +215,7 @@ resolve() {
       if (!r.ok || j.errors) { console.error(`graphql: ${r.status} ${JSON.stringify(j.errors ?? j).slice(0, 300)}`); process.exit(2); }
       return j.data;
     };
-    const C = "comments(first: 100, after: $c) { pageInfo { hasNextPage endCursor } nodes { fullDatabaseId } }";
+    const C = "comments(first: 100, after: $c) { pageInfo { hasNextPage endCursor } nodes { fullDatabaseId author { login __typename } } }";
     (async () => {
       for (let after = null; ;) {
         const d = await gql(`query($o: String!, $n: String!, $pr: Int!, $a: String, $c: String) { repository(owner: $o, name: $n) { pullRequest(number: $pr) { reviewThreads(first: 100, after: $a) { pageInfo { hasNextPage endCursor } nodes { id ${C} } } } } }`, { o: owner, n: name, pr: +pr, a: after, c: null });
@@ -222,7 +223,7 @@ resolve() {
         for (const th of page.nodes) {
           let cs = th.comments;
           for (;;) {
-            if (cs.nodes.some((c) => String(c.fullDatabaseId) === id)) { console.log(th.id); return; }
+            if (cs.nodes.some((c) => String(c.fullDatabaseId) === id)) { console.log(JSON.stringify({ id: th.id, first: th.comments.nodes[0]?.author ?? null })); return; }
             if (!cs.pageInfo.hasNextPage) break;
             cs = (await gql(`query($t: ID!, $c: String) { node(id: $t) { ... on PullRequestReviewThread { ${C} } } }`, { t: th.id, c: cs.pageInfo.endCursor })).node.comments;
           }
@@ -233,9 +234,42 @@ resolve() {
     })();
   ' -- "${REPO%%/*}" "${REPO#*/}" "$1" "$2") || die "could not read the review threads of #$1"
   [ -n "$t" ] || die "no review thread on #$1 holds comment $2 (pr.sh feedback lists the ids)"
-  req POST /graphql "$(node -e 'console.log(JSON.stringify({ query: "mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}", variables: { t: process.argv[1] } }))' -- "$t")"
+  # Only a review bot's thread is resolved here: GraphQL gives a bot the __typename Bot (its login has no [bot] suffix). A person's
+  # thread, or one whose first comment came from a deleted account (null), is refused; the person's own thread stays theirs.
+  [ "$(js 'String(!!d.first && (d.first.__typename === "Bot" || /\[bot\]$/.test(d.first.login)))' <<<"$t")" = true ] \
+    || die "resolve closes review-bot threads only: this thread $(js 'd.first ? "starts with a comment by @" + d.first.login : "starts with a comment from a deleted account"' <<<"$t"), which is not one. Reply on it instead: pr.sh reply $1 $2 \"<text>\""
+  tid=$(js 'd.id' <<<"$t")
+  req POST /graphql "$(node -e 'console.log(JSON.stringify({ query: "mutation($t:ID!){resolveReviewThread(input:{threadId:$t}){thread{isResolved}}}", variables: { t: process.argv[1] } }))' -- "$tid")"
   [ "$(js 'String(d.data?.resolveReviewThread?.thread?.isResolved)' <<<"$R")" = true ] || die "resolving the thread failed: ${R:0:300}"
   echo "resolved the thread holding comment $2"
+}
+
+arm() { # arm <pr>: squash auto-merge on a ready PR whose base branch rules require both gate and review; nothing merges or changes here
+  [ $# -eq 1 ] || die 'usage: pr.sh arm <pr>'
+  req GET "pulls/$1"
+  [ "$(js 'd.state' <<<"$R")" = open ] || die "PR #$1 is not open"
+  [ "$(js 'String(!!d.draft)' <<<"$R")" = false ] || die "PR #$1 is a draft, so it is not ready; mark it ready with pr.sh ready $1 first"
+  local base pid missing rules page n
+  base=$(js 'd.base.ref' <<<"$R"); pid=$(js 'd.node_id' <<<"$R")
+  # the repository's auto-merge setting is read, never written: an agent does not change merge settings; an org admin does
+  req GET ""
+  [ "$(js 'String(d.allow_auto_merge === true)' <<<"$R")" = true ] || die "auto-merge is off for this repository; an org admin enables it (pr.sh arm changes no settings)"
+  # the base branch's rules, across rulesets, page by page (GitHub returns 30 a page unless asked for more); a token that cannot read them arms nothing
+  rules='[]'; page=1
+  while :; do
+    req GET "rules/branches/$(enc "$base")?per_page=100&page=$page"
+    n=$(js 'Array.isArray(d) ? d.length : 0' <<<"$R")
+    rules=$(js 'JSON.parse(a[0]).concat(d)' "$rules" <<<"$R")
+    [ "$n" -ge 100 ] || break
+    page=$((page + 1))
+  done
+  missing=$(js '["gate", "review"].filter((c) => !d.some((x) => x.type === "required_status_checks" && (x.parameters?.required_status_checks || []).some((y) => y.context === c))).join(", ")' <<<"$rules")
+  [ -z "$missing" ] || die "branch $base does not require both gate and review (missing: $missing); auto-merge not armed on #$1"
+  req POST /graphql "$(node -e 'console.log(JSON.stringify({ query: "mutation($id:ID!){enablePullRequestAutoMerge(input:{pullRequestId:$id,mergeMethod:SQUASH}){pullRequest{autoMergeRequest{enabledAt}}}}", variables: { id: process.argv[1] } }))' -- "$pid")"
+  [ "$(js 'String(!!d.data?.enablePullRequestAutoMerge?.pullRequest?.autoMergeRequest)' <<<"$R")" = true ] && { echo "auto-merge armed on #$1 (squash); it merges once gate and review pass"; return 0; }
+  # GitHub refuses auto-merge once the PR is already clean (it can merge now): report it, do not retry or merge by hand
+  [ "$(js 'String(/clean status/i.test(JSON.stringify(d.errors || [])))' <<<"$R")" = true ] && die "GitHub did not arm auto-merge on #$1: the PR is already clean, so it can merge now. Stop and report it; do not merge it by hand."
+  die "GitHub did not arm auto-merge on #$1: ${R:0:300}"
 }
 
 gql_draft() { # gql_draft <pr> convertPullRequestToDraft|markPullRequestReadyForReview <want-draft true|false> [expected-head-sha]
@@ -274,7 +308,7 @@ shift || true
 case "$cmd" in
   open) open_pr "$@" ;;
   status | feedback) [ $# -eq 1 ] || die "usage: pr.sh $cmd <pr>"; "$cmd" "$1" ;;
-  evidence | reply | resolve | ready) "$cmd" "$@" ;;
+  evidence | reply | resolve | ready | arm) "$cmd" "$@" ;;
   -h | --help) usage ;;
   *) usage >&2; exit 2 ;;
 esac
