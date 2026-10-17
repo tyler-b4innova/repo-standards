@@ -1,6 +1,8 @@
 # Result lines: `ok <id>` / `FAIL <id>`. A scenario counts as implemented only if a case prints its id.
 # The suite may itself run as a gate e2e command, which passes the selection (GATE_SELECT, GATE_AFFECTED*) down; each case sets what it needs.
 unset GATE_SELECT GATE_AFFECTED GATE_AFFECTED_E2E
+# Cases run in parallel and must not queue on this machine's real gate lock (or on each other); test/gate-lock.sh unsets this.
+export GATE_LOCK=off
 FAILS=0
 ok() { echo "ok $1"; }
 fail() { echo "FAIL $1"; [ -z "${2:-}" ] || printf '  %s\n' "$2" | head -20; FAILS=$((FAILS + 1)); }

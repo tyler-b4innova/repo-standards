@@ -11,6 +11,7 @@ import { dirname, resolve as resolvePath } from "node:path";
 import { createRequire } from "node:module";
 import { createConnection } from "node:net";
 import { localConfig, localWorkerConfig } from "./local.mjs";
+import { machineLock } from "./gate-lock.mjs";
 import { scan } from "./jsscan.mjs";
 import { rollbackFindings } from "./rollback.mjs";
 import { rootFile, verifyGeneratedBuild } from "./release-config.mjs";
@@ -460,7 +461,12 @@ if (cmd === "local") {
     const why = has(skipPath) ? rd(skipPath, "utf8").trim() : null, result = why === null ? "PASS" : why ? `SKIP (${why})` : "SKIP";
     results.set(name, result); console.log(`local: ${name} ${result}`);
   };
+  let releaseLock = () => {};
   const execute = async () => {
+    // One heavy local gate per machine (gate-lock.mjs): wait for any other to finish before the first step.
+    const top = git("rev-parse", "--show-toplevel").trim();
+    releaseLock = await machineLock({ env, repo: `${top.split("/").pop()}@${git("branch", "--show-current").trim() || head.slice(0, 7)}`, interrupted: () => Boolean(interrupted) });
+    if (interrupted) throw new Error("interrupted");
     await run("setup --check", "scripts/agent/setup.sh", ["--check"]);
     const config = localConfig(std.local);
     for (const step of ["instructions", "secrets", "syntax", "install"]) await run(step, process.execPath, ["scripts/agent/gate.mjs", step, ...(step === "instructions" ? ["--local"] : [])]);
@@ -511,6 +517,7 @@ if (cmd === "local") {
       else console.log("local: worker stopped; port freed");
     }
     rmSync(dir, { recursive: true, force: true });
+    releaseLock();
     for (const [signal, handler] of Object.entries(handlers)) process.off(signal, handler);
     if (interrupted) process.exitCode = interrupted;
     console.log(`local gate ${head}: ${steps.map((s) => `${s}=${results.get(s)}`).join("; ")}`);
