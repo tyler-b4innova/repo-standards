@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 // Steps of the `gate` job (std-gate.yml), also runnable locally:
-//   local [--base <ref>] | plan | release-start | release-verify | release-report | classify [base] | install [--no-browsers|--browsers-only] | browser-deps [--install] | playwright | run <script>... | preview | release | e2e | secrets | syntax | instructions | verdict
+//   local [--base <ref>] | plan | release-start | release-verify | release-report | classify [base] | install [--no-browsers|--browsers-only] | browser-deps [--install] | playwright | run <script>... | preview | release | e2e | secrets | gitleaks-fetch | syntax | instructions | verdict
 // UI paths: pack.json defaults; standards.json "ui_paths" as a list replaces the include globs,
 // as {include, ignore} replaces include and adds ignore. e2e: none fails unless "e2e": false.
 import { execFileSync as ex, spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync as has, mkdtempSync, readdirSync as ls, readFileSync as rd, rmSync, statSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
-import { resolve as resolvePath } from "node:path";
+import { appendFileSync, existsSync as has, mkdirSync, mkdtempSync, readdirSync as ls, readFileSync as rd, rmSync, statSync, writeFileSync } from "node:fs";
+import { constants as osConstants, homedir, tmpdir } from "node:os";
+import { dirname, resolve as resolvePath } from "node:path";
+import { createRequire } from "node:module";
 import { createConnection } from "node:net";
 import { localConfig, localWorkerConfig } from "./local.mjs";
 import { scan } from "./jsscan.mjs";
@@ -20,7 +21,7 @@ const [cmd, ...args] = process.argv.slice(2), env = process.env;
 const skipFile = env.GATE_SKIP_FILE; delete env.GATE_SKIP_FILE;
 // A step that ran nothing prints its notice as before and, under `local`, records why: the summary then says SKIP (reason), not PASS.
 const ranNothing = (reason, notice) => { console.log(notice); if (skipFile) writeFileSync(skipFile, `${reason}\n`); };
-const SUBS = ["local", "verdict", "plan", "classify", "install", "browser-deps", "playwright", "run", "preview", "release", "release-start", "release-verify", "release-report", "e2e", "secrets", "syntax", "instructions"], ok = SUBS.includes(cmd);
+const SUBS = ["local", "verdict", "plan", "classify", "install", "browser-deps", "playwright", "run", "preview", "release", "release-start", "release-verify", "release-report", "e2e", "secrets", "gitleaks-fetch", "syntax", "instructions"], ok = SUBS.includes(cmd);
 if (!ok || args.includes("--help")) {
   console.log(rd(new URL(import.meta.url), "utf8").split("\n").slice(1, 6).map((l) => l.slice(3)).join("\n"));
   process.exit(ok || cmd === "--help" ? 0 : 2);
@@ -31,11 +32,61 @@ try { process.chdir(git("rev-parse", "--show-toplevel").trim()); } catch {}
 const json = (f) => { try { return JSON.parse(rd(f, "utf8")); } catch { return null; } };
 const pkg = json("package.json"), std = json("standards.json") ?? {};
 const fail0 = (msg, fix) => { console.log(`::error::${msg}\nfix: ${fix}`); process.exit(1); };
-if (has("package.json") && !pkg && ["local", "install", "run", "e2e"].includes(cmd)) fail0("package.json is not valid JSON", "fix package.json");
+if (has("package.json") && !pkg && ["local", "install", "browser-deps", "run", "e2e"].includes(cmd)) fail0("package.json is not valid JSON", "fix package.json");
 const pm = has("pnpm-lock.yaml") ? "pnpm" : has("yarn.lock") ? "yarn" : "npm";
 const fail = (msg, fix) => { console.log(`::error::${msg}\nfix: ${fix}`); process.exit(1); };
 const sh = (c, a) => spawnSync(c, a, { stdio: "inherit" }).status ?? 1;
 const must = (c, a) => { const s = sh(c, a); if (s) process.exit(s); };
+// Removes a temp directory on every exit. A signal that stops the run ends Node without emitting `exit`, so the signals
+// that stop it go through process.exit instead (status 128 + the signal number, as the shell reports it).
+const removeOnExit = (dir) => {
+  process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
+  for (const s of ["SIGHUP", "SIGINT", "SIGTERM"]) process.on(s, () => process.exit(128 + osConstants.signals[s]));
+};
+// gitleaks, checksum-pinned per platform. The archive comes from GATE_GITLEAKS_ARCHIVE (a local file), else from the cache
+// directory GATE_GITLEAKS_CACHE (the workflow restores it; only std-cache-warm saves it), else from a download that is
+// retried (three attempts, each logging its URL and status). A verified download is written back to the cache directory.
+async function gitleaksArchive(dir) {
+  const V = "8.30.1", platform = `${process.platform}_${process.arch}`, local = env.GATE_GITLEAKS_ARCHIVE;
+  const sums = {
+    linux_x64: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb",
+    linux_arm64: "e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080",
+    darwin_x64: "dfe101a4db2255fc85120ac7f3d25e4342c3c20cf749f2c20a18081af1952709",
+    darwin_arm64: "b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5",
+  }, SUM = sums[platform];
+  if (!SUM) fail(`secret scan unsupported on ${platform}`, "run on macOS or Linux, x64 or arm64");
+  const sha = (f) => createHash("sha256").update(rd(f)).digest("hex");
+  const name = `gitleaks_${V}_${platform}.tar.gz`, cache = env.GATE_GITLEAKS_CACHE, cached = cache && `${cache}/${name}`;
+  let tgz = local || `${dir}/gl.tgz`;
+  if (!local && cached && has(cached) && sha(cached) === SUM) {
+    console.log(`secrets: gitleaks archive from the cache (${cached}), no download`);
+    return cached;
+  }
+  if (!local) {
+    const url = `${env.GATE_GITLEAKS_BASE || "https://github.com/gitleaks/gitleaks/releases/download"}/v${V}/${name}`;
+    const tries = 3, pause = Number(env.GATE_GITLEAKS_BACKOFF_MS ?? 2000);
+    for (let n = 1; ; n++) {
+      // a failed status, a body cut short and bytes that are not the pinned archive are all transient: each is an attempt
+      const res = await fetch(url).catch((e) => ({ ok: false, status: e.cause?.code || e.message }));
+      let state = `${res.status}`, verified = false;
+      if (res.ok) {
+        try {
+          writeFileSync(tgz, Buffer.from(await res.arrayBuffer()));
+          verified = sha(tgz) === SUM;
+          state = `200, ${verified ? "verified" : "not the pinned archive"}`;
+        } catch (e) { state = `200, body: ${e.message}`; }
+      }
+      console.log(`secrets: gitleaks download ${n} of ${tries}: ${url} -> ${state}`);
+      if (verified) break;
+      if (n === tries) fail(`gitleaks download failed after ${tries} attempts (last: ${state})`, "re-run the job");
+      await new Promise((r) => setTimeout(r, pause * n));
+    }
+  }
+  const got = sha(tgz);
+  if (got !== SUM) fail(`gitleaks archive checksum mismatch: got ${got}, want ${SUM}`, "do not run it; re-run, or pin a new version and checksum in the engine");
+  if (cached && !local) { mkdirSync(cache, { recursive: true }); writeFileSync(cached, rd(tgz)); tgz = cached; }
+  return tgz;
+}
 const glob = (g) => new RegExp("^" + g.replace(/[.+^$()|[\]\\]/g, "\\$&").replace(/\{([^}]+)\}/g, (_, a) => `(${a.split(",").join("|")})`)
   .replace(/\*\*\//g, "\0").replace(/\*\*/g, "\x01").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]").replace(/\0/g, "(.*/)?").replace(/\x01/g, ".*") + "$");
 // The pull request this run is for: the event's, or a workflow_dispatch re-gate's `pr` input (base retargets).
@@ -126,38 +177,96 @@ function canEscalate() {
 // The build folder is any `chrome-linux*` or `chrome-headless-shell-linux*`: Playwright renames it between versions and
 // architectures (chrome-linux up to 1.56; chrome-linux64 and chrome-headless-shell-linux64 on x64 from 1.57;
 // chrome-linux-arm64 on arm64 from 1.63), so no one name decides; a browser without one has nothing to scan and is missing.
-// Firefox and WebKit load libraries it also checks through a library path and dlopen (libxul.so, libGLESv2.so.2,
-// libx264.so) that this scan cannot reproduce, so they are always reported missing. Linux only: elsewhere there are none.
-function browserDepsProblems() {
-  if ((env.GATE_PLATFORM || process.platform) !== "linux") return [];
-  const other = browsers().filter((b) => b !== "chromium");
-  if (other.length) return [`${other.join(", ")}: its system packages cannot be checked here`];
+// Firefox and WebKit load libraries through a library path and dlopen (libxul.so, libGLESv2.so.2, libx264.so) that this scan
+// cannot reproduce: it checks what ldd sees in their folders; a dlopen-only library is left to the browser run.
+// What this run's browsers have. Chromium is checked by its build folders: ldd over each library and executable, with the build
+// folder on LD_LIBRARY_PATH, as Playwright does. Firefox and WebKit are checked the same way over their folders when a folder has a
+// file to check. Only the revision folders this playwright-core names are checked (ownFolders), so another project's revision in a
+// shared cache does not count here. A library that ldd reports missing is a confirmed problem (`missing`); a browser with no folder to
+// check is `unchecked`: named, never counted as missing. Linux only; elsewhere there is nothing to check.
+function browserCheck() {
+  const missing = [], unchecked = [];
+  if ((env.GATE_PLATFORM || process.platform) !== "linux") return { missing, unchecked };
   const root = browsersRoot();
-  const dirs = (has(root) ? ls(root) : []).filter((x) => /^chromium(_headless_shell)?-/.test(x));
-  if (!dirs.some((x) => /^chromium-/.test(x))) return [`chromium: not found under ${root}`];
+  const dirs = has(root) ? ls(root) : [];
   const isDir = (p) => { try { return statSync(p).isDirectory(); } catch { return false; } };
-  const problems = [];
-  for (const x of dirs) {
-    const builds = isDir(`${root}/${x}`) ? ls(`${root}/${x}`).filter((b) => /^chrome-(headless-shell-)?linux/.test(b) && isDir(`${root}/${x}/${b}`)) : [];
-    if (!builds.length) { problems.push(`${root}/${x}: no chrome-linux* build folder`); continue; }
-    for (const dir of builds.map((b) => `${root}/${x}/${b}`)) {
-      for (const e of ls(dir, { withFileTypes: true })) {
-        const f = `${dir}/${e.name}`;
-        if (!e.isFile() || !(/\.so(\.|$)/i.test(e.name) || (statSync(f).mode & 0o111))) continue;
-        const r = spawnSync("ldd", [f], { encoding: "utf8", cwd: dir, env: { ...env, LD_LIBRARY_PATH: [env.LD_LIBRARY_PATH, dir].filter(Boolean).join(":") } });
-        if (r.error) problems.push(`${f}: ldd cannot run`);
-        for (const m of `${r.stdout ?? ""}`.matchAll(/(\S+) => not found/g)) problems.push(`${f}: ${m[1]}`);
+  const ldd = (f, dir) => {
+    const r = spawnSync("ldd", [f], { encoding: "utf8", cwd: dir, env: { ...env, LD_LIBRARY_PATH: [env.LD_LIBRARY_PATH, dir].filter(Boolean).join(":") } });
+    if (r.error) missing.push(`${f}: ldd cannot run`);
+    for (const m of `${r.stdout ?? ""}`.matchAll(/(\S+) => not found/g)) missing.push(`${f}: ${m[1]}`);
+  };
+  for (const b of browsers()) {
+    if (b === "chromium") {
+      const own = ownFolders(["chromium", "chromium-headless-shell"]);
+      const folders = own ? own.filter((x) => isDir(`${root}/${x}`)) : dirs.filter((x) => /^chromium(_headless_shell)?-/.test(x));
+      if (!folders.some((x) => /^chromium-/.test(x))) { missing.push(`chromium: not found under ${root}`); continue; }
+      for (const x of folders) {
+        const builds = isDir(`${root}/${x}`) ? ls(`${root}/${x}`).filter((g) => /^chrome-(headless-shell-)?linux/.test(g) && isDir(`${root}/${x}/${g}`)) : [];
+        if (!builds.length) { missing.push(`${root}/${x}: no chrome-linux* build folder`); continue; }
+        for (const build of builds) {
+          const dir = `${root}/${x}/${build}`;
+          for (const e of ls(dir, { withFileTypes: true })) {
+            const f = `${dir}/${e.name}`;
+            if (e.isFile() && (/\.so(\.|$)/i.test(e.name) || (statSync(f).mode & 0o111))) ldd(f, dir);
+          }
+        }
       }
+    } else {
+      const own = ownFolders([b]);
+      const folders = own ? own.filter((x) => isDir(`${root}/${x}`)) : dirs.filter((x) => x.startsWith(`${b}-`) && isDir(`${root}/${x}`));
+      const files = folders.flatMap((x) => libraryFiles(`${root}/${x}`));
+      if (!files.length) { unchecked.push(b); continue; }
+      for (const f of files) ldd(f, dirname(f));
     }
   }
-  return problems;
+  return { missing, unchecked };
 }
-// Where this run's browsers are: PLAYWRIGHT_BROWSERS_PATH, or with `0` (Playwright's hermetic install) the project's own
-// node_modules/playwright-core/.local-browsers, or with it unset the user's cache. Relative paths are the project's.
+// Libraries and executables under a folder, recursively; an entry that cannot be read is skipped.
+function libraryFiles(dir) {
+  const out = [];
+  for (const e of ls(dir, { withFileTypes: true })) {
+    const f = `${dir}/${e.name}`;
+    if (e.isDirectory()) { out.push(...libraryFiles(f)); continue; }
+    try { if (e.isFile() && (/\.so(\.|$)/i.test(e.name) || (statSync(f).mode & 0o111))) out.push(f); } catch {}
+  }
+  return out;
+}
+// The revision folders this playwright-core names for the given browsers, from its browsers.json: <name> with dashes as underscores,
+// then -<revision>, which is how Playwright names them. Linux has no revisionOverrides (WebKit's are macOS only). Null when the file
+// or an entry is missing, so the caller falls back to the browser's folder prefix.
+function ownFolders(names) {
+  try {
+    const list = JSON.parse(rd(`${playwrightCoreRoot()}/browsers.json`, "utf8")).browsers ?? [];
+    const found = names.map((n) => list.find((e) => e.name === n));
+    if (found.some((e) => !e?.revision)) return null;
+    return found.map((e) => `${e.name.replace(/-/g, "_")}-${e.revision}`);
+  } catch { return null; }
+}
+// The playwright-core package that the project's playwright runs with: resolved from playwright (nested under pnpm, flat under
+// npm), else from @playwright/test, else from the project itself; the flat copy when none resolves.
+function playwrightCoreRoot() {
+  const project = createRequire(resolvePath("package.json"));
+  const from = [
+    () => createRequire(project.resolve("playwright/package.json")),
+    () => createRequire(createRequire(project.resolve("@playwright/test/package.json")).resolve("playwright/package.json")),
+    () => project,
+  ];
+  for (const req of from) {
+    try { return dirname(req().resolve("playwright-core/package.json")); } catch {}
+  }
+  return resolvePath("node_modules/playwright-core");
+}
+// Where this run's browsers are, as Playwright resolves them: PLAYWRIGHT_BROWSERS_PATH (a relative path against INIT_CWD, the folder
+// npm ran from, else the current folder); `0` (hermetic) is the .local-browsers of playwrightCoreRoot; unset is Playwright's own
+// default cache: $XDG_CACHE_HOME (else ~/.cache) on Linux, ~/Library/Caches on macOS, %LOCALAPPDATA% (else ~/AppData/Local) on Windows.
 function browsersRoot() {
-  const p = env.PLAYWRIGHT_BROWSERS_PATH;
-  if (p === "0") return resolvePath("node_modules/playwright-core/.local-browsers");
-  return p ? resolvePath(p) : `${homedir()}/.cache/ms-playwright`;
+  const p = env.PLAYWRIGHT_BROWSERS_PATH, platform = env.GATE_PLATFORM || process.platform;
+  if (p === "0") return `${playwrightCoreRoot()}/.local-browsers`;
+  if (p) return resolvePath(env.INIT_CWD || process.cwd(), p);
+  const cache = platform === "darwin" ? `${homedir()}/Library/Caches`
+    : platform === "win32" ? (env.LOCALAPPDATA || `${homedir()}/AppData/Local`)
+    : (env.XDG_CACHE_HOME || `${homedir()}/.cache`);
+  return `${cache}/ms-playwright`;
 }
 function ui(files) {
   const p = json("scripts/agent/pack.json") ?? {}, o = std.ui_paths;
@@ -677,21 +786,26 @@ if (cmd === "local") {
     if ((d.playwright || d["@playwright/test"]) && !args.includes("--no-browsers")) {
       const bin = playwrightBin();
       must(bin[0], [...bin[1], "install", ...browsers()]);
-      const missing = browserDepsProblems();
+      const { missing, unchecked } = browserCheck(), nonChromium = browsers().filter((b) => b !== "chromium");
       if (missing.length && !canEscalate()) fail(`install: system packages missing (${missing.join("; ")}) and this host cannot install them (no root, no sudo)`, "the host provisions them: node scripts/agent/gate.mjs browser-deps --install, with the privileges to install packages; a gate never needs root");
-      if (missing.length) { console.log(`install: system packages missing (${missing.join("; ")}); installing them`); must(bin[0], [...bin[1], "install-deps", ...browsers()]); }
+      if (missing.length || (nonChromium.length && canEscalate())) {
+        console.log(missing.length ? `install: system packages missing (${missing.join("; ")}); installing them` : `install: installing system packages for ${nonChromium.join(", ")}`);
+        must(bin[0], [...bin[1], "install-deps", ...browsers()]);
+      } else if (unchecked.length) console.log(`install: ${unchecked.join(", ")}: system packages not checked on this host (no root or sudo); the browser run is the check`);
       else console.log("install: browser system packages present");
     }
   }
 } else if (cmd === "browser-deps") {
-  // The check install makes, for repository scripts and people: exit 0 when the browsers' system packages are present
-  // (or none apply: no Playwright, or not Linux); exit 1 naming each missing library. --install runs install-deps for this
-  // run's browsers only when one is missing, and needs the privileges to install packages on this host.
+  // The check install makes, for repository scripts and people: exit 0 when no requested browser's system library is confirmed
+  // missing (or none apply: no Playwright, or not Linux); exit 1 naming each missing library. A browser this host cannot check
+  // (Firefox, WebKit) is named as not checked and is not missing. --install runs install-deps for this run's browsers only when
+  // one is missing, and needs the privileges to install packages on this host.
   const d = { ...pkg?.dependencies, ...pkg?.devDependencies };
   if (!(d.playwright || d["@playwright/test"])) { console.log("browser-deps: no Playwright in package.json; nothing to check"); process.exit(0); }
-  const missing = browserDepsProblems();
-  if (!missing.length) { console.log("browser-deps: system packages present"); process.exit(0); }
-  console.log(`browser-deps: missing ${missing.join("; ")}`);
+  const { missing, unchecked } = browserCheck();
+  const note = unchecked.length ? `; not checked on this host: ${unchecked.join(", ")}` : "";
+  if (!missing.length) { console.log(`browser-deps: system packages present${note}`); process.exit(0); }
+  console.log(`browser-deps: missing ${missing.join("; ")}${note}`);
   if (!args.includes("--install")) fail("browser system packages are missing on this host", "the host provisions them: run node scripts/agent/gate.mjs browser-deps --install with the privileges to install packages");
   if (!canEscalate()) fail("browser-deps --install: this host cannot install system packages (no root, no sudo)", "run it on a host with the privileges to install packages");
   const bin = playwrightBin();
@@ -786,25 +900,16 @@ if (cmd === "local") {
   }
   else fail("no e2e suite (test:e2e or e2e script; tests/e2e/ or e2e/ with playwright.config.* or *.test.*js)",
     'add an end-to-end suite through the real entry point; docs/static repos (or Builds-only repos) only: "e2e": false in standards.json');
+} else if (cmd === "gitleaks-fetch") {
+  // std-cache-warm (main only) runs this with GATE_GITLEAKS_CACHE, so the gate restores the archive it saves.
+  const dir = mkdtempSync(`${tmpdir()}/gitleaks-`);
+  removeOnExit(dir);
+  console.log(`gitleaks archive: ${await gitleaksArchive(dir)}`);
 } else if (cmd === "secrets") {
-  const V = "8.30.1", local = env.GATE_GITLEAKS_ARCHIVE;
-  const platform = `${process.platform}_${process.arch}`;
-  const sums = {
-    linux_x64: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb",
-    linux_arm64: "e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080",
-    darwin_x64: "dfe101a4db2255fc85120ac7f3d25e4342c3c20cf749f2c20a18081af1952709",
-    darwin_arm64: "b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5",
-  }, SUM = sums[platform];
-  if (!SUM) fail(`secret scan unsupported on ${platform}`, "run on macOS or Linux, x64 or arm64");
-  const dir = mkdtempSync(`${tmpdir()}/gitleaks-`), tgz = local || `${dir}/gl.tgz`;
-  if (!local) {
-    const res = await fetch(`https://github.com/gitleaks/gitleaks/releases/download/v${V}/gitleaks_${V}_${platform}.tar.gz`);
-    if (!res.ok) fail(`gitleaks download: ${res.status}`, "re-run the job");
-    writeFileSync(tgz, Buffer.from(await res.arrayBuffer()));
-  }
-  const got = createHash("sha256").update(rd(tgz)).digest("hex");
-  if (got !== SUM) fail(`gitleaks archive checksum mismatch: got ${got}, want ${SUM}`, "do not run it; re-run, or pin a new version and checksum in the engine");
-  must("tar", ["-xzf", tgz, "-C", dir, "gitleaks"]);
+  const dir = mkdtempSync(`${tmpdir()}/gitleaks-`);
+  // The download and binary go with the directory on every exit, including fail(), must() and a signal.
+  removeOnExit(dir);
+  must("tar", ["-xzf", await gitleaksArchive(dir), "-C", dir, "gitleaks"]);
   // Always scan commits: PR base..head, merge group base..head, a dispatch re-gate's merge ref (base tip..PR head),
   // push before..sha (a new branch scans what the default branch lacks); RANGE overrides.
   const ev = env.GITHUB_EVENT_PATH ? json(env.GITHUB_EVENT_PATH) ?? {} : {}, reach = (x) => { try { git("cat-file", "-e", `${x}^{commit}`); return true; } catch { return false; } };

@@ -225,4 +225,116 @@ mut "S.gqlFail=false"
 rm -f "$GATE"
 if [ -z "$why" ]; then ok pr-open-verified; else fail pr-open-verified "$why"; fi
 
+# pr-open-claimed-issue: an issue labelled agent-claimed is refused unless the branch is the launcher's agent/N-* or retro/N-*
+# (N exactly: agent/30-* is not agent/3-*); --dry-run and --claimed-ok do not check it; another label, a cross-repo
+# reference and an unlabelled issue do not refuse.
+since() { sed -n "$(($1 + 1)),\$p" "$LOG"; }
+why=""
+mut "S.issues={3:[{name:'agent-claimed'}]}"
+git checkout -q feat/x
+n=$(lines); out=$("$PR" open "Add x" "$T/body.md" 2>&1) && why="$why; claimed issue accepted on feat/x"
+case "$out" in *"issue #3 is claimed by the launcher"*"agent/3-<slug> or retro/3-<slug>"*"remove agent-claimed first"*) ;; *) why="$why; refusal does not name the claim: $out" ;; esac
+since "$n" | grep -q '"path":"/repos/acme/demo/issues/3"' || why="$why; the claim was not read from issues/3"
+since "$n" | grep -q -E '"method":"(POST|PATCH)"' && why="$why; the refusal wrote to GitHub"
+n=$(lines); out=$("$PR" open --dry-run "Add x" "$T/body.md" 2>&1) || why="$why; dry-run refused a claimed issue: $out"
+[ "$(lines)" = "$n" ] || why="$why; dry-run sent requests"
+n=$(lines); out=$("$PR" open --claimed-ok "Add x" "$T/body.md" 2>&1) || why="$why; --claimed-ok refused: $out"
+[ "$out" = "$URL" ] || why="$why; --claimed-ok printed '$out'"
+since "$n" | grep -q '"path":"/repos/acme/demo/issues/3"' && why="$why; --claimed-ok still read the issue"
+git checkout -q -b agent/3-add-x && git push -q -u origin HEAD 2>/dev/null
+out=$("$PR" open "Add x" "$T/body.md" 2>&1) || why="$why; the launcher's own branch was refused: $out"
+case "$out" in https://github.com/acme/demo/pull/*) ;; *) why="$why; no PR URL for the launcher's branch: $out" ;; esac
+[ "$(state 'S.pulls.some(p=>p.head==="agent/3-add-x"&&p.base==="main")')" = true ] || why="$why; no PR opened from agent/3-add-x"
+git checkout -q -b retro/3-add-x && git push -q -u origin HEAD 2>/dev/null
+out=$("$PR" open "Add x" "$T/body.md" 2>&1) || why="$why; the retro branch was refused: $out"
+[ "$(state 'S.pulls.some(p=>p.head==="retro/3-add-x")')" = true ] || why="$why; no PR opened from retro/3-add-x"
+git checkout -q -b agent/30-add-x && git push -q -u origin HEAD 2>/dev/null
+out=$("$PR" open "Add x" "$T/body.md" 2>&1) && why="$why; agent/30-* accepted for issue 3"
+case "$out" in *"issue #3 is claimed by the launcher"*) ;; *) why="$why; agent/30-* refusal not the claim message: $out" ;; esac
+git checkout -q feat/x
+mut "S.issues={3:[{name:'bug'}]}"
+out=$("$PR" open "Add x" "$T/body.md" 2>&1) || why="$why; a non-claim label refused: $out"
+mut "S.issues={3:[{name:'agent-claimed'}]}"
+printf 'Adds x.\n\nCloses other/repo#3\nCloses #5\n' >"$T/xrepo.md"
+out=$("$PR" open "Add x" "$T/xrepo.md" 2>&1) || why="$why; a cross-repo reference to a claimed number refused: $out"
+mut "S.issues={}"
+if [ -z "$why" ]; then ok pr-open-claimed-issue; else fail pr-open-claimed-issue "$why"; fi
+
+# pr-resolve-bot-threads-only: resolve refuses a thread whose first comment is a person's or a deleted account's, says to
+# reply instead, and sends no mutation for it; a thread that starts with a bot's resolves, whatever a person replies later.
+why=""
+mut "S.threads=[{id:'TP',isResolved:false,comments:{nodes:[{databaseId:31,url:'uP1',author:{login:'alice',__typename:'User'}},{databaseId:32,url:'uP2',author:{login:'chatgpt-codex-connector',__typename:'Bot'}}]}},{id:'TD',isResolved:false,comments:{nodes:[{databaseId:41,url:'uD1',author:null}]}},{id:'TB',isResolved:false,comments:{nodes:[{databaseId:51,url:'uB1',author:{login:'chatgpt-codex-connector',__typename:'Bot'}},{databaseId:52,url:'uB2',author:{login:'alice',__typename:'User'}}]}},{id:'TS',isResolved:false,comments:{nodes:[{databaseId:61,url:'uS1',author:{login:'example-sync',__typename:'Bot'}}]}}]"
+n=$(lines)
+p1=$("$PR" resolve 1 31 2>&1) && why="$why; a person's thread resolved"
+case "$p1" in *"@alice"*"reply"*) ;; *) why="$why; refusal does not name @alice and say to reply: $p1" ;; esac
+"$PR" resolve 1 32 >/dev/null 2>&1 && why="$why; a bot reply inside a person's thread resolved"
+"$PR" resolve 1 41 >/dev/null 2>&1 && why="$why; a deleted account's thread resolved"
+since "$n" | grep -q resolveReviewThread && why="$why; a refused resolve sent a mutation"
+"$PR" resolve 1 51 >/dev/null 2>&1 || why="$why; a thread that starts with a codex comment was refused"
+"$PR" resolve 1 61 >/dev/null 2>&1 || why="$why; a Bot-typed thread from another app was refused"
+[ "$(since "$n" | grep -c resolveReviewThread)" = 2 ] || why="$why; expected two resolves, sent $(since "$n" | grep -c resolveReviewThread)"
+[ "$(state "S.threads.map(t=>t.id+'='+t.isResolved).join(' ')")" = "TP=false TD=false TB=true TS=true" ] || why="$why; threads $(state "S.threads.map(t=>t.id+'='+t.isResolved).join(' ')")"
+mut "S.threads=[]"
+if [ -z "$why" ]; then ok pr-resolve-bot-threads-only; else fail pr-resolve-bot-threads-only "$why"; fi
+
+# pr-arm-gate-and-review: arm turns on squash auto-merge only for a ready PR whose base branch rules require both gate and
+# review (across rulesets); a draft, or a branch missing either, is refused by name and sends no mutation; nothing merges.
+why=""
+mut "S.pulls[0].draft=false;S.pulls[0].state='open';S.pulls[0].merged=false;S.autoMerge=[];S.rules=[{type:'required_status_checks',parameters:{required_status_checks:[{context:'gate'}]}}]"
+n=$(lines)
+out=$("$PR" arm 1 2>&1) && why="$why; arm armed with only gate required"
+case "$out" in *"missing: review"*) ;; *) why="$why; refusal does not name review: $out" ;; esac
+since "$n" | grep -q '"path":"/repos/acme/demo/rules/branches/main"' || why="$why; the base branch rules were not read"
+since "$n" | grep -q enablePullRequestAutoMerge && why="$why; refusal sent the auto-merge mutation"
+mut "S.rules=[{type:'required_status_checks',parameters:{required_status_checks:[{context:'gate'}]}},{type:'required_status_checks',parameters:{required_status_checks:[{context:'review'}]}}];S.pulls[0].draft=true"
+n=$(lines)
+out=$("$PR" arm 1 2>&1) && why="$why; arm armed a draft"
+case "$out" in *"is a draft"*) ;; *) why="$why; no draft message: $out" ;; esac
+since "$n" | grep -q enablePullRequestAutoMerge && why="$why; a draft got the mutation"
+mut "S.pulls[0].draft=false"
+out=$("$PR" arm 1 2>&1) || why="$why; arm refused a ready PR whose rulesets require both: $out"
+case "$out" in *"auto-merge armed on #1"*) ;; *) why="$why; no armed message: $out" ;; esac
+[ "$(state 'JSON.stringify(S.autoMerge)')" = "[1]" ] || why="$why; auto-merge not recorded: $(state 'JSON.stringify(S.autoMerge)')"
+since "$n" | grep enablePullRequestAutoMerge | grep -q 'mergeMethod:SQUASH' || why="$why; not a squash auto-merge"
+[ "$(state 'S.pulls[0].merged')" = false ] || why="$why; arm merged the PR"
+since "$n" | grep -q '/pulls/1/merge"' && why="$why; a merge request was sent"
+mut "S.autoMerge=[];S.rules=[]"
+if [ -z "$why" ]; then ok pr-arm-gate-and-review; else fail pr-arm-gate-and-review "$why"; fi
+
+# pr-arm-rules-paged: the base branch rules are read page by page (100 a page, until a short one), so a required check on a
+# later page counts: gate on the first page and review on the second, and arm arms.
+why=""
+mut "S.pulls[0].draft=false;S.pulls[0].state='open';S.pulls[0].merged=false;S.autoMerge=[];S.allowAutoMerge=true;S.autoMergeError=null;S.rules=[...Array(99).fill({type:'pull_request'}),{type:'required_status_checks',parameters:{required_status_checks:[{context:'gate'}]}},{type:'required_status_checks',parameters:{required_status_checks:[{context:'review'}]}}]"
+n=$(lines)
+out=$("$PR" arm 1 2>&1) || why="$why; arm refused rules spread over two pages: $out"
+since "$n" | grep -q '"query":"?per_page=100&page=2"' || why="$why; the second page was not read: $(since "$n" | grep -F rules)"
+[ "$(state 'JSON.stringify(S.autoMerge)')" = "[1]" ] || why="$why; auto-merge not armed: $(state 'JSON.stringify(S.autoMerge)')"
+mut "S.autoMerge=[];S.rules=[]"
+if [ -z "$why" ]; then ok pr-arm-rules-paged; else fail pr-arm-rules-paged "$why"; fi
+
+# pr-arm-clean-status-reported: GitHub refuses auto-merge on a PR that is already clean; arm says so, tells the agent to report
+# it, and merges nothing.
+why=""
+mut "S.pulls[0].draft=false;S.pulls[0].state='open';S.pulls[0].merged=false;S.autoMerge=[];S.allowAutoMerge=true;S.autoMergeError='Pull request is in clean status';S.rules=[{type:'required_status_checks',parameters:{required_status_checks:[{context:'gate'},{context:'review'}]}}]"
+n=$(lines)
+out=$("$PR" arm 1 2>&1) && why="$why; arm reported success on a clean PR"
+case "$out" in *"already clean"*"report it"*) ;; *) why="$why; no clean-status message: $out" ;; esac
+[ "$(state 'JSON.stringify(S.autoMerge)')" = "[]" ] || why="$why; auto-merge recorded"
+since "$n" | grep -q '/pulls/1/merge"' && why="$why; a merge request was sent"
+mut "S.autoMergeError=null;S.autoMerge=[];S.rules=[]"
+if [ -z "$why" ]; then ok pr-arm-clean-status-reported; else fail pr-arm-clean-status-reported "$why"; fi
+
+# pr-arm-auto-merge-off-refused: a repository with auto-merge off is refused by arm, which names an org admin as the one who
+# enables it; arm writes no repository setting and sends no auto-merge mutation.
+why=""
+mut "S.pulls[0].draft=false;S.pulls[0].state='open';S.pulls[0].merged=false;S.autoMerge=[];S.autoMergeError=null;S.allowAutoMerge=false;S.rules=[{type:'required_status_checks',parameters:{required_status_checks:[{context:'gate'},{context:'review'}]}}]"
+n=$(lines)
+out=$("$PR" arm 1 2>&1) && why="$why; arm armed with auto-merge off for the repository"
+case "$out" in *"auto-merge is off for this repository; an org admin enables it"*) ;; *) why="$why; no auto-merge-off message: $out" ;; esac
+since "$n" | grep -q enablePullRequestAutoMerge && why="$why; the auto-merge mutation was sent"
+since "$n" | grep -q -E '"method":"(PATCH|PUT|POST|DELETE)","path":"/repos/acme/demo"' && why="$why; a repository setting was written"
+[ "$(state 'JSON.stringify(S.autoMerge)')" = "[]" ] || why="$why; auto-merge recorded"
+mut "S.allowAutoMerge=true;S.autoMerge=[];S.rules=[]"
+if [ -z "$why" ]; then ok pr-arm-auto-merge-off-refused; else fail pr-arm-auto-merge-off-refused "$why"; fi
+
 done_cases
