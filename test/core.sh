@@ -322,11 +322,14 @@ if [ $st -eq 1 ] && has "package.json scripts or gate.local.sh run playwright in
   && [ $sw -eq 1 ] && has "name the browser: playwright install --with-deps chromium" "$w"; then
   ok playwright-hints-no-root; else fail playwright-hints-no-root "st=$st: $out | workflow st=$sw: $w"; fi
 # with-deps-gate-script-fails: a real playwright install --with-deps or playwright install-deps in package.json scripts or gate.local.sh
-# fails --check and names gate.mjs install; a --with-deps or install-deps that is not a Playwright invocation does not fail --check;
+# fails --check and names gate.mjs install, including across a shell line continuation; a --with-deps or install-deps that is not a
+# Playwright invocation does not fail --check, nor does a script value ending in "playwright" beside one starting with install-deps;
 # a GitHub workflow step with --with-deps still passes (its runner has passwordless sudo)
 R=$(mkrepo); printf '%s\n' '{"name":"app","private":true,"scripts":{"e2e:setup":"playwright install --with-deps chromium"}}' > "$R/package.json"; a=$(cr "$R"); sa=$?
 R=$(mkrepo); printf '%s\n' '#!/usr/bin/env bash' 'npx playwright install-deps chromium' > "$R/scripts/agent/gate.local.sh"; b=$(cr "$R"); sb=$?
+R=$(mkrepo); printf '%s\n' '#!/usr/bin/env bash' 'npx playwright install chromium \' '  --with-deps' > "$R/scripts/agent/gate.local.sh"; f=$(cr "$R"); sf=$?
 R=$(mkrepo); printf '%s\n' '{"name":"app","private":true,"scripts":{"assets":"asset-tool --with-deps","reinstall":"npm run install-deps"}}' > "$R/package.json"; d=$(cr "$R"); sd=$?
+R=$(mkrepo); printf '%s\n' '{"name":"app","private":true,"scripts":{"label":"echo playwright","deps":"install-deps chromium"}}' > "$R/package.json"; e=$(cr "$R"); se=$?
 R=$(mkrepo); wf "$R" e2e.yml 'on:
   workflow_dispatch:
 jobs:
@@ -337,9 +340,11 @@ jobs:
       - run: npx playwright install --with-deps chromium && npm test'; c=$(cr "$R"); sc=$?
 if [ $sa -eq 1 ] && has "install system packages with --with-deps or install-deps" "$a" && has "node scripts/agent/gate.mjs install" "$a" \
   && [ $sb -eq 1 ] && has "install system packages with --with-deps or install-deps" "$b" && has "node scripts/agent/gate.mjs install" "$b" \
+  && [ $sf -eq 1 ] && has "install system packages with --with-deps or install-deps" "$f" && has "node scripts/agent/gate.mjs install" "$f" \
   && [ $sd -eq 0 ] && ! has "install system packages with --with-deps or install-deps" "$d" \
+  && [ $se -eq 0 ] && ! has "install system packages with --with-deps or install-deps" "$e" \
   && [ $sc -eq 0 ] && ! has "playwright install" "$c"; then ok with-deps-gate-script-fails
-else fail with-deps-gate-script-fails "package.json st=$sa: $a | gate.local.sh st=$sb: $b | unrelated st=$sd: $d | workflow st=$sc: $c"; fi
+else fail with-deps-gate-script-fails "package.json st=$sa: $a | gate.local.sh st=$sb: $b | continuation st=$sf: $f | unrelated st=$sd: $d | adjacent values st=$se: $e | workflow st=$sc: $c"; fi
 # the trigger alone decides: a pull request or a push to a branch of any name fails, whatever words its steps use; a tag push
 # passes however its trigger is written, and neither a comment after `on:` nor a listed trigger hides one
 why=""

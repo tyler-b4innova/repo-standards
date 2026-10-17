@@ -274,7 +274,9 @@ else {
   // when a library is missing). A real Playwright invocation of --with-deps or install-deps runs apt through sudo for any user,
   // which an agent sandbox (no_new_privs) cannot run. Only that invocation is matched: an unrelated --with-deps or install-deps
   // mention is not Playwright's. A GitHub runner has passwordless sudo, so its workflow steps keep --with-deps.
-  if (/\bplaywright\s+install-deps\b|\bplaywright\s+install\b[^\n;&|]*--with-deps(?![\w-])/.test(scripts))
+  // A shell line continuation joins a command's lines; newlines between script values stay separators, so the separator whitespace is
+  // spaces and tabs only.
+  if (/\bplaywright[ \t]+install-deps\b|\bplaywright[ \t]+install\b[^\n;&|]*--with-deps(?![\w-])/.test(scripts.replace(/\\\r?\n/g, " ")))
     fail("package.json scripts or gate.local.sh install system packages with --with-deps or install-deps (they need root)", "install the browsers with node scripts/agent/gate.mjs install, which installs system packages only when one is missing; a gate never needs root");
   // Quarantined tests: @quarantine(<issue link>, until YYYY-MM-DD), at most 14 days out, never past due.
   let q = "";
