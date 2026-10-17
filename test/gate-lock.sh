@@ -120,6 +120,32 @@ if [ "$(id -u)" != 0 ]; then
   rm -f "$LOCK"
 else echo "skip gate-lock-unreadable-holder (platform: root reads every file)"; fi
 
+# The shared directory is not sticky, so anyone can plant a symlink or a FIFO at the lock's name: such a name is an
+# unreadable holder judged by its own mtime, taken over by renaming over the name, and never followed or blocked on.
+fmode() { node -p 'const s=require("fs").statSync(process.argv[1]); (s.mode & 0o7777).toString(8)+" "+new Date(s.mtimeMs).toISOString().slice(0,4)' "$1"; }
+printf 'not a lock\n' > "$T/victim"; chmod 600 "$T/victim"; before=$(fmode "$T/victim")
+rm -f "$LOCK"; ln -s "$T/victim" "$LOCK"; touch -h -t 202001010000 "$LOCK"
+start symlink
+if waitfor 'took over a stale machine gate lock from an unreadable holder' symlink && waitfor 'setup --check starting' symlink 50 \
+  && [ -f "$LOCK" ] && [ ! -L "$LOCK" ] && grep -q "\"pid\":$GATE," "$LOCK" && [ "$(cat "$T/victim")" = "not a lock" ] && [ "$(fmode "$T/victim")" = "$before" ]; then ok gate-lock-symlink-at-lock-name
+else fail gate-lock-symlink-at-lock-name "victim=$(fmode "$T/victim") was $before; $(ls -la "$T/lock"; cat "$T/symlink.log")"; fi
+stopgate; rm -f "$LOCK"
+mkfifo "$LOCK"; touch -t 202001010000 "$LOCK"
+start fifo
+if waitfor 'took over a stale machine gate lock from an unreadable holder' fifo && waitfor 'setup --check starting' fifo 50 && [ -f "$LOCK" ] && [ ! -p "$LOCK" ]; then ok gate-lock-fifo-at-lock-name
+else fail gate-lock-fifo-at-lock-name "$(ls -la "$T/lock"; cat "$T/fifo.log")"; fi
+[ -p "$LOCK" ] && { exec 3>"$LOCK"; exec 3>&-; } # an old gate blocked reading the FIFO gets EOF, so it can be stopped
+stopgate; rm -f "$LOCK"
+# The heartbeat touches only through the descriptor it verified: a holder's lock swapped for a symlink to a copy of its
+# own record (as another user could plant) is never touched through the symlink.
+start beatlink
+waitfor 'machine gate lock taken' beatlink 50
+cp "$LOCK" "$T/record-copy"; touch -t 202001010000 "$T/record-copy"; rm -f "$LOCK"; ln -s "$T/record-copy" "$LOCK"
+sleep 11
+if [ "$(fmode "$T/record-copy" | cut -d' ' -f2)" = 2020 ]; then ok gate-lock-heartbeat-no-follow
+else fail gate-lock-heartbeat-no-follow "copy touched: $(fmode "$T/record-copy"); $(cat "$T/beatlink.log")"; fi
+stopgate; rm -f "$LOCK"
+
 # Off under GitHub Actions and with GATE_LOCK=off: no lock file is made and a planted holder is ignored.
 sleep 300 & HOLDER=$!; PIDS+=("$HOLDER")
 plant "$HOLDER"

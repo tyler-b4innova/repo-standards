@@ -2,11 +2,13 @@
 // so concurrent sessions (any repository, worktree or user) queue instead of overloading the machine together.
 // The lock is a file created atomically (`wx`) in a shared directory; it names its holder. A holder whose PID is gone
 // (checked on this host and PID namespace), or whose heartbeat stopped, is stale and is taken over with a message.
-// Off under GITHUB_ACTIONS (runners are isolated) and with GATE_LOCK=off.
+// Off under GITHUB_ACTIONS (runners are isolated) and with GATE_LOCK=off. Any user can delete a live lock in the shared
+// directory: it coordinates the machine's trusted users and is not a security boundary.
 //   GATE_LOCK_DIR     shared directory (default /tmp/std-gate-lock; the system temp directory on Windows): a real
 //                     directory (not a symlink) every user of the gate can write; created mode 0777 when missing
 //   GATE_LOCK_WAIT_S  give up after this many seconds with "lock busy" (default: wait until the lock is free)
-import { accessSync, closeSync, constants, fchmodSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readlinkSync, renameSync, rmdirSync, statSync, unlinkSync, utimesSync, writeSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { accessSync, closeSync, constants, fchmodSync, fstatSync, futimesSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readlinkSync, renameSync, rmdirSync, unlinkSync, writeSync } from "node:fs";
 import { hostname, tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -17,19 +19,26 @@ const REPORT_MS = 60_000;
 const GUARD_STALE_MS = 5_000; // the takeover guard is held for a few file operations; older than this, its holder died
 const GUARD_WAIT_MS = 1_000;
 
+// Every name in the shared directory is handled as a name: anyone can plant a symlink or a FIFO there (it is not sticky,
+// so the kernel's protected_symlinks/protected_regular do not apply). Opens never follow a symlink or block, files are
+// created exclusively, the heartbeat touches through the descriptor it verified, and a takeover renames over the name.
+const { O_RDONLY, O_WRONLY, O_CREAT, O_EXCL, O_NOFOLLOW = 0, O_NONBLOCK = 0 } = constants;
 const pidNamespace = () => { try { return readlinkSync("/proc/self/ns/pid"); } catch { return ""; } };
 const user = () => { try { return userInfo().username; } catch { return String(process.getuid?.() ?? "unknown"); } };
-// A lock file this user cannot read (one written by an older gate under a strict umask) is an unreadable holder.
+// The lock's text and the mtime of the name itself. Anything there that is not a regular file this user can read (a
+// lock from an older gate under a strict umask, a planted symlink or FIFO) is an unreadable holder, judged by its mtime.
 const read = (file) => {
-  try { return { text: readFileSync(file, "utf8"), mtime: statSync(file).mtimeMs }; } catch (e) {
+  let fd;
+  try { fd = openSync(file, O_RDONLY | O_NOFOLLOW | O_NONBLOCK); } catch (e) {
     if (e.code === "ENOENT") return null;
-    if (e.code !== "EACCES" && e.code !== "EPERM") throw e;
-    try { return { text: "", mtime: statSync(file).mtimeMs }; } catch (e2) { if (e2.code === "ENOENT") return null; throw e2; }
+    if (!["EACCES", "EPERM", "ELOOP", "EMLINK", "ENXIO", "EOPNOTSUPP"].includes(e.code)) throw e;
+    try { return { text: "", mtime: lstatSync(file).mtimeMs }; } catch (e2) { if (e2.code === "ENOENT") return null; throw e2; }
   }
+  try { const st = fstatSync(fd); return { text: st.isFile() ? readFileSync(fd, "utf8") : "", mtime: st.mtimeMs }; } finally { closeSync(fd); }
 };
 // The holder record, readable by every user whatever the creator's umask (set through the descriptor, not the path).
 function writeRecord(path, text) {
-  const fd = openSync(path, "wx", 0o644);
+  const fd = openSync(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o644);
   try { if (process.platform !== "win32") fchmodSync(fd, 0o644); writeSync(fd, text); } finally { closeSync(fd); }
 }
 const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -41,9 +50,9 @@ function guarded(guard, fn, waitMs = GUARD_WAIT_MS) {
   const until = Date.now() + waitMs;
   for (;;) {
     let fd;
-    try { fd = openSync(guard, "wx", 0o644); } catch (e) {
+    try { fd = openSync(guard, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o644); } catch (e) {
       if (e.code !== "EEXIST") throw e;
-      try { if (Date.now() - statSync(guard).mtimeMs > GUARD_STALE_MS) unlinkSync(guard); } catch {}
+      try { if (Date.now() - lstatSync(guard).mtimeMs > GUARD_STALE_MS) unlinkSync(guard); } catch {}
       if (Date.now() >= until) return false;
       pause(20);
       continue;
@@ -110,7 +119,14 @@ export async function machineLock({ env = process.env, repo, log = console.log, 
   const mine = (h) => h && h.pid === me.pid && h.started === me.started && h.host === me.host;
   const held = () => {
     log(`local: machine gate lock taken (${file})`);
-    const beat = setInterval(() => { const now = new Date(); try { if (mine(parse(read(file)?.text ?? ""))) utimesSync(file, now, now); } catch {} }, BEAT_MS);
+    // Verifies and touches the same file through one descriptor: never a name re-opened, never through a symlink.
+    const beat = setInterval(() => {
+      let fd;
+      try {
+        fd = openSync(file, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+        if (fstatSync(fd).isFile() && mine(parse(readFileSync(fd, "utf8")))) { const now = new Date(); futimesSync(fd, now, now); }
+      } catch {} finally { if (fd !== undefined) try { closeSync(fd); } catch {} }
+    }, BEAT_MS);
     beat.unref();
     let released = false;
     return () => {
@@ -133,15 +149,18 @@ export async function machineLock({ env = process.env, repo, log = console.log, 
     if (why) {
       // Under the guard, check the holder is still the one judged stale, then replace it in one rename: a holder that
       // changed or came back to life is judged again, never removed.
-      let took = false;
-      const ran = guarded(guard, () => {
+      let outcome = "busy";
+      guarded(guard, () => {
         const again = read(file);
-        if (!again || again.text !== seen.text || !staleness(parse(again.text), again.mtime, Date.now())) return;
-        const fresh = `${file}.new-${me.pid}-${Date.now()}`;
-        try { writeRecord(fresh, record); renameSync(fresh, file); took = true; } finally { if (!took) try { unlinkSync(fresh); } catch {} }
+        if (!again || again.text !== seen.text || !staleness(parse(again.text), again.mtime, Date.now())) { outcome = "changed"; return; }
+        const fresh = `${file}.new-${randomBytes(8).toString("hex")}`;
+        let made = false;
+        outcome = "failed";
+        try { writeRecord(fresh, record); made = true; renameSync(fresh, file); outcome = "took"; } catch {}
+        finally { if (made && outcome !== "took") try { unlinkSync(fresh); } catch {} }
       });
-      if (took) { log(`local: took over a stale machine gate lock from ${describe(holder)}: ${why}`); return held(); }
-      if (ran) continue;
+      if (outcome === "took") { log(`local: took over a stale machine gate lock from ${describe(holder)}: ${why}`); return held(); }
+      if (outcome === "changed") continue;
     }
     const now = Date.now(), waited = Math.round((now - start) / 1000);
     if (now >= deadline) throw new Error(`lock busy: another local gate holds the machine gate lock (${describe(holder)}) after ${waited}s; retry later`);
