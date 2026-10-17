@@ -270,14 +270,19 @@ else {
   const scripts = Object.values(json("package.json")?.scripts ?? {}).join("\n") + "\n" + (read("scripts/agent/gate.local.sh") ?? "");
   if (/playwright install\b(?![^\n;&|]*\b(chromium|chrome|firefox|webkit|msedge)\b)/.test(scripts))
     fail("package.json scripts or gate.local.sh run playwright install without naming a browser", "name the browser: playwright install chromium");
-  // Browser system packages come from the gate's own install (gate.mjs install: the named browsers, and system packages only
-  // when a library is missing). A real Playwright invocation of --with-deps or install-deps runs apt through sudo for any user,
-  // which an agent sandbox (no_new_privs) cannot run. Only that invocation is matched: an unrelated --with-deps or install-deps
-  // mention is not Playwright's. A GitHub runner has passwordless sudo, so its workflow steps keep --with-deps.
-  // A shell line continuation joins a command's lines; newlines between script values stay separators, so the separator whitespace is
-  // spaces and tabs only.
-  if (/\bplaywright[ \t]+install-deps\b|\bplaywright[ \t]+install\b[^\n;&|]*--with-deps(?![\w-])/.test(scripts.replace(/\\\r?\n/g, " ")))
-    fail("package.json scripts or gate.local.sh install system packages with --with-deps or install-deps (they need root)", "install the browsers with node scripts/agent/gate.mjs install, which installs system packages only when one is missing; a gate never needs root");
+  // A Playwright invocation of --with-deps or install-deps asks for a root install. The check is advisory: a false match would block
+  // every gate, while the runtime refuses sudo and names what the host lacks. Each text is read on its own: a shell line continuation
+  // joins lines within it, and an unquoted # starts a comment. The executable may be quoted.
+  const shellText = (t) => t.replace(/\\\r?\n/g, " ").split("\n").map((l) => l.replace(/(^|\s)#.*$/, "")).join("\n");
+  const rootFlag = /\bplaywright["']?[ \t]+install-deps\b|\bplaywright["']?[ \t]+install\b[^\n;&|]*--with-deps(?![\w-])/;
+  const lifecycle = new Set(["preinstall", "install", "postinstall", "prepare", "prepublish"]);
+  for (const [key, value] of Object.entries(json("package.json")?.scripts ?? {}))
+    if (rootFlag.test(shellText(String(value))))
+      warn(`package.json script "${key}" asks for a root install (--with-deps or install-deps) | fix: ${lifecycle.has(key)
+        ? `drop --with-deps or install-deps from the ${key} hook; the gate installs browsers, and system packages only when one is missing`
+        : "remove --with-deps or install-deps; the gate's own install (node scripts/agent/gate.mjs install) installs system packages only when one is missing, and a gate never needs root"}`);
+  if (rootFlag.test(shellText(read("scripts/agent/gate.local.sh") ?? "")))
+    warn("scripts/agent/gate.local.sh asks for a root install (--with-deps or install-deps) | fix: remove --with-deps or install-deps; the gate's own install (node scripts/agent/gate.mjs install) installs system packages only when one is missing, and a gate never needs root");
   // Quarantined tests: @quarantine(<issue link>, until YYYY-MM-DD), at most 14 days out, never past due.
   let q = "";
   try { q = git("grep", "-nI", "@quarantine", "--", ".", ":!scripts/agent", ":!*.md"); } catch {}
