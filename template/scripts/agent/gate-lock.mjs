@@ -33,11 +33,12 @@ function writeRecord(path, text) {
   try { if (process.platform !== "win32") fchmodSync(fd, 0o644); writeSync(fd, text); } finally { closeSync(fd); }
 }
 const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-// Runs fn under the takeover guard and returns true, or false if the guard stayed busy. Takeovers and releases both run
-// under it, so a holder a takeover has verified cannot be released (and the lock taken by a new gate) before it is
+// Runs fn under the takeover guard and returns true, or false if the guard stayed busy for waitMs. Takeovers and
+// releases both run under it, so a release never checks its ownership and then unlinks a lock a takeover replaced in
+// between, and a holder a takeover has verified cannot be released (and the lock taken by a new gate) before it is
 // replaced. A guard untouched for GUARD_STALE_MS was left by a gate that died holding it and is removed.
-function guarded(guard, fn) {
-  const until = Date.now() + GUARD_WAIT_MS;
+function guarded(guard, fn, waitMs = GUARD_WAIT_MS) {
+  const until = Date.now() + waitMs;
   for (;;) {
     let fd;
     try { fd = openSync(guard, "wx", 0o644); } catch (e) {
@@ -118,7 +119,8 @@ export async function machineLock({ env = process.env, repo, log = console.log, 
       clearInterval(beat);
       // Only this gate's own lock is removed: a lock taken over meanwhile belongs to someone else.
       const drop = () => { if (mine(parse(read(file)?.text ?? ""))) unlinkSync(file); };
-      try { if (!guarded(guard, drop)) drop(); } catch {}
+      // Waits past the guard's staleness, so a guard left by a dead gate is cleared rather than bypassed.
+      try { if (!guarded(guard, drop, GUARD_STALE_MS * 2)) drop(); } catch {}
     };
   };
   const start = Date.now(), deadline = start + wait * 1000;

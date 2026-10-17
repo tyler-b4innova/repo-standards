@@ -41,6 +41,20 @@ stopgate; code=$?
 if [ "$held" = yes ] && [ ! -e "$LOCK" ] && seen 'interrupted by SIGTERM' wait; then ok gate-lock-released-on-signal
 else fail gate-lock-released-on-signal "held=$held exit=$code; $(ls -la "$T/lock"; cat "$T/wait.log")"; fi
 
+# Release honours the takeover guard: a gate stopping while another gate is mid-takeover waits for it to finish, then
+# leaves the lock that takeover put in place (it never checks ownership and then unlinks a replaced lock).
+rm -f "$LOCK"
+start rel
+waitfor 'setup --check starting' rel 50
+: > "$LOCK.takeover"
+kill -TERM "$GATE"; sleep 1
+waiting=no; grep -q '^local gate [0-9a-f]*:' "$T/rel.log" || waiting=yes
+plant 1 elsewhere ""; rm -f "$LOCK.takeover"
+wait "$GATE" 2>/dev/null
+if [ "$waiting" = yes ] && grep -q '"host":"elsewhere"' "$LOCK" && grep -q '^local gate [0-9a-f]*:' "$T/rel.log"; then ok gate-lock-release-waits-for-takeover
+else fail gate-lock-release-waits-for-takeover "waiting=$waiting; $(cat "$T/rel.log"; cat "$LOCK" 2>&1)"; fi
+rm -f "$LOCK"
+
 # A dead holder on this host and PID namespace: taken over at once, with a message.
 sleep 0.01 & DEAD=$!; wait "$DEAD"
 plant "$DEAD"
