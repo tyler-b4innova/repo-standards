@@ -342,8 +342,8 @@ Retired in 0.6.0 with the staged flow: `promote-no-ui-auto`, `promote-ui-needs-h
 - **`rollback-trigger-new-table`**: a trigger, with its RAISE body, on a table the same migration file creates passes setup.sh --check (bare, quoted or any case); a later body command still needs its own classification, and a top-level SELECT RAISE still fails.
 - **`rollback-trigger-new-file`**: a trigger on a table an earlier new file of the same migrations folder creates passes setup.sh --check; a trigger in a subfolder, or one before its table, still fails.
 - **`rollback-trigger-existing-table`**: a trigger on a table that exists at the comparison base fails with the same trigger and RAISE messages, passes only with a listed, linked contract, and a quoted string name is never taken as a new table.
-- **`rollback-quoted-identifiers`**: a DELETE or UPDATE on a table that exists at the comparison base fails setup.sh --check whatever the quoting (single, double or backtick quotes, brackets) and case of its name.
-- **`rollback-quoted-fresh-table`**: a DELETE or UPDATE on a table created earlier in the same file or an earlier new file passes setup.sh --check in any quoting style and case; a DELETE before its CREATE still fails.
+- **`rollback-quoted-identifiers`**: a DELETE or UPDATE on a table that exists at the comparison base fails setup.sh --check whatever the quoting (single, double or backtick quotes, brackets) and ASCII case of its name; a name differing only in a non-ASCII letter is another table.
+- **`rollback-quoted-fresh-table`**: a DELETE or UPDATE on a table created earlier in the same file or an earlier new file passes setup.sh --check in any quoting style and ASCII case, and a non-ASCII letter in another case names a new table beside an existing one; a DELETE before its CREATE still fails.
 - **`rollback-generated-production`**: clean-checkout builds of both revisions expose generated D1 migration directories and removed production bindings to setup.sh --check.
 - **`rollback-cross-worker-do`**: a caller switching classes cannot permit the host to remove a class or delete its namespace required by the previous release.
 

@@ -66,11 +66,13 @@ function declaredConfigs(text, tree, isLink, notes) {
   return found;
 }
 
+// SQLite folds ASCII letters only (its default case folding); every other character is itself, so 'Ä' and 'ä' are two names.
+const asciiLower = (s) => s.replace(/[A-Z]+/g, (m) => m.toLowerCase());
 // SQL tokenization: comments and quoted strings cannot become commands or statement boundaries.
 // Names are normalised here, once, for every statement kind: one layer of "…", `…`, […] or '…' is stripped, doubled quotes are
-// unescaped and the text is folded to lower case (SQLite folds ASCII case; folding more is only stricter). A quoted name keeps a
-// marker: \0 for "…", `…` and […], \x01 for '…', which SQLite also accepts as a name. A marked token never equals a bare keyword,
-// so a string in a value position cannot match one; name() strips either marker wherever a name is read.
+// unescaped and ASCII letters are folded to lower case. A quoted name keeps a marker: \0 for "…", `…` and […], \x01 for '…', which
+// SQLite also accepts as a name. A marked token never equals a bare keyword, so a string in a value position cannot match one;
+// name() strips either marker wherever a name is read.
 function statements(text) {
   const result = []; let tokens = [], i = 0;
   while (i < text.length) {
@@ -88,11 +90,11 @@ function statements(text) {
         value += text[i++];
       }
       if (!closed) throw new Error("unterminated SQL quote");
-      tokens.push((c === "'" ? "\x01" : "\0") + value.toLowerCase()); continue;
+      tokens.push((c === "'" ? "\x01" : "\0") + asciiLower(value)); continue;
     }
     if (c === ";") { if (tokens.length) result.push(tokens); tokens = []; i++; continue; }
     const word = text.slice(i).match(/^[\w$]+/);
-    if (word) { tokens.push(word[0].toLowerCase()); i += word[0].length; }
+    if (word) { tokens.push(asciiLower(word[0])); i += word[0].length; }
     else { tokens.push(c); i++; }
   }
   if (tokens.length) result.push(tokens);
