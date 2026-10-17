@@ -690,9 +690,9 @@ if grep -q 'Use `std-file-pr` and `std-babysit`' <<<"$blk" && ! grep -qE 'One re
 then ok agents-workflow-pointer; else fail agents-workflow-pointer "$blk"; fi
 
 # std-babysit-review-rounds: the applied babysit skill asks for every finding in one review, and a follow-up review raises
-# only what the new commits changed or the last fix missed; a fail-open, security or data-loss blocker an earlier round missed is still raised
+# only what the new commits changed or the last fix missed; a fail-open, security or data-loss finding an earlier round missed is still raised at any severity
 R=$(mkrepo); s=$(cat "$R/.agents/skills/std-babysit/SKILL.md"); why=""
-for t in "Report every finding you can see in that head in one review, not only the first." "raises only what the new commits changed or what the last fix missed, and says which. A fail-open, security or data-loss blocker that an earlier round missed is still raised, marked missed earlier."; do
+for t in "Report every finding you can see in that head in one review, not only the first." "raises only what the new commits changed or what the last fix missed, and says which. A fail-open, security or data-loss finding that an earlier round missed is still raised at any severity, marked missed earlier." "A separate reviewer with a fresh context, seeing only the diff and the issue and no author history, reviews each PR in a fresh session and verifies batched fixes against the earlier findings and the fix diff." "The author's own check in its own thread is not a review and never counts toward review coverage."; do
   grep -qF -- "$t" <<<"$s" || why="$why; missing: $t"
 done
 grep -qF -- "may investigate a newly discovered concrete blocker" <<<"$s" && why="$why; old follow-up clause kept"
